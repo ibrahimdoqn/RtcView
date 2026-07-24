@@ -9,6 +9,7 @@
     players: new Map(),
     dragging: null,
     sidebarOpen: false,
+    ptzHidden: false,
   };
 
   const $  = (s, r = document) => r.querySelector(s);
@@ -198,11 +199,12 @@
       lastTap = now;
     });
 
-    // Cursor-centered wheel zoom
+    // Cursor-centered wheel zoom (use TILE rect — video rect is post-transform)
     tile.addEventListener("wheel", (e) => {
       e.preventDefault();
       const p = state.players.get(cam.id); if (!p) return;
-      const rect = p.video.getBoundingClientRect();
+      selectCamera(cam.id);
+      const rect = tile.getBoundingClientRect();
       applyZoom(p, e.clientX - rect.left, e.clientY - rect.top,
                 e.deltaY < 0 ? 1.15 : 1/1.15, rect);
       showZoom(tile, p.zoom);
@@ -213,7 +215,7 @@
     tile.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
       const p = state.players.get(cam.id); if (!p || (p.zoom||1) <= 1) return;
-      dragStart = { x: e.clientX, y: e.clientY, panX: p.panX||0, panY: p.panY||0, p };
+      dragStart = { x: e.clientX, y: e.clientY, panX: p.panX||0, panY: p.panY||0, p, tile };
       tile.style.cursor = "grabbing";
     });
     window.addEventListener("mousemove", (e) => {
@@ -221,10 +223,12 @@
       const p = dragStart.p;
       p.panX = dragStart.panX + (e.clientX - dragStart.x);
       p.panY = dragStart.panY + (e.clientY - dragStart.y);
-      clampPan(p, p.video.getBoundingClientRect());
+      clampPan(p, dragStart.tile.getBoundingClientRect());
       applyTransform(p);
     });
-    window.addEventListener("mouseup", () => { if (dragStart) { dragStart.p.video.parentElement.style.cursor = ""; dragStart = null; } });
+    window.addEventListener("mouseup", () => {
+      if (dragStart) { dragStart.tile.style.cursor = ""; dragStart = null; }
+    });
 
     // Right click resets zoom
     tile.addEventListener("contextmenu", (e) => {
@@ -235,32 +239,34 @@
       showZoom(tile, 1);
     });
 
-    // Touch: pinch-zoom + one-finger pan
+    // Touch: pinch-zoom + one-finger pan (use TILE rect)
     let touch = null;
     tile.addEventListener("touchstart", (e) => {
       const p = state.players.get(cam.id); if (!p) return;
       if (e.touches.length === 2){
         const [a,b] = e.touches;
-        touch = { mode:"pinch", p, startDist: Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY),
-          startZoom: p.zoom||1, cx: (a.clientX+b.clientX)/2, cy: (a.clientY+b.clientY)/2 };
+        touch = { mode:"pinch", p, tile,
+          startDist: Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY),
+          startZoom: p.zoom||1,
+          startPanX: p.panX||0, startPanY: p.panY||0,
+          cx: (a.clientX+b.clientX)/2, cy: (a.clientY+b.clientY)/2 };
       } else if (e.touches.length === 1 && (p.zoom||1) > 1){
         const t0 = e.touches[0];
-        touch = { mode:"pan", p, x0:t0.clientX, y0:t0.clientY, panX:p.panX||0, panY:p.panY||0 };
+        touch = { mode:"pan", p, tile, x0:t0.clientX, y0:t0.clientY,
+          panX:p.panX||0, panY:p.panY||0 };
       }
     }, { passive: true });
     tile.addEventListener("touchmove", (e) => {
       if (!touch) return;
+      const rect = touch.tile.getBoundingClientRect();
       if (touch.mode === "pinch" && e.touches.length === 2){
         const [a,b] = e.touches;
         const dist = Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
-        const factor = (dist / touch.startDist);
-        const rect = touch.p.video.getBoundingClientRect();
-        const newZ = Math.max(1, Math.min(8, touch.startZoom * factor));
-        // approximate cursor-centered: use the pinch midpoint
+        const newZ = Math.max(1, Math.min(8, touch.startZoom * (dist / touch.startDist)));
         const mx = touch.cx - rect.left, my = touch.cy - rect.top;
-        const oldZ = touch.p.zoom || 1;
-        const videoX = (mx - (touch.p.panX||0)) / oldZ;
-        const videoY = (my - (touch.p.panY||0)) / oldZ;
+        // keep the pinch midpoint stable relative to unscaled tile coordinates
+        const videoX = (mx - touch.startPanX) / touch.startZoom;
+        const videoY = (my - touch.startPanY) / touch.startZoom;
         touch.p.panX = mx - videoX * newZ;
         touch.p.panY = my - videoY * newZ;
         touch.p.zoom = newZ;
@@ -271,7 +277,7 @@
         const t0 = e.touches[0];
         touch.p.panX = touch.panX + (t0.clientX - touch.x0);
         touch.p.panY = touch.panY + (t0.clientY - touch.y0);
-        clampPan(touch.p, touch.p.video.getBoundingClientRect());
+        clampPan(touch.p, rect);
         applyTransform(touch.p);
         e.preventDefault();
       }
@@ -398,6 +404,13 @@
       if (k === "b" || k === "tab"){ e.preventDefault(); toggleSidebar(); return; }
       if (k === "f"){ e.preventDefault(); toggleFullscreen(); return; }
       if (k === "g"){ exitSolo(); return; }
+      if (k === "p"){ e.preventDefault(); togglePtzPanel(); return; }
+      if (k === "r"){ // reset zoom on selected tile
+        const p = state.selectedId ? state.players.get(state.selectedId) : null;
+        if (p){ p.zoom=1; p.panX=0; p.panY=0; applyTransform(p);
+          const t = p.tile.querySelector(".zoom-info"); if (t) t.style.display="none"; }
+        return;
+      }
       if (/^[1-8]$/.test(e.key)){
         const n = parseInt(e.key);
         state.settings.grid_columns = n;
@@ -411,9 +424,10 @@
   function updatePtzPanel(){
     const cam = state.cameras.find(c => c.id === state.selectedId);
     const panel = $("#ptz-panel");
-    if (cam && cam.ptz_enabled){ panel.classList.remove("hidden"); loadPresets(cam); }
+    if (cam && cam.ptz_enabled && !state.ptzHidden){ panel.classList.remove("hidden"); loadPresets(cam); }
     else panel.classList.add("hidden");
   }
+  function togglePtzPanel(){ state.ptzHidden = !state.ptzHidden; updatePtzPanel(); }
 
   async function loadPresets(cam){
     try {
