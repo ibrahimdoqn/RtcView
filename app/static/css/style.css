@@ -122,6 +122,12 @@ input,select{font:inherit;color:inherit;}
 .fab:hover{background:rgba(255,255,255,.14);}
 .fab:active{transform:scale(0.9);}
 .fab-tl{top:calc(14px + var(--safe-t));left:calc(14px + var(--safe-l));}
+.fab-br{bottom:calc(20px + var(--safe-b));right:calc(20px + var(--safe-r));width:56px;height:56px;
+  background:rgba(10,132,255,.9);border-color:rgba(255,255,255,.25);
+  box-shadow:0 8px 24px rgba(10,132,255,.4), inset 0 1px 0 rgba(255,255,255,.25);}
+.fab-br:hover{background:rgba(10,132,255,1);}
+.fab-br.active{background:rgba(255,255,255,.9);color:#0a84ff;
+  box-shadow:0 8px 24px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.5);}
 
 /* ========================================================================
    SIDEBAR overlay
@@ -150,11 +156,11 @@ input,select{font:inherit;color:inherit;}
   padding:1rem 1.1rem;border-bottom:1px solid var(--border);
 }
 .brand .logo{
-  width:32px;height:32px;border-radius:9px;
-  background:linear-gradient(135deg,var(--accent),#5e5ce6);
-  display:grid;place-items:center;color:#fff;font-weight:700;
-  box-shadow:0 4px 12px rgba(10,132,255,.35);
+  width:36px;height:36px;border-radius:10px;overflow:hidden;
+  display:grid;place-items:center;flex:0 0 auto;
+  box-shadow:0 4px 12px rgba(0,0,0,.4);
 }
+.brand .logo svg{display:block;width:100%;height:100%;}
 .brand .title{font-weight:600;flex:1;font-size:1.05rem;letter-spacing:-0.01em;}
 .icon-btn{
   color:var(--muted);padding:.45rem .6rem;border-radius:9px;
@@ -233,18 +239,26 @@ input,select{font:inherit;color:inherit;}
 /* ========================================================================
    PTZ liquid-glass panel
    ======================================================================== */
+.ptz-backdrop{
+  position:fixed;inset:0;z-index:34;background:rgba(0,0,0,.35);
+  opacity:0;pointer-events:none;transition:opacity .22s var(--ease-out);
+}
+.ptz-backdrop:not(.hidden){opacity:1;pointer-events:auto;}
+
 .ptz-glass{
-  position:fixed;z-index:35;
-  bottom:calc(24px + var(--safe-b));left:50%;transform:translateX(-50%);
+  position:fixed;z-index:36;
+  bottom:calc(90px + var(--safe-b));right:calc(20px + var(--safe-r));
   display:flex;gap:.5rem;padding:.55rem;border-radius:22px;
   background:var(--glass);border:1px solid var(--glass-brd);
-  backdrop-filter:blur(24px) saturate(1.8);-webkit-backdrop-filter:blur(24px) saturate(1.8);
+  backdrop-filter:blur(28px) saturate(1.8);-webkit-backdrop-filter:blur(28px) saturate(1.8);
   box-shadow:var(--shadow-lg), inset 0 1px 0 var(--glass-hi);
   animation:glassIn .28s var(--ease-spring);
 }
-@keyframes glassIn{from{opacity:0;transform:translateX(-50%) translateY(20px) scale(0.94);}
-  to{opacity:1;transform:translateX(-50%) translateY(0) scale(1);}}
+@keyframes glassIn{from{opacity:0;transform:translateY(20px) scale(0.94);}
+  to{opacity:1;transform:translateY(0) scale(1);}}
 .ptz-glass.hidden{display:none;}
+.ptz-grabber{display:none;}
+.ptz-close{display:none;}
 .ptz-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;}
 .ptz-pad button,.ptz-side button{
   width:44px;height:44px;border-radius:12px;color:#fff;font-size:1.1rem;font-weight:600;
@@ -349,7 +363,7 @@ kbd{
     overflow-y:auto;overflow-x:hidden;
     padding:6px;gap:6px;
     padding-top:calc(6px + var(--safe-t));
-    padding-bottom:calc(72px + var(--safe-b)); /* room for PTZ */
+    padding-bottom:calc(90px + var(--safe-b)); /* room for FAB */
     -webkit-overflow-scrolling:touch;
   }
   .grid::-webkit-scrollbar{display:none;}
@@ -359,13 +373,31 @@ kbd{
   .tile.selected .badge{font-size:.8rem;padding:.24rem .6rem;}
   .fab{width:48px;height:48px;}
   .sidebar{width:88vw;}
+  /* Mobile: PTZ becomes a bottom sheet */
   .ptz-glass{
-    bottom:calc(12px + var(--safe-b));
-    padding:.4rem;gap:.4rem;border-radius:18px;
-    left:50%;right:auto;
+    left:0;right:0;bottom:0;
+    border-radius:22px 22px 0 0;padding:1.2rem 1rem calc(1.2rem + var(--safe-b));
+    gap:1.2rem;justify-content:center;align-items:flex-end;
+    animation:sheetInPtz .3s var(--ease-out);
+    box-shadow:var(--shadow-lg), inset 0 1px 0 var(--glass-hi);
+    background:rgba(28,30,38,.82);
+    backdrop-filter:blur(30px) saturate(1.8);-webkit-backdrop-filter:blur(30px) saturate(1.8);
   }
-  .ptz-pad button,.ptz-side button{width:42px;height:42px;font-size:1rem;}
-  .ptz-side select{height:42px;min-width:100px;font-size:.82rem;}
+  @keyframes sheetInPtz{from{transform:translateY(100%)}to{transform:translateY(0)}}
+  .ptz-grabber{
+    display:block;position:absolute;top:8px;left:50%;transform:translateX(-50%);
+    width:40px;height:5px;border-radius:3px;background:rgba(255,255,255,.28);
+    cursor:grab;touch-action:none;
+  }
+  .ptz-close{
+    display:grid;place-items:center;position:absolute;top:10px;right:14px;
+    width:32px;height:32px;border-radius:50%;
+    background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.15);
+    font-size:.9rem;
+  }
+  .ptz-pad button,.ptz-side button{width:56px;height:56px;font-size:1.35rem;border-radius:14px;}
+  .ptz-side{gap:.5rem;}
+  .ptz-side select{height:56px;min-width:110px;font-size:.9rem;border-radius:14px;}
 
   /* Grid solo on mobile: tile fills viewport */
   .grid.solo{overflow:hidden;padding:0;}
@@ -382,7 +414,8 @@ kbd{
     padding:2px;gap:2px;
   }
   .tile{aspect-ratio:auto;border-radius:6px;}
-  .ptz-glass{bottom:calc(8px + var(--safe-b));padding:.35rem;}
+  .fab-br{width:44px;height:44px;bottom:calc(10px + var(--safe-b));right:calc(10px + var(--safe-r));}
+  .ptz-glass{bottom:calc(60px + var(--safe-b));right:calc(10px + var(--safe-r));padding:.35rem;gap:.35rem;border-radius:16px;}
   .ptz-pad button,.ptz-side button{width:38px;height:38px;font-size:.95rem;}
   .ptz-side select{height:38px;min-width:90px;font-size:.8rem;}
 }

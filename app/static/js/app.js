@@ -9,8 +9,9 @@
     players: new Map(),
     dragging: null,
     sidebarOpen: false,
-    ptzHidden: false,
+    ptzOpen: null, // null = default per device; true/false = user preference
   };
+  const isMobile = () => window.matchMedia("(max-width: 640px), (orientation: portrait) and (max-width: 900px)").matches;
 
   const $  = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -192,11 +193,41 @@
     let lastTap = 0;
     tile.addEventListener("click", () => selectCamera(cam.id));
     tile.addEventListener("dblclick", () => toggleSolo(cam.id));
-    // touch double-tap
+
+    // Track whether the current touch is a genuine single-finger tap
+    let tapState = null;
+    tile.addEventListener("touchstart", (e) => {
+      if (e.touches.length === 1){
+        const t = e.touches[0];
+        tapState = { x: t.clientX, y: t.clientY, t0: Date.now(), moved: false, single: true };
+      } else {
+        // multi-touch — cancel any pending tap detection
+        tapState = null;
+        lastTap = 0;
+      }
+    }, { passive: true });
+    tile.addEventListener("touchmove", (e) => {
+      if (!tapState) return;
+      if (e.touches.length !== 1){ tapState = null; lastTap = 0; return; }
+      const t = e.touches[0];
+      if (Math.hypot(t.clientX - tapState.x, t.clientY - tapState.y) > 10) tapState.moved = true;
+    }, { passive: true });
     tile.addEventListener("touchend", (e) => {
+      // Ignore this touchend if there are still fingers down (mid-pinch) — those aren't taps.
+      if (e.touches.length > 0){ tapState = null; lastTap = 0; return; }
+      if (!tapState || !tapState.single || tapState.moved){ tapState = null; lastTap = 0; return; }
+      const dur = Date.now() - tapState.t0;
+      tapState = null;
+      if (dur > 300) { lastTap = 0; return; }
       const now = Date.now();
-      if (now - lastTap < 300) { toggleSolo(cam.id); e.preventDefault(); }
-      lastTap = now;
+      if (now - lastTap < 300){
+        toggleSolo(cam.id);
+        e.preventDefault();
+        lastTap = 0;
+      } else {
+        selectCamera(cam.id);
+        lastTap = now;
+      }
     });
 
     // Cursor-centered wheel zoom (use TILE rect — video rect is post-transform)
@@ -424,10 +455,35 @@
   function updatePtzPanel(){
     const cam = state.cameras.find(c => c.id === state.selectedId);
     const panel = $("#ptz-panel");
-    if (cam && cam.ptz_enabled && !state.ptzHidden){ panel.classList.remove("hidden"); loadPresets(cam); }
-    else panel.classList.add("hidden");
+    const fab = $("#ptz-fab");
+    const backdrop = $("#ptz-backdrop");
+    const hasPtz = !!(cam && cam.ptz_enabled);
+    if (!hasPtz){
+      panel.classList.add("hidden"); fab.classList.add("hidden"); backdrop.classList.add("hidden");
+      return;
+    }
+    // Default: open on desktop, closed on mobile
+    const shouldOpen = state.ptzOpen === null ? !isMobile() : state.ptzOpen;
+    fab.classList.remove("hidden");
+    fab.classList.toggle("active", shouldOpen);
+    if (shouldOpen){
+      panel.classList.remove("hidden");
+      // Show backdrop only on mobile (sheet mode)
+      if (isMobile()) backdrop.classList.remove("hidden");
+      else backdrop.classList.add("hidden");
+      loadPresets(cam);
+    } else {
+      panel.classList.add("hidden"); backdrop.classList.add("hidden");
+    }
   }
-  function togglePtzPanel(){ state.ptzHidden = !state.ptzHidden; updatePtzPanel(); }
+  function togglePtzPanel(){
+    const cam = state.cameras.find(c => c.id === state.selectedId);
+    if (!cam || !cam.ptz_enabled) return;
+    const currentlyOpen = state.ptzOpen === null ? !isMobile() : state.ptzOpen;
+    state.ptzOpen = !currentlyOpen;
+    updatePtzPanel();
+  }
+  function closePtzPanel(){ state.ptzOpen = false; updatePtzPanel(); }
 
   async function loadPresets(cam){
     try {
@@ -464,6 +520,38 @@
     btn.addEventListener("touchstart", start, { passive:false });
     btn.addEventListener("touchend", stop); btn.addEventListener("touchcancel", stop);
   });
+
+  // Wire FAB and dismissers
+  $("#ptz-fab").addEventListener("click", togglePtzPanel);
+  $("#ptz-close").addEventListener("click", closePtzPanel);
+  $("#ptz-backdrop").addEventListener("click", closePtzPanel);
+
+  // Swipe-down on the grabber to close (mobile bottom-sheet)
+  (function wirePtzSwipe(){
+    const panel = $("#ptz-panel");
+    const grabber = panel.querySelector(".ptz-grabber");
+    let start = null;
+    grabber.addEventListener("touchstart", (e) => {
+      const t = e.touches[0];
+      start = { y: t.clientY, t: Date.now() };
+      panel.style.transition = "none";
+    }, { passive: true });
+    grabber.addEventListener("touchmove", (e) => {
+      if (!start) return;
+      const dy = e.touches[0].clientY - start.y;
+      if (dy > 0) panel.style.transform = `translateY(${dy}px)`;
+    }, { passive: true });
+    const end = (e) => {
+      if (!start) return;
+      const dy = (e.changedTouches ? e.changedTouches[0].clientY : start.y) - start.y;
+      panel.style.transition = "";
+      panel.style.transform = "";
+      if (dy > 60 || (dy > 20 && Date.now() - start.t < 250)) closePtzPanel();
+      start = null;
+    };
+    grabber.addEventListener("touchend", end);
+    grabber.addEventListener("touchcancel", end);
+  })();
 
   $("#ptz-preset-select").addEventListener("change", (e) => {
     const cam = state.cameras.find(c => c.id === state.selectedId);

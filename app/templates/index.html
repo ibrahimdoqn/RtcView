@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-<meta name="theme-color" content="#0e1116" />
+<meta name="theme-color" content="#000000" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -27,7 +27,35 @@
   <!-- Sidebar overlay -->
   <aside id="sidebar" class="sidebar hidden">
     <div class="brand">
-      <div class="logo">▣</div>
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 200 200" width="32" height="32">
+          <defs>
+            <linearGradient id="lg-bg" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#242e50"/><stop offset="1" stop-color="#080c16"/>
+            </linearGradient>
+            <radialGradient id="lg-lens" cx="0.5" cy="0.5" r="0.5">
+              <stop offset="0" stop-color="#020a28"/><stop offset="0.55" stop-color="#0d3aa8"/><stop offset="1" stop-color="#1e82ff"/>
+            </radialGradient>
+            <linearGradient id="lg-bezel" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#8c96a8"/><stop offset="1" stop-color="#3c4655"/>
+            </linearGradient>
+            <radialGradient id="lg-glint" cx="0.35" cy="0.32" r="0.35">
+              <stop offset="0" stop-color="rgba(255,255,255,0.85)"/><stop offset="1" stop-color="rgba(255,255,255,0)"/>
+            </radialGradient>
+            <clipPath id="lg-clip"><rect x="0" y="0" width="200" height="200" rx="45"/></clipPath>
+          </defs>
+          <g clip-path="url(#lg-clip)">
+            <rect width="200" height="200" fill="url(#lg-bg)"/>
+            <rect width="200" height="100" fill="rgba(255,255,255,0.06)"/>
+            <circle cx="100" cy="104" r="64" fill="url(#lg-bezel)"/>
+            <circle cx="100" cy="104" r="57" fill="#0a0e18"/>
+            <circle cx="100" cy="104" r="52" fill="url(#lg-lens)"/>
+            <circle cx="100" cy="104" r="26" fill="#02061a"/>
+            <ellipse cx="82" cy="86" rx="22" ry="16" fill="url(#lg-glint)"/>
+            <circle cx="156" cy="40" r="6" fill="#ff453a"/>
+          </g>
+        </svg>
+      </div>
       <div class="title">RtcView</div>
       <button id="btn-close-sidebar" class="icon-btn" title="Kapat (B)">✕</button>
     </div>
@@ -49,24 +77,35 @@
   </aside>
   <div id="sidebar-backdrop" class="sidebar-backdrop hidden"></div>
 
-  <!-- Floating PTZ glass panel (bottom center of selected camera) -->
-  <div id="ptz-panel" class="ptz-glass hidden">
+  <!-- Compact PTZ FAB (bottom-right) — visible when a PTZ camera is selected -->
+  <button id="ptz-fab" class="fab fab-br hidden" title="PTZ (P)" aria-label="PTZ kontrolleri">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="4"/>
+      <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+    </svg>
+  </button>
+
+  <!-- PTZ panel — floating on desktop, bottom-sheet on mobile -->
+  <div id="ptz-backdrop" class="ptz-backdrop hidden"></div>
+  <div id="ptz-panel" class="ptz-glass hidden" role="dialog" aria-label="PTZ kontrolleri">
+    <div class="ptz-grabber" aria-hidden="true"></div>
     <div class="ptz-pad">
-      <button data-dir="upleft" aria-label="↖">↖</button>
-      <button data-dir="up" aria-label="↑">↑</button>
-      <button data-dir="upright" aria-label="↗">↗</button>
-      <button data-dir="left" aria-label="←">←</button>
-      <button data-dir="home" class="home" aria-label="stop">■</button>
-      <button data-dir="right" aria-label="→">→</button>
-      <button data-dir="downleft" aria-label="↙">↙</button>
-      <button data-dir="down" aria-label="↓">↓</button>
-      <button data-dir="downright" aria-label="↘">↘</button>
+      <button data-dir="upleft" aria-label="Sol-yukarı">↖</button>
+      <button data-dir="up" aria-label="Yukarı">↑</button>
+      <button data-dir="upright" aria-label="Sağ-yukarı">↗</button>
+      <button data-dir="left" aria-label="Sol">←</button>
+      <button data-dir="home" class="home" aria-label="Dur">■</button>
+      <button data-dir="right" aria-label="Sağ">→</button>
+      <button data-dir="downleft" aria-label="Sol-aşağı">↙</button>
+      <button data-dir="down" aria-label="Aşağı">↓</button>
+      <button data-dir="downright" aria-label="Sağ-aşağı">↘</button>
     </div>
     <div class="ptz-side">
-      <button data-dir="zoom-in" aria-label="Zoom+">+</button>
-      <button data-dir="zoom-out" aria-label="Zoom-">−</button>
+      <button data-dir="zoom-in" aria-label="Yaklaş">+</button>
+      <button data-dir="zoom-out" aria-label="Uzaklaş">−</button>
       <select id="ptz-preset-select" title="Preset"><option value="">Preset</option></select>
     </div>
+    <button id="ptz-close" class="ptz-close" aria-label="Kapat">✕</button>
   </div>
 
   <!-- Camera modal -->
