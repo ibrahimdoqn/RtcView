@@ -375,6 +375,15 @@
       pc.addTransceiver("video", { direction: "recvonly" });
       pc.addTransceiver("audio", { direction: "recvonly" });
       pc.ontrack = (ev) => { if (video.srcObject !== ev.streams[0]) video.srcObject = ev.streams[0]; };
+      // Adapt tile aspect to the actual stream ratio so nothing is cropped or letterboxed.
+      video.addEventListener("loadedmetadata", () => {
+        const w = video.videoWidth, h = video.videoHeight;
+        if (w > 0 && h > 0){
+          const ar = Math.max(0.5, Math.min(3.5, w / h)); // sanity clamp
+          tile.style.aspectRatio = String(ar);
+          tile.dataset.ratio = ar.toFixed(3);
+        }
+      });
       pc.oniceconnectionstatechange = () => {
         if (["failed","disconnected","closed"].includes(pc.iceConnectionState)) {
           p.state = "err"; if (msg) msg.textContent = "Bağlantı koptu";
