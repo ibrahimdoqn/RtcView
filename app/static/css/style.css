@@ -204,6 +204,16 @@ input,select{font:inherit;color:inherit;}
 .cam-item .grip{color:var(--muted);cursor:grab;font-size:1rem;line-height:1;opacity:.5;}
 .cam-item .name{flex:1;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .cam-item .st{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:0 0 auto;}
+.cam-item .cam-edit{
+  color:var(--muted);border-radius:8px;padding:.35rem;width:28px;height:28px;
+  display:grid;place-items:center;opacity:0;transition:opacity .12s var(--ease-out), background .12s var(--ease-out);
+  flex:0 0 auto;
+}
+.cam-item:hover .cam-edit,.cam-item.active .cam-edit{opacity:.85;}
+.cam-item .cam-edit:hover{background:rgba(255,255,255,.12);color:var(--text);opacity:1;}
+@media (hover:none) and (pointer:coarse){
+  .cam-item .cam-edit{opacity:.7;}
+}
 .cam-item .st.live{background:var(--ok);box-shadow:0 0 6px rgba(48,209,88,.7);}
 .cam-item .st.err{background:var(--danger);}
 .cam-item .st.connecting{background:var(--warn);animation:pulse 1.4s infinite ease-in-out;}
@@ -247,16 +257,37 @@ input,select{font:inherit;color:inherit;}
 
 .ptz-glass{
   position:fixed;z-index:36;
-  bottom:calc(90px + var(--safe-b));right:calc(20px + var(--safe-r));
-  display:flex;gap:.5rem;padding:.55rem;border-radius:22px;
+  bottom:calc(24px + var(--safe-b));left:50%;transform:translateX(-50%);
+  display:grid;
+  grid-template-columns:auto auto;
+  grid-template-areas:"header header" "pad side";
+  gap:.55rem;padding:.65rem;border-radius:22px;
   background:var(--glass);border:1px solid var(--glass-brd);
   backdrop-filter:blur(28px) saturate(1.8);-webkit-backdrop-filter:blur(28px) saturate(1.8);
   box-shadow:var(--shadow-lg), inset 0 1px 0 var(--glass-hi);
   animation:glassIn .28s var(--ease-spring);
 }
-@keyframes glassIn{from{opacity:0;transform:translateY(20px) scale(0.94);}
-  to{opacity:1;transform:translateY(0) scale(1);}}
+.ptz-header{grid-area:header;}
+.ptz-pad{grid-area:pad;}
+.ptz-side{grid-area:side;}
+@keyframes glassIn{from{opacity:0;transform:translate(-50%,20px) scale(0.94);}
+  to{opacity:1;transform:translate(-50%,0) scale(1);}}
 .ptz-glass.hidden{display:none;}
+.ptz-header{
+  display:flex;align-items:center;gap:.5rem;
+  padding:.15rem .4rem .4rem;color:#fff;min-width:0;
+  border-bottom:1px solid rgba(255,255,255,.1);
+}
+.ptz-header .ptz-label{
+  font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;
+  color:rgba(255,255,255,.55);padding:.15rem .45rem;background:rgba(255,255,255,.1);
+  border-radius:5px;
+}
+.ptz-header .ptz-camname{
+  font-size:.82rem;font-weight:600;color:#fff;flex:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  letter-spacing:-0.01em;
+}
 .ptz-grabber{display:none;}
 .ptz-close{display:none;}
 .ptz-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;}
@@ -367,23 +398,30 @@ kbd{
     -webkit-overflow-scrolling:touch;
   }
   .grid::-webkit-scrollbar{display:none;}
-  .tile{aspect-ratio:16/9;height:auto;min-height:0;border-radius:12px;}
-  .tile video{object-fit:cover;} /* fill the tile on phones */
+  .tile{aspect-ratio:16/9;height:auto;min-height:0;border-radius:12px;background:#000;}
+  .tile video{object-fit:contain;} /* always show the full frame */
   .tile .badge{font-size:.72rem;padding:.18rem .5rem;top:6px;left:6px;}
   .tile.selected .badge{font-size:.8rem;padding:.24rem .6rem;}
   .fab{width:48px;height:48px;}
   .sidebar{width:88vw;}
   /* Mobile: PTZ becomes a bottom sheet */
   .ptz-glass{
-    left:0;right:0;bottom:0;
-    border-radius:22px 22px 0 0;padding:1.2rem 1rem calc(1.2rem + var(--safe-b));
-    gap:1.2rem;justify-content:center;align-items:flex-end;
+    left:0;right:0;bottom:0;top:auto;transform:none;
+    grid-template-columns:1fr auto;
+    grid-template-areas:"header header" "pad side";
+    border-radius:22px 22px 0 0;padding:1.4rem 1.1rem calc(1.3rem + var(--safe-b));
+    gap:1rem;justify-items:center;align-items:center;
     animation:sheetInPtz .3s var(--ease-out);
     box-shadow:var(--shadow-lg), inset 0 1px 0 var(--glass-hi);
-    background:rgba(28,30,38,.82);
+    background:rgba(28,30,38,.86);
     backdrop-filter:blur(30px) saturate(1.8);-webkit-backdrop-filter:blur(30px) saturate(1.8);
   }
   @keyframes sheetInPtz{from{transform:translateY(100%)}to{transform:translateY(0)}}
+  .ptz-header{
+    justify-self:stretch;padding:.5rem .5rem .7rem;
+    border-bottom:1px solid rgba(255,255,255,.1);
+  }
+  .ptz-header .ptz-camname{font-size:1rem;}
   .ptz-grabber{
     display:block;position:absolute;top:8px;left:50%;transform:translateX(-50%);
     width:40px;height:5px;border-radius:3px;background:rgba(255,255,255,.28);

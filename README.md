@@ -40,6 +40,18 @@ Kurulum sırasında:
 
 Sonra: `http://<makine-ip>:<port>` adresini tarayıcıda açın.
 
+## Güncelleme
+
+Kamera listesi ve ayarları korunur; sadece kod/asset yenilenir:
+
+```bash
+sudo bash scripts/update.sh
+```
+
+Otomatik olarak: config yedeği alır (`/tmp/rtcview-config-*.json`), servisi durdurur,
+`app/`, `requirements.txt`, `scripts/` üzerine yazar, pip bağımlılıklarını günceller,
+servisi yeniden başlatır. `config/`, `venv/`, `logs/` **dokunulmaz**.
+
 ## Kaldırma
 
 ```bash

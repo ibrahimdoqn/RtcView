@@ -84,9 +84,23 @@
       el.draggable = true;
       el.innerHTML = `<span class="grip">⋮⋮</span>
         <span class="name">${escapeHtml(cam.name)}</span>
-        <span class="st" data-st></span>`;
-      el.addEventListener("click", () => { selectCamera(cam.id); if (window.innerWidth < 720) closeSidebar(); });
-      el.addEventListener("dblclick", () => { selectCamera(cam.id); openEdit(cam); });
+        <span class="st" data-st></span>
+        <button class="cam-edit" title="Düzenle" aria-label="Kamerayı düzenle">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+          </svg>
+        </button>`;
+      el.addEventListener("click", (e) => {
+        if (e.target.closest(".cam-edit")) return;
+        selectCamera(cam.id); if (isMobile()) closeSidebar();
+      });
+      el.addEventListener("dblclick", (e) => {
+        if (e.target.closest(".cam-edit")) return;
+        selectCamera(cam.id); openEdit(cam);
+      });
+      el.querySelector(".cam-edit").addEventListener("click", (e) => {
+        e.stopPropagation(); openEdit(cam);
+      });
       wireDrag(el);
       list.appendChild(el);
     });
@@ -407,7 +421,18 @@
     updatePtzPanel();
   }
 
+  function resetZoom(id){
+    const p = state.players.get(id); if (!p) return;
+    p.zoom = 1; p.panX = 0; p.panY = 0;
+    applyTransform(p);
+    const zi = p.tile.querySelector(".zoom-info"); if (zi) zi.style.display = "none";
+  }
+
   function toggleSolo(id){
+    // Reset zoom whenever a tile enters or leaves solo — otherwise the
+    // scale-3× transform sized for a full-viewport tile puts the video
+    // way off-screen in the smaller grid cell, showing black.
+    resetZoom(id);
     if (state.solo && state.selectedId === id){ state.solo = false; }
     else { state.selectedId = id; state.solo = true; }
     $("#grid").classList.toggle("solo", state.solo);
@@ -415,7 +440,10 @@
     updatePtzPanel();
   }
 
-  function exitSolo(){ state.solo = false; $("#grid").classList.remove("solo"); }
+  function exitSolo(){
+    if (state.selectedId) resetZoom(state.selectedId);
+    state.solo = false; $("#grid").classList.remove("solo");
+  }
 
   function toggleFullscreen(){
     if (document.fullscreenElement) document.exitFullscreen();
@@ -471,6 +499,7 @@
       // Show backdrop only on mobile (sheet mode)
       if (isMobile()) backdrop.classList.remove("hidden");
       else backdrop.classList.add("hidden");
+      const label = $("#ptz-camname"); if (label) label.textContent = cam.name;
       loadPresets(cam);
     } else {
       panel.classList.add("hidden"); backdrop.classList.add("hidden");
