@@ -57,6 +57,10 @@ input,select{font:inherit;color:inherit;}
 .grid.solo .tile.selected{
   display:block;width:100%!important;height:100%!important;
   border-radius:0!important;margin:0!important;
+  /* In solo there is no grid to scroll — all touches (pinch, pan, tap)
+     must go to our JS, otherwise the browser hijacks pinch as a page-
+     zoom and we never see the gesture. */
+  touch-action:none;
 }
 
 .tile{
@@ -65,6 +69,9 @@ input,select{font:inherit;color:inherit;}
   outline:2px solid transparent;outline-offset:-2px;
   transition:outline-color .18s var(--ease-out), transform .3s var(--ease-out);
   min-height:0;min-width:0;
+  /* Let vertical scroll bubble up to the grid; block browser pinch-zoom and
+     double-tap-zoom so our JS gets every gesture. */
+  touch-action:pan-y;
 }
 .tile.selected{outline-color:var(--accent);}
 .tile video{
