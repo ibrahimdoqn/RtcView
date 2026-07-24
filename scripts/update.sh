@@ -47,6 +47,21 @@ info "Python bağımlılıkları kontrol ediliyor..."
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade -r "$INSTALL_DIR/requirements.txt" 2>&1 | tail -3 || \
   warn "pip upgrade sırasında bazı uyarılar oldu — devam ediliyor."
 
+# ------------- verify onvif (kullanıcının ana şikayeti) -------------
+if ! "$INSTALL_DIR/venv/bin/python" -c "from onvif import ONVIFCamera" 2>/dev/null; then
+  warn "onvif-zeep hâlâ import edilemiyor. Zorla yeniden kuruluyor..."
+  # ARM64/lxml için derleme deps'i eksikse burada eklenir
+  apt-get install -y --no-install-recommends python3-dev build-essential libxml2-dev libxslt1-dev libffi-dev >/dev/null 2>&1 || true
+  "$INSTALL_DIR/venv/bin/pip" install --force-reinstall --no-cache-dir onvif-zeep zeep lxml 2>&1 | tail -5
+  if "$INSTALL_DIR/venv/bin/python" -c "from onvif import ONVIFCamera" 2>/dev/null; then
+    info "ONVIF/PTZ desteği artık aktif."
+  else
+    warn "ONVIF hâlâ kurulamadı. journalctl -u ${SERVICE_NAME} ile hatayı inceleyin."
+  fi
+else
+  info "ONVIF/PTZ desteği: aktif"
+fi
+
 # ------------- permissions -------------
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
 

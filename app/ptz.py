@@ -4,11 +4,14 @@ from typing import Optional
 
 log = logging.getLogger("ptz")
 
+ONVIF_IMPORT_ERROR = None
 try:
     from onvif import ONVIFCamera
     ONVIF_AVAILABLE = True
-except Exception:
+except Exception as _e:
     ONVIF_AVAILABLE = False
+    ONVIF_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+    log.warning("onvif-zeep import failed: %s", ONVIF_IMPORT_ERROR)
 
 
 class PtzController:
@@ -20,7 +23,10 @@ class PtzController:
 
     def _get(self, camera: dict):
         if not ONVIF_AVAILABLE:
-            raise RuntimeError("onvif-zeep is not installed")
+            raise RuntimeError(
+                "onvif-zeep kurulmamış. Çözüm: sudo /opt/rtcview/venv/bin/pip install onvif-zeep zeep "
+                f"(import hatası: {ONVIF_IMPORT_ERROR})"
+            )
         cam_id = camera["id"]
         with self._lock:
             if cam_id in self._cache:

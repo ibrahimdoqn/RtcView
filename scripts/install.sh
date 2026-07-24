@@ -59,11 +59,13 @@ if command -v curl >/dev/null 2>&1; then
 fi
 
 # ------------- packages -------------
-info "APT paketleri yükleniyor (python3, venv, curl)..."
+info "APT paketleri yükleniyor (python3, venv, curl, lxml derleme bağımlılıkları)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y --no-install-recommends \
-  python3 python3-venv python3-pip curl ca-certificates tar
+  python3 python3-venv python3-pip python3-dev \
+  build-essential libxml2-dev libxslt1-dev libffi-dev \
+  curl ca-certificates tar
 
 # ------------- user -------------
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
@@ -83,8 +85,20 @@ tar -C "$SRC_DIR" --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
 # ------------- venv -------------
 info "Python venv oluşturuluyor (izole ortam)..."
 python3 -m venv "$INSTALL_DIR/venv"
-"$INSTALL_DIR/venv/bin/pip" install --upgrade pip wheel
+"$INSTALL_DIR/venv/bin/pip" install --upgrade pip wheel setuptools
 "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
+
+# ------------- verify critical imports -------------
+info "Python bağımlılıkları doğrulanıyor..."
+if ! "$INSTALL_DIR/venv/bin/python" -c "import flask, requests, waitress" 2>/dev/null; then
+  die "Flask/requests/waitress import başarısız — kurulum yarıda kesildi."
+fi
+if ! "$INSTALL_DIR/venv/bin/python" -c "from onvif import ONVIFCamera" 2>/dev/null; then
+  warn "onvif-zeep import edilemiyor. PTZ özellikleri devre dışı kalır. Manuel dene:"
+  warn "  sudo $INSTALL_DIR/venv/bin/pip install --force-reinstall onvif-zeep zeep lxml"
+else
+  info "ONVIF/PTZ desteği aktif."
+fi
 
 # ------------- initial config -------------
 CONFIG_FILE="$INSTALL_DIR/config/config.json"

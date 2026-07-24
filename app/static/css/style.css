@@ -443,14 +443,18 @@ kbd{
   .ptz-side{gap:.5rem;}
   .ptz-side select{height:56px;min-width:110px;font-size:.9rem;border-radius:14px;}
 
-  /* Grid solo on mobile: tile fills viewport, video fills the screen.
-     Cover crops horizontally so no wasted black bars; pinch-zoom + pan
-     to inspect any part; exit solo (Esc / G / double-tap / FAB) to see
-     the entire frame in the grid. */
+  /* Grid solo on mobile:
+     - Tile fills the whole viewport (100vw × 100dvh).
+     - Video is `contain` so the full frame is centered on screen with
+       black bars top/bottom for landscape streams — no cropping, no
+       aspect distortion.
+     - Pinch to zoom in: the transform math grows the content around
+       the pinch point, so at about 3.5× a 16:9 stream fills a portrait
+       phone edge-to-edge. Overflow:hidden clips the horizontal excess. */
   .grid.solo{overflow:hidden;padding:0!important;padding-bottom:0!important;}
   .grid.solo .tile{border-radius:0!important;aspect-ratio:auto!important;
-    height:100dvh!important;width:100vw!important;}
-  .grid.solo .tile video{object-fit:cover;}
+    height:100dvh!important;width:100vw!important;background:#000;}
+  .grid.solo .tile video{object-fit:contain;}
 }
 
 /* Landscape phone: 2 columns, fill height */
