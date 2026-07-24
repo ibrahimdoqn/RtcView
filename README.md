@@ -1,7 +1,13 @@
 # RtcView
 
-go2rtc tabanlı, Frigate benzeri, sıfır-gecikmeli (WebRTC) kamera izleme arayüzü.
+**Mevcut** bir go2rtc'ye bağlanan, Frigate benzeri, sıfır-gecikmeli (WebRTC) kamera izleme arayüzü.
+Kendi başına stream sunmaz; go2rtc'de tanımlı stream'leri WHEP üzerinden alır ve gösterir.
 PWA uyumludur, Ubuntu Noble (rk3399, arm64) üzerinde izole Python venv içinde çalışır.
+
+## Ön koşul
+
+Ağınızda çalışan bir **go2rtc** olmalı (varsayılan API `http://127.0.0.1:1984`).
+Kameralar go2rtc'nin `streams:` bölümünde tanımlı olmalı.
 
 ## Özellikler
 
@@ -24,11 +30,11 @@ Depoyu Ubuntu Noble (rk3399, arm64) makineye kopyalayın ve:
 sudo bash scripts/install.sh
 ```
 
-Kurulum sırasında port sorulur (varsayılan `5000`) ve kullanımda olup olmadığı kontrol edilir.
-Kurulum:
+Kurulum sırasında:
 
+- **RtcView portu** sorulur (varsayılan `5000`) ve kullanımda olup olmadığı kontrol edilir
+- **go2rtc host / API portu** sorulur (varsayılan `127.0.0.1:1984`) ve bağlantı test edilir
 - İzole `python3 -m venv` oluşturur (`/opt/rtcview/venv`)
-- `go2rtc` binary'sini indirir (`/opt/rtcview/go2rtc`)
 - `rtcview` isimli sistem kullanıcısı yaratır
 - `rtcview.service` systemd birimi ile açılışta başlatır
 
@@ -47,10 +53,11 @@ sudo bash scripts/uninstall.sh --keep-config
 Arayüzde **+ Kamera Ekle** ile:
 
 - **Ad**: örn. "Ön Kapı"
-- **Stream URL**: `rtsp://user:pass@192.168.1.10:554/stream1` (rtsp/rtsps/http/hls kabul edilir)
+- **go2rtc Stream**: go2rtc.yaml'da tanımlı stream adı (dropdown, `/api/streams` üzerinden çekilir; ↻ ile yenilenir)
 - **PTZ**: ONVIF host/port/user/pass — isteğe bağlı
 
-RtcView, go2rtc `go2rtc.yaml` dosyasını otomatik günceller ve go2rtc'yi yeniden yükler.
+RtcView go2rtc yapılandırmasını **değiştirmez**; sadece mevcut stream'leri okur ve WHEP ile oynatır.
+Ayarlar penceresinden go2rtc host/port'unu değiştirebilirsiniz.
 
 ## Klavye kısayolları
 
@@ -66,10 +73,9 @@ RtcView, go2rtc `go2rtc.yaml` dosyasını otomatik günceller ve go2rtc'yi yenid
 ├── app/            # Flask kaynak
 ├── venv/           # izole Python ortamı
 ├── config/config.json
-├── go2rtc          # binary
-├── go2rtc.yaml     # RtcView tarafından otomatik yazılır
 └── logs/
 ```
+> Not: go2rtc **bu dizinde değildir**; ağınızdaki mevcut go2rtc kullanılır.
 
 ## Servis kontrolü
 

@@ -11,7 +11,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_from_
 from flask_cors import CORS
 
 from app.config import ConfigStore
-from app.go2rtc_manager import Go2RtcManager
+from app.go2rtc_client import Go2RtcClient
 from app.ptz import ptz_controller, ONVIF_AVAILABLE
 
 logging.basicConfig(
@@ -27,22 +27,15 @@ def resolve_paths():
     return install_dir, config_dir
 
 
-def create_app(config_path: str, install_dir: str) -> Flask:
-    app = Flask(
-        __name__,
-        static_folder="static",
-        template_folder="templates",
-    )
+def create_app(config_path: str) -> Flask:
+    app = Flask(__name__, static_folder="static", template_folder="templates")
     CORS(app)
 
     store = ConfigStore(config_path)
-    go2rtc = Go2RtcManager(store, install_dir)
+    go2rtc = Go2RtcClient(store)
 
     app.config["STORE"] = store
     app.config["GO2RTC"] = go2rtc
-
-    # Start go2rtc in background if binary present
-    go2rtc.start()
 
     # ---------- Pages ----------
     @app.route("/")
@@ -59,7 +52,7 @@ def create_app(config_path: str, install_dir: str) -> Flask:
         resp.headers["Service-Worker-Allowed"] = "/"
         return resp
 
-    # ---------- API: cameras ----------
+    # ---------- API: status / config ----------
     @app.get("/api/status")
     def api_status():
         gc = store.get_go2rtc()
@@ -95,6 +88,27 @@ def create_app(config_path: str, install_dir: str) -> Flask:
         store.update_app(clean)
         return jsonify(store.get_app())
 
+    @app.get("/api/go2rtc/settings")
+    def api_go2rtc_get():
+        return jsonify(store.get_go2rtc())
+
+    @app.post("/api/go2rtc/settings")
+    def api_go2rtc_set():
+        body = request.get_json(force=True) or {}
+        allowed = {"host", "api_port"}
+        clean = {k: v for k, v in body.items() if k in allowed}
+        if "api_port" in clean:
+            try: clean["api_port"] = int(clean["api_port"])
+            except Exception: return jsonify({"error": "invalid api_port"}), 400
+        store.data["go2rtc"].update(clean)
+        store.save()
+        return jsonify(store.get_go2rtc())
+
+    @app.get("/api/go2rtc/streams")
+    def api_go2rtc_streams():
+        return jsonify(go2rtc.list_streams())
+
+    # ---------- API: cameras ----------
     @app.get("/api/cameras")
     def api_cameras():
         return jsonify(store.get_cameras())
@@ -103,16 +117,13 @@ def create_app(config_path: str, install_dir: str) -> Flask:
     def api_add_camera():
         body = request.get_json(force=True) or {}
         name = (body.get("name") or "").strip()
-        stream_url = (body.get("stream_url") or "").strip()
-        if not name or not stream_url:
-            return jsonify({"error": "name and stream_url are required"}), 400
+        stream = (body.get("stream") or "").strip()
+        if not name or not stream:
+            return jsonify({"error": "name and stream are required"}), 400
         cam = {
             "id": body.get("id") or "cam_" + uuid.uuid4().hex[:8],
             "name": name,
-            "stream_url": stream_url,
-            "host": body.get("host", ""),
-            "username": body.get("username", ""),
-            "password": body.get("password", ""),
+            "stream": stream,
             "ptz_enabled": bool(body.get("ptz_enabled", False)),
             "onvif_host": body.get("onvif_host", ""),
             "onvif_port": int(body.get("onvif_port", 80) or 80),
@@ -120,7 +131,6 @@ def create_app(config_path: str, install_dir: str) -> Flask:
             "onvif_pass": body.get("onvif_pass", ""),
         }
         store.add_camera(cam)
-        go2rtc.reload()
         return jsonify(cam), 201
 
     @app.put("/api/cameras/<camera_id>")
@@ -130,7 +140,6 @@ def create_app(config_path: str, install_dir: str) -> Flask:
         if not ok:
             return jsonify({"error": "not found"}), 404
         ptz_controller.invalidate(camera_id)
-        go2rtc.reload()
         return jsonify({"ok": True})
 
     @app.delete("/api/cameras/<camera_id>")
@@ -139,7 +148,6 @@ def create_app(config_path: str, install_dir: str) -> Flask:
         if not ok:
             return jsonify({"error": "not found"}), 404
         ptz_controller.invalidate(camera_id)
-        go2rtc.reload()
         return jsonify({"ok": True})
 
     @app.post("/api/cameras/reorder")
@@ -248,17 +256,14 @@ def main():
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--host", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
-    parser.add_argument("--install-dir", type=str, default=None)
     parser.add_argument("--dev", action="store_true")
     args = parser.parse_args()
 
-    install_dir, config_dir = resolve_paths()
-    if args.install_dir:
-        install_dir = args.install_dir
+    _, config_dir = resolve_paths()
     config_path = args.config or os.path.join(config_dir, "config.json")
     Path(os.path.dirname(config_path)).mkdir(parents=True, exist_ok=True)
 
-    app = create_app(config_path, install_dir)
+    app = create_app(config_path)
     store = app.config["STORE"]
     ac = store.get_app()
     host = args.host or ac.get("host", "0.0.0.0")

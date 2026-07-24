@@ -17,7 +17,6 @@ DEFAULT_CONFIG = {
     "go2rtc": {
         "host": "127.0.0.1",
         "api_port": 1984,
-        "webrtc_port": 8555,
     },
     "cameras": []
 }

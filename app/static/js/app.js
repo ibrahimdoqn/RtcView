@@ -281,7 +281,7 @@
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      const url = `/go2rtc/api/webrtc?src=${encodeURIComponent(cam.id)}`;
+      const url = `/go2rtc/api/webrtc?src=${encodeURIComponent(cam.stream || cam.id)}`;
       const resp = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/sdp" },
@@ -397,6 +397,26 @@
   $$("[data-close]").forEach(b => b.addEventListener("click", () => modal.classList.add("hidden")));
   modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
 
+  async function loadStreamOptions(selected){
+    const sel = $("#stream-select");
+    sel.innerHTML = `<option value="">(yükleniyor…)</option>`;
+    try {
+      const streams = await api.get("/api/go2rtc/streams");
+      const opts = ['<option value="">— seçin —</option>']
+        .concat((streams || []).map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`));
+      // Ensure current value stays selectable even if not returned
+      if (selected && !streams.includes(selected)) {
+        opts.push(`<option value="${escapeHtml(selected)}">${escapeHtml(selected)} (mevcut)</option>`);
+      }
+      sel.innerHTML = opts.join("");
+      if (selected) sel.value = selected;
+    } catch {
+      sel.innerHTML = `<option value="">(go2rtc'ye erişilemiyor)</option>`;
+      if (selected) sel.insertAdjacentHTML("beforeend",
+        `<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)}</option>`);
+    }
+  }
+
   function openEdit(cam){
     form.reset();
     if (cam){
@@ -404,18 +424,21 @@
       delBtn.classList.remove("hidden");
       form.id.value = cam.id;
       form.name.value = cam.name || "";
-      form.stream_url.value = cam.stream_url || "";
       form.ptz_enabled.checked = !!cam.ptz_enabled;
       form.onvif_host.value = cam.onvif_host || "";
       form.onvif_port.value = cam.onvif_port || 80;
       form.onvif_user.value = cam.onvif_user || "";
       form.onvif_pass.value = cam.onvif_pass || "";
+      loadStreamOptions(cam.stream || "");
     } else {
       $("#modal-title").textContent = "Kamera Ekle";
       delBtn.classList.add("hidden");
+      loadStreamOptions("");
     }
     modal.classList.remove("hidden");
   }
+
+  $("#btn-refresh-streams").addEventListener("click", () => loadStreamOptions(form.stream.value));
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -423,6 +446,7 @@
     const body = Object.fromEntries(fd.entries());
     body.ptz_enabled = form.ptz_enabled.checked;
     body.onvif_port = parseInt(body.onvif_port || 80);
+    if (!body.stream){ toast("Bir stream seçin", "err"); return; }
     const id = body.id; delete body.id;
     try {
       if (id){ await api.put("/api/cameras/" + id, body); toast("Güncellendi", "ok"); }
@@ -451,13 +475,18 @@
 
   // -------- Settings --------
   const sModal = $("#settings-backdrop");
-  $("#btn-settings").addEventListener("click", () => {
+  $("#btn-settings").addEventListener("click", async () => {
     $("#s-grid-cols").value = state.settings.grid_columns || 3;
     $("#s-theme").value = state.settings.theme || "dark";
     $("#s-show-names").checked = state.settings.show_camera_names !== false;
     $("#s-show-badges").checked = state.settings.show_status_badges !== false;
     $("#s-auto-reconnect").checked = state.settings.auto_reconnect !== false;
     $("#s-reconnect-delay").value = state.settings.reconnect_delay_ms || 3000;
+    try {
+      const g = await api.get("/api/go2rtc/settings");
+      $("#s-g2-host").value = g.host || "127.0.0.1";
+      $("#s-g2-port").value = g.api_port || 1984;
+    } catch {}
     sModal.classList.remove("hidden");
   });
   $$("[data-close-settings]").forEach(b => b.addEventListener("click", () => sModal.classList.add("hidden")));
@@ -473,9 +502,14 @@
     };
     try {
       state.settings = await api.post("/api/settings", body);
+      await api.post("/api/go2rtc/settings", {
+        host: ($("#s-g2-host").value || "127.0.0.1").trim(),
+        api_port: parseInt($("#s-g2-port").value || 1984),
+      });
       applySettings();
       sModal.classList.add("hidden");
       toast("Ayarlar kaydedildi", "ok");
+      updateStatus();
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
   });
 
