@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0e1116" />
+<title>RtcView</title>
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="icon" href="/static/icons/icon-192.png" />
+<link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
+<link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <aside id="sidebar" class="sidebar">
+    <div class="brand">
+      <div class="logo">▣</div>
+      <div class="title">RtcView</div>
+      <button id="toggle-sidebar" class="icon-btn" title="Menüyü gizle/göster">☰</button>
+    </div>
+    <div class="search">
+      <input id="search-input" type="text" placeholder="Kamera ara..." />
+    </div>
+    <div id="camera-list" class="camera-list"></div>
+    <div class="sidebar-footer">
+      <button id="btn-add-camera" class="btn primary">+ Kamera Ekle</button>
+      <button id="btn-settings" class="btn ghost" title="Ayarlar">⚙</button>
+    </div>
+  </aside>
+
+  <main id="main" class="main">
+    <header class="topbar">
+      <div class="left">
+        <button id="btn-all-grid" class="btn ghost">▤ Tüm Izgara</button>
+        <button id="btn-fullscreen" class="btn ghost">⛶ Tam Ekran</button>
+      </div>
+      <div class="center">
+        <div id="status-indicator" class="status">
+          <span class="dot"></span><span id="status-text">Bağlanıyor...</span>
+        </div>
+      </div>
+      <div class="right">
+        <label class="cols">Sütun
+          <select id="grid-cols">
+            <option>1</option><option>2</option><option selected>3</option><option>4</option>
+            <option>5</option><option>6</option><option>7</option><option>8</option>
+          </select>
+        </label>
+      </div>
+    </header>
+
+    <section id="grid" class="grid"></section>
+  </main>
+
+  <!-- PTZ overlay for the selected camera -->
+  <div id="ptz-panel" class="ptz-panel hidden">
+    <div class="ptz-title">PTZ</div>
+    <div class="ptz-pad">
+      <button data-dir="upleft">↖</button>
+      <button data-dir="up">↑</button>
+      <button data-dir="upright">↗</button>
+      <button data-dir="left">←</button>
+      <button data-dir="home" class="home">●</button>
+      <button data-dir="right">→</button>
+      <button data-dir="downleft">↙</button>
+      <button data-dir="down">↓</button>
+      <button data-dir="downright">↘</button>
+    </div>
+    <div class="ptz-zoom">
+      <button data-dir="zoom-in">+</button>
+      <span>Zoom</span>
+      <button data-dir="zoom-out">−</button>
+    </div>
+    <div class="ptz-presets">
+      <select id="ptz-preset-select"><option value="">Preset...</option></select>
+      <button id="ptz-preset-go" class="btn small">Git</button>
+    </div>
+  </div>
+
+  <!-- Camera modal -->
+  <div id="modal-backdrop" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modal-title">Kamera Ekle</h3>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <form id="camera-form" class="modal-body">
+        <input type="hidden" name="id" />
+        <label>Ad
+          <input name="name" required placeholder="Ön Kapı" />
+        </label>
+        <label>Stream URL (rtsp/rtsps/http)
+          <input name="stream_url" required placeholder="rtsp://user:pass@192.168.1.10:554/stream1" />
+        </label>
+        <fieldset>
+          <legend>PTZ (ONVIF) – isteğe bağlı</legend>
+          <label class="row"><input type="checkbox" name="ptz_enabled" /> PTZ etkin</label>
+          <label>Host <input name="onvif_host" placeholder="192.168.1.10" /></label>
+          <div class="grid2">
+            <label>Port <input type="number" name="onvif_port" value="80" /></label>
+            <label>Kullanıcı <input name="onvif_user" /></label>
+            <label>Parola <input type="password" name="onvif_pass" /></label>
+          </div>
+        </fieldset>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-close>İptal</button>
+          <button type="button" id="btn-delete" class="btn danger hidden">Sil</button>
+          <button type="submit" class="btn primary">Kaydet</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-backdrop" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Ayarlar</h3>
+        <button class="icon-btn" data-close-settings>✕</button>
+      </div>
+      <div class="modal-body">
+        <label>Sütun sayısı (1–8)
+          <input id="s-grid-cols" type="number" min="1" max="8" />
+        </label>
+        <label>Tema
+          <select id="s-theme"><option value="dark">Koyu</option><option value="light">Açık</option></select>
+        </label>
+        <label class="row"><input id="s-show-names" type="checkbox" /> Kamera adlarını göster</label>
+        <label class="row"><input id="s-show-badges" type="checkbox" /> Durum rozetlerini göster</label>
+        <label class="row"><input id="s-auto-reconnect" type="checkbox" /> Otomatik yeniden bağlan</label>
+        <label>Yeniden bağlanma gecikmesi (ms)
+          <input id="s-reconnect-delay" type="number" min="500" step="500" />
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-close-settings>Kapat</button>
+          <button type="button" id="s-save" class="btn primary">Kaydet</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/js/app.js" defer></script>
+</body>
+</html>

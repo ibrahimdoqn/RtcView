@@ -1,0 +1,7 @@
+Flask==3.0.3
+Flask-Cors==4.0.1
+requests==2.32.3
+onvif-zeep==0.2.12
+zeep==4.2.1
+PyYAML==6.0.2
+waitress==3.0.0
