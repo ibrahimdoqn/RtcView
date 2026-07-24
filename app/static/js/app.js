@@ -1,15 +1,17 @@
-/* RtcView frontend — WebRTC (WHEP via go2rtc), PTZ, grid, drag&drop, cursor-centered zoom. */
+/* RtcView frontend — WebRTC WHEP, glass PTZ, keyboard, touch, mobile-first. */
 (() => {
   const state = {
     cameras: [],
     settings: {},
+    go2rtc: {},
     selectedId: null,
     solo: false,
-    players: new Map(), // camId -> { pc, video, tile, retry, zoom, panX, panY, dragging }
+    players: new Map(),
     dragging: null,
+    sidebarOpen: false,
   };
 
-  const $ = (s, r = document) => r.querySelector(s);
+  const $  = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
   // -------- API --------
@@ -26,17 +28,20 @@
     clearTimeout(toast._t); toast._t = setTimeout(()=>t.classList.add("hidden"), 2600);
   };
 
-  // -------- Load initial state --------
+  const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+  // -------- Init --------
   async function init(){
-    document.documentElement.dataset.theme = "dark";
     try {
       const cfg = await api.get("/api/config");
       state.settings = cfg.app;
+      state.go2rtc  = cfg.go2rtc || {};
       state.cameras = cfg.cameras || [];
       applySettings();
       renderSidebar(); renderGrid();
       updateStatus();
       registerSW();
+      wireKeyboard();
     } catch (e) { toast("Yapılandırma yüklenemedi: " + e.message, "err"); }
     setInterval(updateStatus, 5000);
   }
@@ -45,7 +50,6 @@
     document.documentElement.dataset.theme = state.settings.theme || "dark";
     const cols = Math.max(1, Math.min(8, parseInt(state.settings.grid_columns || 3)));
     $("#grid").style.setProperty("--cols", cols);
-    $("#grid-cols").value = String(cols);
   }
 
   async function updateStatus(){
@@ -58,6 +62,16 @@
   }
 
   // -------- Sidebar --------
+  function openSidebar(){ state.sidebarOpen = true;
+    $("#sidebar").classList.remove("hidden"); $("#sidebar-backdrop").classList.remove("hidden"); }
+  function closeSidebar(){ state.sidebarOpen = false;
+    $("#sidebar").classList.add("hidden"); $("#sidebar-backdrop").classList.add("hidden"); }
+  function toggleSidebar(){ state.sidebarOpen ? closeSidebar() : openSidebar(); }
+
+  $("#fab-menu").addEventListener("click", toggleSidebar);
+  $("#btn-close-sidebar").addEventListener("click", closeSidebar);
+  $("#sidebar-backdrop").addEventListener("click", closeSidebar);
+
   function renderSidebar(){
     const list = $("#camera-list"); list.innerHTML = "";
     const q = ($("#search-input").value || "").toLowerCase();
@@ -69,7 +83,7 @@
       el.innerHTML = `<span class="grip">⋮⋮</span>
         <span class="name">${escapeHtml(cam.name)}</span>
         <span class="st" data-st></span>`;
-      el.addEventListener("click", () => selectCamera(cam.id));
+      el.addEventListener("click", () => { selectCamera(cam.id); if (window.innerWidth < 720) closeSidebar(); });
       el.addEventListener("dblclick", () => { selectCamera(cam.id); openEdit(cam); });
       wireDrag(el);
       list.appendChild(el);
@@ -86,24 +100,27 @@
       else if (p.state === "err") st.classList.add("err");
       else st.classList.add("connecting");
     });
+    // also tile badge dots
+    $$(".tile").forEach(t => {
+      const dot = t.querySelector(".badge .dot"); if (!dot) return;
+      dot.className = "dot";
+      const p = state.players.get(t.dataset.id); if (!p) return;
+      if (p.state === "live") dot.classList.add("live");
+      else if (p.state === "err") dot.classList.add("err");
+      else dot.classList.add("connecting");
+    });
   }
 
-  function escapeHtml(s){return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
-
-  // -------- Drag & drop reordering --------
+  // -------- Drag & drop reorder --------
   function wireDrag(el){
     el.addEventListener("dragstart", (e) => {
       state.dragging = el.dataset.id;
       el.classList.add("dragging");
       e.dataTransfer.effectAllowed = "move";
-      // Custom preview
       const preview = el.cloneNode(true);
       preview.classList.add("drag-preview");
-      preview.style.top = e.clientY + "px";
-      preview.style.left = e.clientX + "px";
-      document.body.appendChild(preview);
-      state._preview = preview;
-      // Empty ghost
+      preview.style.top = e.clientY + "px"; preview.style.left = e.clientX + "px";
+      document.body.appendChild(preview); state._preview = preview;
       const img = new Image(); img.src = "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=";
       e.dataTransfer.setDragImage(img, 0, 0);
     });
@@ -135,30 +152,31 @@
 
   // -------- Grid --------
   function renderGrid(){
+    // Stop old players first
+    for (const id of Array.from(state.players.keys())) stopPlayer(id);
+
     const grid = $("#grid"); grid.innerHTML = "";
     grid.classList.toggle("solo", state.solo);
     const cams = state.cameras;
     if (cams.length === 0){
-      grid.innerHTML = `<div class="center-msg" style="padding:2rem;color:var(--muted)">Henüz kamera yok. Sol alttan "+ Kamera Ekle" ile başlayın.</div>`;
+      grid.innerHTML = `<div class="tile empty"><div class="center-msg">
+        Henüz kamera yok. Menüden (<b>B</b>) "+ Kamera" ile ekleyin.
+      </div></div>`;
       return;
     }
     cams.forEach(cam => {
       const tile = document.createElement("div");
       tile.className = "tile" + (cam.id === state.selectedId ? " selected" : "");
       tile.dataset.id = cam.id;
+      const showName = state.settings.show_camera_names !== false;
+      const showBadge = state.settings.show_status_badges !== false;
       tile.innerHTML = `
         <video autoplay playsinline muted></video>
+        ${(showName || showBadge) ? `<div class="badge">
+          ${showBadge ? '<span class="dot"></span>' : ''}
+          ${showName  ? `<span class="name">${escapeHtml(cam.name)}</span>` : ''}
+        </div>` : ''}
         <div class="zoom-info" style="display:none">1.0×</div>
-        <div class="overlay">
-          <div class="hdr">
-            <span class="name">${escapeHtml(cam.name)}</span>
-            <span class="badge" data-badge>bağlanıyor…</span>
-          </div>
-          <div class="foot">
-            <span class="ptz-indicator">${cam.ptz_enabled ? "PTZ" : ""}</span>
-            <span class="hint">çift tık: tam ekran • tekerlek: zoom</span>
-          </div>
-        </div>
         <div class="center-msg" data-msg></div>
       `;
       wireTile(tile, cam);
@@ -170,53 +188,43 @@
   }
 
   function wireTile(tile, cam){
-    tile.addEventListener("click", (e) => {
-      if (e.target.closest(".zoom-info")) return;
-      selectCamera(cam.id);
-    });
+    let lastTap = 0;
+    tile.addEventListener("click", () => selectCamera(cam.id));
     tile.addEventListener("dblclick", () => toggleSolo(cam.id));
+    // touch double-tap
+    tile.addEventListener("touchend", (e) => {
+      const now = Date.now();
+      if (now - lastTap < 300) { toggleSolo(cam.id); e.preventDefault(); }
+      lastTap = now;
+    });
 
     // Cursor-centered wheel zoom
     tile.addEventListener("wheel", (e) => {
       e.preventDefault();
       const p = state.players.get(cam.id); if (!p) return;
-      const video = p.video;
-      const rect = video.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-      const oldZ = p.zoom || 1;
-      const dir = e.deltaY < 0 ? 1 : -1;
-      const factor = dir > 0 ? 1.15 : 1/1.15;
-      let newZ = Math.max(1, Math.min(8, oldZ * factor));
-      // Keep the point under cursor stable
-      // videoX = (mx - panX) / oldZ; want panX' so (mx - panX')/newZ = videoX
-      const videoX = (mx - (p.panX||0)) / oldZ;
-      const videoY = (my - (p.panY||0)) / oldZ;
-      p.panX = mx - videoX * newZ;
-      p.panY = my - videoY * newZ;
-      p.zoom = newZ;
-      clampPan(p, rect);
-      applyTransform(p);
-      showZoom(tile, newZ);
+      const rect = p.video.getBoundingClientRect();
+      applyZoom(p, e.clientX - rect.left, e.clientY - rect.top,
+                e.deltaY < 0 ? 1.15 : 1/1.15, rect);
+      showZoom(tile, p.zoom);
     }, { passive: false });
 
-    // Drag to pan when zoomed
+    // Mouse drag pan
     let dragStart = null;
     tile.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
       const p = state.players.get(cam.id); if (!p || (p.zoom||1) <= 1) return;
-      dragStart = { x: e.clientX, y: e.clientY, panX: p.panX||0, panY: p.panY||0 };
+      dragStart = { x: e.clientX, y: e.clientY, panX: p.panX||0, panY: p.panY||0, p };
       tile.style.cursor = "grabbing";
     });
     window.addEventListener("mousemove", (e) => {
       if (!dragStart) return;
-      const p = state.players.get(cam.id); if (!p) return;
+      const p = dragStart.p;
       p.panX = dragStart.panX + (e.clientX - dragStart.x);
       p.panY = dragStart.panY + (e.clientY - dragStart.y);
       clampPan(p, p.video.getBoundingClientRect());
       applyTransform(p);
     });
-    window.addEventListener("mouseup", () => { if (dragStart) { dragStart = null; tile.style.cursor = ""; } });
+    window.addEventListener("mouseup", () => { if (dragStart) { dragStart.p.video.parentElement.style.cursor = ""; dragStart = null; } });
 
     // Right click resets zoom
     tile.addEventListener("contextmenu", (e) => {
@@ -226,15 +234,69 @@
       applyTransform(p);
       showZoom(tile, 1);
     });
+
+    // Touch: pinch-zoom + one-finger pan
+    let touch = null;
+    tile.addEventListener("touchstart", (e) => {
+      const p = state.players.get(cam.id); if (!p) return;
+      if (e.touches.length === 2){
+        const [a,b] = e.touches;
+        touch = { mode:"pinch", p, startDist: Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY),
+          startZoom: p.zoom||1, cx: (a.clientX+b.clientX)/2, cy: (a.clientY+b.clientY)/2 };
+      } else if (e.touches.length === 1 && (p.zoom||1) > 1){
+        const t0 = e.touches[0];
+        touch = { mode:"pan", p, x0:t0.clientX, y0:t0.clientY, panX:p.panX||0, panY:p.panY||0 };
+      }
+    }, { passive: true });
+    tile.addEventListener("touchmove", (e) => {
+      if (!touch) return;
+      if (touch.mode === "pinch" && e.touches.length === 2){
+        const [a,b] = e.touches;
+        const dist = Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+        const factor = (dist / touch.startDist);
+        const rect = touch.p.video.getBoundingClientRect();
+        const newZ = Math.max(1, Math.min(8, touch.startZoom * factor));
+        // approximate cursor-centered: use the pinch midpoint
+        const mx = touch.cx - rect.left, my = touch.cy - rect.top;
+        const oldZ = touch.p.zoom || 1;
+        const videoX = (mx - (touch.p.panX||0)) / oldZ;
+        const videoY = (my - (touch.p.panY||0)) / oldZ;
+        touch.p.panX = mx - videoX * newZ;
+        touch.p.panY = my - videoY * newZ;
+        touch.p.zoom = newZ;
+        clampPan(touch.p, rect); applyTransform(touch.p);
+        showZoom(tile, newZ);
+        e.preventDefault();
+      } else if (touch.mode === "pan" && e.touches.length === 1){
+        const t0 = e.touches[0];
+        touch.p.panX = touch.panX + (t0.clientX - touch.x0);
+        touch.p.panY = touch.panY + (t0.clientY - touch.y0);
+        clampPan(touch.p, touch.p.video.getBoundingClientRect());
+        applyTransform(touch.p);
+        e.preventDefault();
+      }
+    }, { passive: false });
+    tile.addEventListener("touchend", () => { touch = null; });
+  }
+
+  function applyZoom(p, mx, my, factor, rect){
+    const oldZ = p.zoom || 1;
+    const newZ = Math.max(1, Math.min(8, oldZ * factor));
+    const videoX = (mx - (p.panX||0)) / oldZ;
+    const videoY = (my - (p.panY||0)) / oldZ;
+    p.panX = mx - videoX * newZ;
+    p.panY = my - videoY * newZ;
+    p.zoom = newZ;
+    clampPan(p, rect);
+    applyTransform(p);
   }
 
   function clampPan(p, rect){
     const z = p.zoom || 1;
-    const maxX = 0, maxY = 0;
     const minX = rect.width - rect.width * z;
     const minY = rect.height - rect.height * z;
-    p.panX = Math.min(maxX, Math.max(minX, p.panX || 0));
-    p.panY = Math.min(maxY, Math.max(minY, p.panY || 0));
+    p.panX = Math.min(0, Math.max(minX, p.panX || 0));
+    p.panY = Math.min(0, Math.max(minY, p.panY || 0));
   }
 
   function applyTransform(p){
@@ -243,7 +305,7 @@
   }
 
   function showZoom(tile, z){
-    const zi = tile.querySelector(".zoom-info");
+    const zi = tile.querySelector(".zoom-info"); if (!zi) return;
     zi.style.display = z > 1.001 ? "block" : "none";
     zi.textContent = z.toFixed(1) + "×";
   }
@@ -251,54 +313,41 @@
   // -------- WebRTC (WHEP through go2rtc) --------
   async function startPlayer(cam, tile){
     const video = tile.querySelector("video");
-    const badge = tile.querySelector("[data-badge]");
-    const msg = tile.querySelector("[data-msg]");
+    const msg   = tile.querySelector("[data-msg]");
     stopPlayer(cam.id);
     const p = { video, tile, state: "connecting", zoom: 1, panX: 0, panY: 0, retryCount: 0 };
     state.players.set(cam.id, p);
-    badge.textContent = "bağlanıyor…";
-    msg.textContent = "";
+    if (msg) msg.textContent = "Bağlanıyor…";
     try {
       const pc = new RTCPeerConnection({ iceServers: [] });
       p.pc = pc;
       pc.addTransceiver("video", { direction: "recvonly" });
       pc.addTransceiver("audio", { direction: "recvonly" });
-      pc.ontrack = (ev) => {
-        if (video.srcObject !== ev.streams[0]) {
-          video.srcObject = ev.streams[0];
-        }
-      };
+      pc.ontrack = (ev) => { if (video.srcObject !== ev.streams[0]) video.srcObject = ev.streams[0]; };
       pc.oniceconnectionstatechange = () => {
-        if (["failed", "disconnected", "closed"].includes(pc.iceConnectionState)) {
-          p.state = "err"; badge.textContent = "kopuk"; msg.textContent = "Bağlantı koptu";
-          refreshStatusDots();
-          maybeReconnect(cam, tile);
+        if (["failed","disconnected","closed"].includes(pc.iceConnectionState)) {
+          p.state = "err"; if (msg) msg.textContent = "Bağlantı koptu";
+          refreshStatusDots(); maybeReconnect(cam, tile);
         } else if (pc.iceConnectionState === "connected") {
-          p.state = "live"; badge.textContent = "canlı"; msg.textContent = "";
+          p.state = "live"; if (msg) msg.textContent = "";
           refreshStatusDots();
         }
       };
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-
       const url = `/go2rtc/api/webrtc?src=${encodeURIComponent(cam.stream || cam.id)}`;
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/sdp" },
-        body: offer.sdp,
-      });
+      const resp = await fetch(url, { method:"POST", headers:{"Content-Type":"application/sdp"}, body: offer.sdp });
       if (!resp.ok) throw new Error("WHEP HTTP " + resp.status);
       const answerSdp = await resp.text();
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      await pc.setRemoteDescription({ type:"answer", sdp: answerSdp });
     } catch (e) {
-      p.state = "err"; badge.textContent = "hata"; msg.textContent = e.message;
-      refreshStatusDots();
-      maybeReconnect(cam, tile);
+      p.state = "err"; if (msg) msg.textContent = e.message;
+      refreshStatusDots(); maybeReconnect(cam, tile);
     }
   }
 
   function maybeReconnect(cam, tile){
-    if (!state.settings.auto_reconnect) return;
+    if (state.settings.auto_reconnect === false) return;
     const p = state.players.get(cam.id); if (!p) return;
     p.retryCount = (p.retryCount || 0) + 1;
     const delay = Math.min(30000, (state.settings.reconnect_delay_ms || 3000) * Math.min(4, p.retryCount));
@@ -313,7 +362,7 @@
     state.players.delete(id);
   }
 
-  // -------- Selection & solo --------
+  // -------- Selection / solo --------
   function selectCamera(id){
     state.selectedId = id;
     $$("#camera-list .cam-item").forEach(el => el.classList.toggle("active", el.dataset.id === id));
@@ -329,63 +378,84 @@
     updatePtzPanel();
   }
 
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && state.solo){ state.solo = false; $("#grid").classList.remove("solo"); }
-  });
+  function exitSolo(){ state.solo = false; $("#grid").classList.remove("solo"); }
 
-  $("#btn-all-grid").addEventListener("click", () => { state.solo = false; $("#grid").classList.remove("solo"); });
-  $("#btn-fullscreen").addEventListener("click", () => {
+  function toggleFullscreen(){
     if (document.fullscreenElement) document.exitFullscreen();
-    else document.documentElement.requestFullscreen();
-  });
+    else document.documentElement.requestFullscreen({ navigationUI:"hide" }).catch(()=>{});
+  }
+
+  $("#btn-all-grid").addEventListener("click", () => { exitSolo(); closeSidebar(); });
+  $("#btn-fullscreen").addEventListener("click", () => { toggleFullscreen(); closeSidebar(); });
+
+  // -------- Keyboard --------
+  function wireKeyboard(){
+    document.addEventListener("keydown", (e) => {
+      const inField = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target||{}).tagName);
+      if (inField) return;
+      const k = e.key.toLowerCase();
+      if (k === "escape"){ if (state.solo) exitSolo(); else if (state.sidebarOpen) closeSidebar(); return; }
+      if (k === "b" || k === "tab"){ e.preventDefault(); toggleSidebar(); return; }
+      if (k === "f"){ e.preventDefault(); toggleFullscreen(); return; }
+      if (k === "g"){ exitSolo(); return; }
+      if (/^[1-8]$/.test(e.key)){
+        const n = parseInt(e.key);
+        state.settings.grid_columns = n;
+        $("#grid").style.setProperty("--cols", n);
+        api.post("/api/settings", { grid_columns: n }).catch(()=>{});
+      }
+    });
+  }
 
   // -------- PTZ panel --------
   function updatePtzPanel(){
     const cam = state.cameras.find(c => c.id === state.selectedId);
     const panel = $("#ptz-panel");
-    if (cam && cam.ptz_enabled){
-      panel.classList.remove("hidden");
-      loadPresets(cam);
-    } else panel.classList.add("hidden");
+    if (cam && cam.ptz_enabled){ panel.classList.remove("hidden"); loadPresets(cam); }
+    else panel.classList.add("hidden");
   }
 
   async function loadPresets(cam){
     try {
       const presets = await api.get(`/api/ptz/${cam.id}/presets`);
       const sel = $("#ptz-preset-select");
-      sel.innerHTML = `<option value="">Preset...</option>` +
+      sel.innerHTML = `<option value="">Preset</option>` +
         (Array.isArray(presets) ? presets.map(p => `<option value="${escapeHtml(p.token)}">${escapeHtml(p.name || p.token)}</option>`).join("") : "");
     } catch {}
   }
 
   const DIRS = {
-    up: [0, 0.5, 0], down: [0, -0.5, 0], left: [-0.5, 0, 0], right: [0.5, 0, 0],
-    upleft: [-0.4, 0.4, 0], upright: [0.4, 0.4, 0], downleft: [-0.4, -0.4, 0], downright: [0.4, -0.4, 0],
-    "zoom-in": [0, 0, 0.5], "zoom-out": [0, 0, -0.5], home: null,
+    up:[0,0.5,0], down:[0,-0.5,0], left:[-0.5,0,0], right:[0.5,0,0],
+    upleft:[-0.4,0.4,0], upright:[0.4,0.4,0], downleft:[-0.4,-0.4,0], downright:[0.4,-0.4,0],
+    "zoom-in":[0,0,0.5], "zoom-out":[0,0,-0.5], home:null,
   };
 
-  $$("#ptz-panel .ptz-pad button, #ptz-panel .ptz-zoom button").forEach(btn => {
+  $$("#ptz-panel .ptz-pad button, #ptz-panel .ptz-side button[data-dir]").forEach(btn => {
     let holding = false, timer = null;
     const fire = () => {
       const cam = state.cameras.find(c => c.id === state.selectedId); if (!cam) return;
       const d = btn.dataset.dir;
-      if (d === "home"){ api.post(`/api/ptz/${cam.id}/stop`); return; }
+      if (d === "home"){ api.post(`/api/ptz/${cam.id}/stop`).catch(()=>{}); return; }
       const v = DIRS[d]; if (!v) return;
-      api.post(`/api/ptz/${cam.id}/move`, { pan: v[0], tilt: v[1], zoom: v[2], timeout: 0.5 })
-        .catch(e => toast("PTZ hata: " + e.message, "err"));
+      api.post(`/api/ptz/${cam.id}/move`, { pan:v[0], tilt:v[1], zoom:v[2], timeout:0.5 })
+         .catch(e => toast("PTZ hata: " + e.message, "err"));
     };
-    btn.addEventListener("mousedown", () => { holding = true; fire(); timer = setInterval(() => holding && fire(), 400); });
+    const start = (e) => { e.preventDefault(); holding = true; fire();
+      timer = setInterval(() => holding && fire(), 400); };
     const stop = () => { holding = false; clearInterval(timer);
       const cam = state.cameras.find(c => c.id === state.selectedId);
       if (cam) api.post(`/api/ptz/${cam.id}/stop`).catch(()=>{}); };
-    btn.addEventListener("mouseup", stop); btn.addEventListener("mouseleave", stop);
-    btn.addEventListener("touchend", stop);
+    btn.addEventListener("mousedown", start); btn.addEventListener("mouseup", stop);
+    btn.addEventListener("mouseleave", stop);
+    btn.addEventListener("touchstart", start, { passive:false });
+    btn.addEventListener("touchend", stop); btn.addEventListener("touchcancel", stop);
   });
 
-  $("#ptz-preset-go").addEventListener("click", () => {
+  $("#ptz-preset-select").addEventListener("change", (e) => {
     const cam = state.cameras.find(c => c.id === state.selectedId);
-    const tok = $("#ptz-preset-select").value;
-    if (cam && tok) api.post(`/api/ptz/${cam.id}/preset/${encodeURIComponent(tok)}`);
+    const tok = e.target.value;
+    if (cam && tok) api.post(`/api/ptz/${cam.id}/preset/${encodeURIComponent(tok)}`).catch(()=>{});
+    e.target.value = "";
   });
 
   // -------- Camera modal --------
@@ -393,7 +463,7 @@
   const form = $("#camera-form");
   const delBtn = $("#btn-delete");
 
-  $("#btn-add-camera").addEventListener("click", () => openEdit(null));
+  $("#btn-add-camera").addEventListener("click", () => { closeSidebar(); openEdit(null); });
   $$("[data-close]").forEach(b => b.addEventListener("click", () => modal.classList.add("hidden")));
   modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
 
@@ -404,10 +474,8 @@
       const streams = await api.get("/api/go2rtc/streams");
       const opts = ['<option value="">— seçin —</option>']
         .concat((streams || []).map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`));
-      // Ensure current value stays selectable even if not returned
-      if (selected && !streams.includes(selected)) {
+      if (selected && !streams.includes(selected))
         opts.push(`<option value="${escapeHtml(selected)}">${escapeHtml(selected)} (mevcut)</option>`);
-      }
       sel.innerHTML = opts.join("");
       if (selected) sel.value = selected;
     } catch {
@@ -476,6 +544,7 @@
   // -------- Settings --------
   const sModal = $("#settings-backdrop");
   $("#btn-settings").addEventListener("click", async () => {
+    closeSidebar();
     $("#s-grid-cols").value = state.settings.grid_columns || 3;
     $("#s-theme").value = state.settings.theme || "dark";
     $("#s-show-names").checked = state.settings.show_camera_names !== false;
@@ -507,27 +576,18 @@
         api_port: parseInt($("#s-g2-port").value || 1984),
       });
       applySettings();
+      renderGrid();
       sModal.classList.add("hidden");
       toast("Ayarlar kaydedildi", "ok");
       updateStatus();
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
   });
 
-  $("#grid-cols").addEventListener("change", async (e) => {
-    const v = parseInt(e.target.value);
-    state.settings.grid_columns = v;
-    $("#grid").style.setProperty("--cols", v);
-    try { await api.post("/api/settings", { grid_columns: v }); } catch {}
-  });
-
   $("#search-input").addEventListener("input", renderSidebar);
-  $("#toggle-sidebar").addEventListener("click", () => document.body.classList.toggle("sidebar-collapsed"));
 
   // -------- PWA --------
   function registerSW(){
-    if ("serviceWorker" in navigator){
-      navigator.serviceWorker.register("/sw.js").catch(()=>{});
-    }
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(()=>{});
   }
 
   init();

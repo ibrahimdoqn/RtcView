@@ -2,8 +2,11 @@
 <html lang="tr">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
 <meta name="theme-color" content="#0e1116" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>RtcView</title>
 <link rel="manifest" href="/manifest.webmanifest" />
 <link rel="icon" href="/static/icons/icon-192.png" />
@@ -11,68 +14,58 @@
 <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 <body>
-  <aside id="sidebar" class="sidebar">
+  <!-- Grid takes the whole screen. Sidebar and controls float on top. -->
+  <section id="grid" class="grid"></section>
+
+  <!-- Floating action button (bottom-left): opens sidebar / menu -->
+  <button id="fab-menu" class="fab fab-tl" title="Menü (B)">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>
+    </svg>
+  </button>
+
+  <!-- Sidebar overlay -->
+  <aside id="sidebar" class="sidebar hidden">
     <div class="brand">
       <div class="logo">▣</div>
       <div class="title">RtcView</div>
-      <button id="toggle-sidebar" class="icon-btn" title="Menüyü gizle/göster">☰</button>
+      <button id="btn-close-sidebar" class="icon-btn" title="Kapat (B)">✕</button>
     </div>
     <div class="search">
       <input id="search-input" type="text" placeholder="Kamera ara..." />
     </div>
     <div id="camera-list" class="camera-list"></div>
     <div class="sidebar-footer">
-      <button id="btn-add-camera" class="btn primary">+ Kamera Ekle</button>
+      <button id="btn-add-camera" class="btn primary">+ Kamera</button>
+      <button id="btn-all-grid" class="btn ghost" title="Tüm ızgara (G)">▤</button>
+      <button id="btn-fullscreen" class="btn ghost" title="Tam ekran (F)">⛶</button>
       <button id="btn-settings" class="btn ghost" title="Ayarlar">⚙</button>
     </div>
+    <div class="sidebar-status">
+      <span id="status-indicator" class="status">
+        <span class="dot"></span><span id="status-text">Bağlanıyor...</span>
+      </span>
+    </div>
   </aside>
+  <div id="sidebar-backdrop" class="sidebar-backdrop hidden"></div>
 
-  <main id="main" class="main">
-    <header class="topbar">
-      <div class="left">
-        <button id="btn-all-grid" class="btn ghost">▤ Tüm Izgara</button>
-        <button id="btn-fullscreen" class="btn ghost">⛶ Tam Ekran</button>
-      </div>
-      <div class="center">
-        <div id="status-indicator" class="status">
-          <span class="dot"></span><span id="status-text">Bağlanıyor...</span>
-        </div>
-      </div>
-      <div class="right">
-        <label class="cols">Sütun
-          <select id="grid-cols">
-            <option>1</option><option>2</option><option selected>3</option><option>4</option>
-            <option>5</option><option>6</option><option>7</option><option>8</option>
-          </select>
-        </label>
-      </div>
-    </header>
-
-    <section id="grid" class="grid"></section>
-  </main>
-
-  <!-- PTZ overlay for the selected camera -->
-  <div id="ptz-panel" class="ptz-panel hidden">
-    <div class="ptz-title">PTZ</div>
+  <!-- Floating PTZ glass panel (bottom center of selected camera) -->
+  <div id="ptz-panel" class="ptz-glass hidden">
     <div class="ptz-pad">
-      <button data-dir="upleft">↖</button>
-      <button data-dir="up">↑</button>
-      <button data-dir="upright">↗</button>
-      <button data-dir="left">←</button>
-      <button data-dir="home" class="home">●</button>
-      <button data-dir="right">→</button>
-      <button data-dir="downleft">↙</button>
-      <button data-dir="down">↓</button>
-      <button data-dir="downright">↘</button>
+      <button data-dir="upleft" aria-label="↖">↖</button>
+      <button data-dir="up" aria-label="↑">↑</button>
+      <button data-dir="upright" aria-label="↗">↗</button>
+      <button data-dir="left" aria-label="←">←</button>
+      <button data-dir="home" class="home" aria-label="stop">■</button>
+      <button data-dir="right" aria-label="→">→</button>
+      <button data-dir="downleft" aria-label="↙">↙</button>
+      <button data-dir="down" aria-label="↓">↓</button>
+      <button data-dir="downright" aria-label="↘">↘</button>
     </div>
-    <div class="ptz-zoom">
-      <button data-dir="zoom-in">+</button>
-      <span>Zoom</span>
-      <button data-dir="zoom-out">−</button>
-    </div>
-    <div class="ptz-presets">
-      <select id="ptz-preset-select"><option value="">Preset...</option></select>
-      <button id="ptz-preset-go" class="btn small">Git</button>
+    <div class="ptz-side">
+      <button data-dir="zoom-in" aria-label="Zoom+">+</button>
+      <button data-dir="zoom-out" aria-label="Zoom-">−</button>
+      <select id="ptz-preset-select" title="Preset"><option value="">Preset</option></select>
     </div>
   </div>
 
@@ -93,7 +86,7 @@
             <select name="stream" id="stream-select" style="flex:1;"></select>
             <button type="button" id="btn-refresh-streams" class="btn ghost small" title="Yenile">↻</button>
           </div>
-          <small style="color:var(--muted)">go2rtc.yaml içindeki stream adı. Boşsa go2rtc'ye erişilemiyor olabilir.</small>
+          <small>go2rtc.yaml içindeki stream adı.</small>
         </label>
         <fieldset>
           <legend>PTZ (ONVIF) – isteğe bağlı</legend>
@@ -102,8 +95,8 @@
           <div class="grid2">
             <label>Port <input type="number" name="onvif_port" value="80" /></label>
             <label>Kullanıcı <input name="onvif_user" /></label>
-            <label>Parola <input type="password" name="onvif_pass" /></label>
           </div>
+          <label>Parola <input type="password" name="onvif_pass" /></label>
         </fieldset>
         <div class="modal-actions">
           <button type="button" class="btn ghost" data-close>İptal</button>
@@ -141,6 +134,15 @@
             <label>API Port <input id="s-g2-port" type="number" placeholder="1984" /></label>
           </div>
         </fieldset>
+        <details><summary>Klavye kısayolları</summary>
+          <ul class="kbd-list">
+            <li><kbd>B</kbd> menü aç/kapat</li>
+            <li><kbd>F</kbd> tam ekran</li>
+            <li><kbd>G</kbd> / <kbd>Esc</kbd> ızgaraya dön</li>
+            <li><kbd>1</kbd>–<kbd>8</kbd> sütun sayısı</li>
+            <li>Sağ tık: zoom sıfırla • Çift tık: solo</li>
+          </ul>
+        </details>
         <div class="modal-actions">
           <button type="button" class="btn ghost" data-close-settings>Kapat</button>
           <button type="button" id="s-save" class="btn primary">Kaydet</button>
