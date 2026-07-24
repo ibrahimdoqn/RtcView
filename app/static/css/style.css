@@ -392,8 +392,8 @@ kbd{
     grid-template-columns:1fr!important;
     grid-auto-rows:auto!important;
     overflow-y:auto;overflow-x:hidden;
-    padding:6px;gap:6px;
-    padding-top:calc(6px + var(--safe-t));
+    padding:10px;gap:10px;
+    padding-top:calc(10px + var(--safe-t));
     padding-bottom:calc(90px + var(--safe-b)); /* room for FAB */
     -webkit-overflow-scrolling:touch;
   }

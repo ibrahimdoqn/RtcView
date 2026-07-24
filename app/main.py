@@ -38,9 +38,21 @@ def create_app(config_path: str) -> Flask:
     app.config["GO2RTC"] = go2rtc
 
     # ---------- Pages ----------
+    def _asset_version():
+        # Bust CSS/JS caches whenever any static asset changes.
+        try:
+            base = Path(app.static_folder)
+            latest = max(
+                (p.stat().st_mtime for p in base.rglob("*") if p.is_file()),
+                default=0,
+            )
+            return str(int(latest))
+        except Exception:
+            return "0"
+
     @app.route("/")
     def index():
-        return render_template("index.html")
+        return render_template("index.html", asset_version=_asset_version())
 
     @app.route("/manifest.webmanifest")
     def manifest():

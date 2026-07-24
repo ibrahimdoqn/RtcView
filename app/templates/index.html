@@ -11,7 +11,7 @@
 <link rel="manifest" href="/manifest.webmanifest" />
 <link rel="icon" href="/static/icons/icon-192.png" />
 <link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
-<link rel="stylesheet" href="/static/css/style.css" />
+<link rel="stylesheet" href="/static/css/style.css?v={{ asset_version }}" />
 </head>
 <body>
   <!-- Grid takes the whole screen. Sidebar and controls float on top. -->
@@ -198,6 +198,6 @@
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/static/js/app.js" defer></script>
+  <script src="/static/js/app.js?v={{ asset_version }}" defer></script>
 </body>
 </html>

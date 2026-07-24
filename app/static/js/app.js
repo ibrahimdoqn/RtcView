@@ -375,15 +375,26 @@
       pc.addTransceiver("video", { direction: "recvonly" });
       pc.addTransceiver("audio", { direction: "recvonly" });
       pc.ontrack = (ev) => { if (video.srcObject !== ev.streams[0]) video.srcObject = ev.streams[0]; };
-      // Adapt tile aspect to the actual stream ratio so nothing is cropped or letterboxed.
-      video.addEventListener("loadedmetadata", () => {
+      // Size the tile to the stream's actual aspect ratio so the frame is
+      // never cropped and never letterboxed. Sets `aspect-ratio` AND
+      // measures/writes an explicit height for browsers where the property
+      // does not fully constrain a grid item.
+      const sizeToVideo = () => {
         const w = video.videoWidth, h = video.videoHeight;
-        if (w > 0 && h > 0){
-          const ar = Math.max(0.5, Math.min(3.5, w / h)); // sanity clamp
-          tile.style.aspectRatio = String(ar);
-          tile.dataset.ratio = ar.toFixed(3);
+        if (!w || !h) return;
+        const ar = Math.max(0.5, Math.min(3.5, w / h));
+        tile.style.aspectRatio = String(ar);
+        tile.dataset.ratio = ar.toFixed(3);
+        if (isMobile()){
+          const tileW = tile.getBoundingClientRect().width;
+          if (tileW > 0) tile.style.height = Math.round(tileW / ar) + "px";
+        } else {
+          tile.style.height = ""; // let grid rows govern on desktop
         }
-      });
+      };
+      video.addEventListener("loadedmetadata", sizeToVideo);
+      video.addEventListener("resize", sizeToVideo);
+      p.sizeToVideo = sizeToVideo;
       pc.oniceconnectionstatechange = () => {
         if (["failed","disconnected","closed"].includes(pc.iceConnectionState)) {
           p.state = "err"; if (msg) msg.textContent = "Bağlantı koptu";
@@ -725,9 +736,26 @@
 
   $("#search-input").addEventListener("input", renderSidebar);
 
+  // Re-fit tile heights on window resize / orientation change
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      state.players.forEach((p) => { if (p.sizeToVideo) p.sizeToVideo(); });
+    }, 120);
+  });
+
   // -------- PWA --------
   function registerSW(){
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(()=>{});
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.register("/sw.js").catch(()=>{});
+    // If the SW controller changes (new SW took over), reload once so
+    // the page also picks up any newly-cached / newly-served assets.
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloaded) return; reloaded = true;
+      window.location.reload();
+    });
   }
 
   init();
