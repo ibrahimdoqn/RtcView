@@ -51,9 +51,13 @@ input,select{font:inherit;color:inherit;}
   grid-auto-rows:1fr;
   overflow:hidden;
 }
-.grid.solo{grid-template-columns:1fr!important;grid-template-rows:1fr;padding:0;gap:0;}
+.grid.solo{grid-template-columns:1fr!important;grid-template-rows:1fr;padding:0;gap:0;
+  place-items:center;place-content:center;}
 .grid.solo .tile{display:none;aspect-ratio:auto!important;}
-.grid.solo .tile.selected{display:block;height:100%;border-radius:0;}
+.grid.solo .tile.selected{
+  display:block;width:100%!important;height:100%!important;
+  border-radius:0!important;margin:0!important;
+}
 
 .tile{
   position:relative;background:var(--tile-bg);
@@ -439,10 +443,14 @@ kbd{
   .ptz-side{gap:.5rem;}
   .ptz-side select{height:56px;min-width:110px;font-size:.9rem;border-radius:14px;}
 
-  /* Grid solo on mobile: tile fills viewport */
-  .grid.solo{overflow:hidden;padding:0;}
-  .grid.solo .tile{border-radius:0;aspect-ratio:auto!important;height:100dvh;}
-  .grid.solo .tile video{object-fit:contain;}
+  /* Grid solo on mobile: tile fills viewport, video fills the screen.
+     Cover crops horizontally so no wasted black bars; pinch-zoom + pan
+     to inspect any part; exit solo (Esc / G / double-tap / FAB) to see
+     the entire frame in the grid. */
+  .grid.solo{overflow:hidden;padding:0!important;padding-bottom:0!important;}
+  .grid.solo .tile{border-radius:0!important;aspect-ratio:auto!important;
+    height:100dvh!important;width:100vw!important;}
+  .grid.solo .tile video{object-fit:cover;}
 }
 
 /* Landscape phone: 2 columns, fill height */

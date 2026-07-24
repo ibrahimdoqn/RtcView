@@ -383,13 +383,21 @@
         const w = video.videoWidth, h = video.videoHeight;
         if (!w || !h) return;
         const ar = Math.max(0.5, Math.min(3.5, w / h));
+        // In solo mode, the CSS forces full-viewport dims — don't write
+        // inline sizes that would shrink the tile back to grid layout.
+        const isSoloTile = state.solo && tile.dataset.id === state.selectedId;
+        if (isSoloTile){
+          tile.style.height = "";
+          tile.style.aspectRatio = "";
+          return;
+        }
         tile.style.aspectRatio = String(ar);
         tile.dataset.ratio = ar.toFixed(3);
         if (isMobile()){
           const tileW = tile.getBoundingClientRect().width;
           if (tileW > 0) tile.style.height = Math.round(tileW / ar) + "px";
         } else {
-          tile.style.height = ""; // let grid rows govern on desktop
+          tile.style.height = "";
         }
       };
       video.addEventListener("loadedmetadata", sizeToVideo);
@@ -448,6 +456,20 @@
     const zi = p.tile.querySelector(".zoom-info"); if (zi) zi.style.display = "none";
   }
 
+  function applySoloSizing(){
+    // In solo, the tile must fill the whole viewport — remove any inline
+    // height/aspect-ratio JS wrote for the grid layout. Restore them on exit.
+    $$("#grid .tile").forEach(el => {
+      if (state.solo && el.dataset.id === state.selectedId){
+        el.style.height = "";
+        el.style.aspectRatio = "";
+      } else if (!state.solo){
+        const p = state.players.get(el.dataset.id);
+        if (p && p.sizeToVideo) p.sizeToVideo();
+      }
+    });
+  }
+
   function toggleSolo(id){
     // Reset zoom whenever a tile enters or leaves solo — otherwise the
     // scale-3× transform sized for a full-viewport tile puts the video
@@ -457,12 +479,14 @@
     else { state.selectedId = id; state.solo = true; }
     $("#grid").classList.toggle("solo", state.solo);
     $$("#grid .tile").forEach(el => el.classList.toggle("selected", el.dataset.id === state.selectedId));
+    applySoloSizing();
     updatePtzPanel();
   }
 
   function exitSolo(){
     if (state.selectedId) resetZoom(state.selectedId);
     state.solo = false; $("#grid").classList.remove("solo");
+    applySoloSizing();
   }
 
   function toggleFullscreen(){
