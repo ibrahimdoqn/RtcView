@@ -585,6 +585,21 @@ kbd{
 .tile .tile-actions button:hover{background:rgba(255,255,255,.16);}
 .tile .tile-actions button:active{transform:scale(0.9);}
 
+/* Transport-mode indicator: appears after the camera name in the badge,
+   so you can tell at a glance whether a tile is on WebRTC or MSE. */
+.tile[data-mode="mse"] .badge::after{
+  content:"MSE";
+  margin-left:.35rem;padding:.1rem .35rem;border-radius:5px;
+  background:rgba(255,214,10,.28);color:#ffd60a;
+  font-size:.62rem;font-weight:700;letter-spacing:.04em;
+}
+.tile[data-mode="webrtc"] .badge::after{
+  content:"RTC";
+  margin-left:.35rem;padding:.1rem .35rem;border-radius:5px;
+  background:rgba(48,209,88,.22);color:#30d158;
+  font-size:.62rem;font-weight:700;letter-spacing:.04em;
+}
+
 /* Sidebar mini rec status */
 .rec-status{color:var(--muted);font-size:.72rem;margin-left:.6rem;}
 .rec-status.on{color:#ff453a;font-weight:600;}

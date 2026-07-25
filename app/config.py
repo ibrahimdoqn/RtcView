@@ -31,12 +31,14 @@ DEFAULT_CONFIG = {
     "cameras": []
 }
 
-# Per-camera recording defaults merged when a camera is loaded.
+# Per-camera defaults merged when a camera is loaded (both recording and
+# transport options).
 CAMERA_RECORDING_DEFAULTS = {
     "record_mode": "off",          # off | always | schedule | manual
     "record_schedule": [],         # list of {"days":[0..6], "start":"HH:MM", "end":"HH:MM"}
     "record_audio": False,
     "retention_days_override": 0,  # 0 = use global
+    "stream_mode": "auto",         # auto | webrtc | mse — how the live tile plays
 }
 
 _lock = threading.Lock()

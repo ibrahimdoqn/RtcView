@@ -133,6 +133,14 @@
           </div>
           <small>go2rtc.yaml içindeki stream adı.</small>
         </label>
+        <label>Yayın modu
+          <select name="stream_mode">
+            <option value="auto">Otomatik (önce WebRTC, olmazsa MSE)</option>
+            <option value="webrtc">Sadece WebRTC (düşük gecikme)</option>
+            <option value="mse">Sadece MSE (H.265/PCM için)</option>
+          </select>
+          <small>go2rtc'de "MSE" yazan kameralar için "Sadece MSE" seçin.</small>
+        </label>
         <fieldset>
           <legend>PTZ (ONVIF) – isteğe bağlı</legend>
           <label class="row"><input type="checkbox" name="ptz_enabled" /> PTZ etkin</label>

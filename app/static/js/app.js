@@ -468,62 +468,242 @@
   }
 
 
-  // -------- WebRTC (WHEP through go2rtc) --------
+  // -------- Player (WHEP first, MSE fallback) --------
+  // go2rtc can serve a stream two ways depending on codec compatibility:
+  //   WebRTC (WHEP) — low latency, needs codecs the browser accepts in
+  //     WebRTC (H.264/VP8/VP9/AV1 video, Opus/G711 audio in a specific
+  //     shape). Some streams (H.265, PCM_alaw camera audio, etc.) fail
+  //     negotiation and go2rtc's own UI shows the source as "MSE".
+  //   MSE — fragmented MP4 over WebSocket, higher latency but supports
+  //     everything MP4 can carry.
+  // We try WHEP with a short timeout; on any failure fall back to MSE so
+  // no camera silently disappears.
+  const WHEP_TIMEOUT_MS = 6000;
+
+  function _wireSizeToVideo(p, cam, tile){
+    const video = p.video;
+    const sizeToVideo = () => {
+      const w = video.videoWidth, h = video.videoHeight;
+      if (!w || !h) return;
+      const ar = Math.max(0.5, Math.min(3.5, w / h));
+      const isSoloTile = state.solo && tile.dataset.id === state.selectedId;
+      if (isSoloTile){
+        tile.style.height = ""; tile.style.aspectRatio = ""; return;
+      }
+      tile.style.aspectRatio = String(ar);
+      tile.dataset.ratio = ar.toFixed(3);
+      if (isMobile()){
+        const tileW = tile.getBoundingClientRect().width;
+        if (tileW > 0) tile.style.height = Math.round(tileW / ar) + "px";
+      } else {
+        tile.style.height = "";
+      }
+    };
+    video.addEventListener("loadedmetadata", sizeToVideo);
+    video.addEventListener("resize", sizeToVideo);
+    p.sizeToVideo = sizeToVideo;
+  }
+
+  function _tileMode(tile, mode){
+    // Show the current transport as a small badge suffix; helps debug
+    // when a camera fell back and you can see why latency is higher.
+    tile.dataset.mode = mode || "";
+  }
+
   async function startPlayer(cam, tile){
     const video = tile.querySelector("video");
     const msg   = tile.querySelector("[data-msg]");
     stopPlayer(cam.id);
-    const p = { video, tile, state: "connecting", zoom: 1, panX: 0, panY: 0, retryCount: 0 };
+    const p = { video, tile, cam, state: "connecting", zoom: 1, panX: 0, panY: 0, retryCount: 0 };
     state.players.set(cam.id, p);
     if (msg) msg.textContent = "Bağlanıyor…";
-    try {
-      const pc = new RTCPeerConnection({ iceServers: [] });
-      p.pc = pc;
-      pc.addTransceiver("video", { direction: "recvonly" });
-      pc.addTransceiver("audio", { direction: "recvonly" });
-      pc.ontrack = (ev) => { if (video.srcObject !== ev.streams[0]) video.srcObject = ev.streams[0]; };
-      const sizeToVideo = () => {
-        const w = video.videoWidth, h = video.videoHeight;
-        if (!w || !h) return;
-        const ar = Math.max(0.5, Math.min(3.5, w / h));
-        const isSoloTile = state.solo && tile.dataset.id === state.selectedId;
-        if (isSoloTile){
-          tile.style.height = "";
-          tile.style.aspectRatio = "";
-          return;
-        }
-        tile.style.aspectRatio = String(ar);
-        tile.dataset.ratio = ar.toFixed(3);
-        if (isMobile()){
-          const tileW = tile.getBoundingClientRect().width;
-          if (tileW > 0) tile.style.height = Math.round(tileW / ar) + "px";
-        } else {
-          tile.style.height = "";
-        }
-      };
-      video.addEventListener("loadedmetadata", sizeToVideo);
-      video.addEventListener("resize", sizeToVideo);
-      p.sizeToVideo = sizeToVideo;
-      pc.oniceconnectionstatechange = () => {
-        if (["failed","disconnected","closed"].includes(pc.iceConnectionState)) {
-          p.state = "err"; if (msg) msg.textContent = "Bağlantı koptu";
-          refreshStatusDots(); maybeReconnect(cam, tile);
-        } else if (pc.iceConnectionState === "connected") {
-          p.state = "live"; if (msg) msg.textContent = "";
-          refreshStatusDots();
-        }
-      };
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      const url = `/go2rtc/api/webrtc?src=${encodeURIComponent(cam.stream || cam.id)}`;
-      const resp = await fetch(url, { method:"POST", headers:{"Content-Type":"application/sdp"}, body: offer.sdp });
-      if (!resp.ok) throw new Error("WHEP HTTP " + resp.status);
-      const answerSdp = await resp.text();
-      await pc.setRemoteDescription({ type:"answer", sdp: answerSdp });
-    } catch (e) {
-      p.state = "err"; if (msg) msg.textContent = e.message;
-      refreshStatusDots(); maybeReconnect(cam, tile);
+    _wireSizeToVideo(p, cam, tile);
+
+    const mode = (cam.stream_mode || "auto").toLowerCase();
+    // "mse" — skip WebRTC entirely.
+    if (mode === "mse"){
+      return _startMSE(cam, tile, p).catch(e => {
+        p.state = "err"; if (msg) msg.textContent = "MSE: " + e.message;
+        refreshStatusDots(); maybeReconnect(cam, tile);
+      });
     }
+
+    // "webrtc" or "auto" — attempt WHEP with timeout.
+    try {
+      await _startWHEP(cam, tile, p);
+      _tileMode(tile, "webrtc");
+    } catch (e) {
+      // Clean up half-open PC before falling back
+      try { p.pc && p.pc.close(); } catch {}
+      p.pc = null;
+      if (mode === "webrtc"){
+        p.state = "err"; if (msg) msg.textContent = "WebRTC: " + e.message;
+        refreshStatusDots(); maybeReconnect(cam, tile); return;
+      }
+      // Auto mode → try MSE
+      console.log(`[${cam.id}] WebRTC failed (${e.message}), falling back to MSE`);
+      if (msg) msg.textContent = "MSE'ye geçiliyor…";
+      try {
+        await _startMSE(cam, tile, p);
+        _tileMode(tile, "mse");
+      } catch (e2) {
+        p.state = "err";
+        if (msg) msg.textContent = "Bağlanamadı (WebRTC & MSE)";
+        refreshStatusDots(); maybeReconnect(cam, tile);
+      }
+    }
+  }
+
+  // ---------- WHEP (WebRTC) ----------
+  function _startWHEP(cam, tile, p){
+    return new Promise(async (resolve, reject) => {
+      const video = p.video;
+      const msg = tile.querySelector("[data-msg]");
+      let settled = false;
+      const done = (ok, err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        ok ? resolve() : reject(err);
+      };
+      const timer = setTimeout(() => done(false, new Error("timeout")), WHEP_TIMEOUT_MS);
+      try {
+        const pc = new RTCPeerConnection({ iceServers: [] });
+        p.pc = pc;
+        pc.addTransceiver("video", { direction: "recvonly" });
+        pc.addTransceiver("audio", { direction: "recvonly" });
+        pc.ontrack = (ev) => {
+          if (video.srcObject !== ev.streams[0]) video.srcObject = ev.streams[0];
+          // First track arriving = we're really live; resolve WHEP success.
+          done(true);
+        };
+        pc.oniceconnectionstatechange = () => {
+          if (["failed","disconnected","closed"].includes(pc.iceConnectionState)){
+            if (!settled) return done(false, new Error(pc.iceConnectionState));
+            p.state = "err"; if (msg) msg.textContent = "Bağlantı koptu";
+            refreshStatusDots(); maybeReconnect(cam, p.tile);
+          } else if (pc.iceConnectionState === "connected"){
+            p.state = "live"; if (msg) msg.textContent = "";
+            refreshStatusDots();
+          }
+        };
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        const url = `/go2rtc/api/webrtc?src=${encodeURIComponent(cam.stream || cam.id)}`;
+        const resp = await fetch(url, { method:"POST", headers:{"Content-Type":"application/sdp"}, body: offer.sdp });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const answerSdp = await resp.text();
+        await pc.setRemoteDescription({ type:"answer", sdp: answerSdp });
+        // Do NOT resolve here — wait for ontrack (real video). The timeout
+        // guard covers the "SDP fine but no track" case.
+      } catch (e) {
+        done(false, e);
+      }
+    });
+  }
+
+  // ---------- MSE (fragmented MP4 over WebSocket to go2rtc directly) ----------
+  // Flask/waitress doesn't proxy WebSocket, so the browser talks straight
+  // to go2rtc. If go2rtc.host is loopback (127.0.0.1 / localhost / 0.0.0.0
+  // it's not reachable from a remote client — fall back to the page's own
+  // hostname (works when RtcView + go2rtc share a machine).
+  function _wsUrlFor(streamName){
+    const gc = state.go2rtc || {};
+    let host = gc.host || "127.0.0.1";
+    if (host === "127.0.0.1" || host === "localhost" || host === "0.0.0.0"){
+      host = location.hostname;
+    }
+    const port = gc.api_port || 1984;
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${host}:${port}/api/ws?src=${encodeURIComponent(streamName)}`;
+  }
+
+  function _startMSE(cam, tile, p){
+    return new Promise((resolve, reject) => {
+      const video = p.video;
+      const msg = tile.querySelector("[data-msg]");
+      const ms = new MediaSource();
+      p.mediaSource = ms;
+      const objUrl = URL.createObjectURL(ms);
+      video.srcObject = null;
+      video.src = objUrl;
+      let sb = null;
+      const queue = [];
+      let settled = false;
+      const done = (ok, err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        ok ? resolve() : reject(err);
+      };
+      const timer = setTimeout(() => done(false, new Error("timeout")), 10000);
+
+      const flush = () => {
+        if (!sb || sb.updating || !queue.length) return;
+        const chunk = queue.shift();
+        try { sb.appendBuffer(chunk); }
+        catch (e) {
+          if (e.name === "QuotaExceededError" && video.buffered.length){
+            const startB = video.buffered.start(0);
+            const cur = video.currentTime;
+            if (cur - startB > 20){
+              try { sb.remove(startB, cur - 10); queue.unshift(chunk); }
+              catch { /* give up this chunk */ }
+            }
+          }
+        }
+      };
+
+      ms.addEventListener("sourceopen", () => {
+        URL.revokeObjectURL(objUrl);
+        let ws;
+        try {
+          ws = new WebSocket(_wsUrlFor(cam.stream || cam.id));
+        } catch (e) { return done(false, e); }
+        ws.binaryType = "arraybuffer";
+        p.ws = ws;
+        ws.addEventListener("open", () => {
+          // Ask go2rtc for MSE mode. The "value" advertises codecs we can
+          // decode; sending "mse" alone works, go2rtc replies with the
+          // actual codec string for the source.
+          ws.send(JSON.stringify({ type: "mse", value: "avc1.640028,mp4a.40.2,hvc1.1.6.L153.B0,opus" }));
+        });
+        ws.addEventListener("message", (ev) => {
+          if (typeof ev.data === "string"){
+            let msg2;
+            try { msg2 = JSON.parse(ev.data); } catch { return; }
+            if (msg2.type === "mse"){
+              try {
+                sb = ms.addSourceBuffer(msg2.value);
+                sb.mode = "segments";
+                sb.addEventListener("updateend", flush);
+              } catch (e) {
+                return done(false, e);
+              }
+              p.state = "live";
+              if (msg) msg.textContent = "";
+              refreshStatusDots();
+              video.play().catch(()=>{});
+              done(true);
+            } else if (msg2.type === "error"){
+              done(false, new Error(msg2.value || "server error"));
+            }
+          } else if (ev.data instanceof ArrayBuffer){
+            queue.push(ev.data);
+            flush();
+          }
+        });
+        ws.addEventListener("error", () => done(false, new Error("ws error")));
+        ws.addEventListener("close", () => {
+          if (!settled) return done(false, new Error("ws closed"));
+          // Live drop → reconnect
+          p.state = "err";
+          if (msg) msg.textContent = "Bağlantı koptu";
+          refreshStatusDots();
+          maybeReconnect(cam, tile);
+        });
+      });
+    });
   }
 
   function maybeReconnect(cam, tile){
@@ -538,6 +718,16 @@
   function stopPlayer(id){
     const p = state.players.get(id); if (!p) return;
     try { p.pc && p.pc.close(); } catch {}
+    try { p.ws && p.ws.close(); } catch {}
+    if (p.mediaSource && p.mediaSource.readyState === "open"){
+      try { p.mediaSource.endOfStream(); } catch {}
+    }
+    if (p.video){
+      try { p.video.pause(); } catch {}
+      p.video.removeAttribute("src");
+      try { p.video.load(); } catch {}
+      p.video.srcObject = null;
+    }
     clearTimeout(p._t);
     state.players.delete(id);
   }
@@ -810,12 +1000,14 @@
       form.record_mode.value = cam.record_mode || "off";
       form.record_audio.checked = !!cam.record_audio;
       form.retention_days_override.value = cam.retention_days_override || 0;
+      if (form.stream_mode) form.stream_mode.value = cam.stream_mode || "auto";
       renderScheduleRows(cam.record_schedule || []);
       loadStreamOptions(cam.stream || "");
     } else {
       $("#modal-title").textContent = "Kamera Ekle";
       delBtn.classList.add("hidden");
       form.record_mode.value = "off";
+      if (form.stream_mode) form.stream_mode.value = "auto";
       renderScheduleRows([]);
       loadStreamOptions("");
     }
