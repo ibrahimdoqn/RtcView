@@ -26,6 +26,8 @@ info "Servis durduruluyor ve devre dışı bırakılıyor..."
 systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
 systemctl disable "${SERVICE_NAME}.service" 2>/dev/null || true
 rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+rm -rf "/etc/systemd/system/${SERVICE_NAME}.service.d"
+rm -f /usr/local/sbin/rtcview-set-recording-path
 systemctl daemon-reload || true
 
 if [ "$KEEP_CONFIG" -eq 1 ] && [ -d "$INSTALL_DIR/config" ]; then

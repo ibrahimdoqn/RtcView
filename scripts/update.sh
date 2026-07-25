@@ -35,22 +35,27 @@ systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
 
 # ------------- sync source (config klasörü DOKUNULMAZ) -------------
 info "Uygulama dosyaları güncelleniyor..."
-# --exclude ile config/ ve venv/ korunur
 tar -C "$SRC_DIR" \
   --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
-  --exclude='venv' --exclude='config' --exclude='logs' \
+  --exclude='venv' --exclude='config' --exclude='logs' --exclude='recordings' \
   -cf - app requirements.txt scripts 2>/dev/null | \
   tar -C "$INSTALL_DIR" -xf -
 
-# ------------- pip deps (varsa yeni bağımlılık) -------------
+# ------------- pip deps -------------
 info "Python bağımlılıkları kontrol ediliyor..."
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade -r "$INSTALL_DIR/requirements.txt" 2>&1 | tail -3 || \
   warn "pip upgrade sırasında bazı uyarılar oldu — devam ediliyor."
 
-# ------------- verify onvif (kullanıcının ana şikayeti) -------------
+# ------------- ffmpeg availability -------------
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  warn "ffmpeg bulunamadı — kayıt çalışmayacak. Kurulum: sudo apt-get install ffmpeg"
+else
+  info "ffmpeg mevcut: $(ffmpeg -version 2>/dev/null | head -1 | cut -d' ' -f1-3)"
+fi
+
+# ------------- verify onvif -------------
 if ! "$INSTALL_DIR/venv/bin/python" -c "from onvif import ONVIFCamera" 2>/dev/null; then
   warn "onvif-zeep hâlâ import edilemiyor. Zorla yeniden kuruluyor..."
-  # ARM64/lxml için derleme deps'i eksikse burada eklenir
   apt-get install -y --no-install-recommends python3-dev build-essential libxml2-dev libxslt1-dev libffi-dev >/dev/null 2>&1 || true
   "$INSTALL_DIR/venv/bin/pip" install --force-reinstall --no-cache-dir onvif-zeep zeep lxml 2>&1 | tail -5
   if "$INSTALL_DIR/venv/bin/python" -c "from onvif import ONVIFCamera" 2>/dev/null; then
@@ -62,17 +67,79 @@ else
   info "ONVIF/PTZ desteği: aktif"
 fi
 
-# ------------- permissions -------------
-chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
+# ------------- config migration: add missing recording block -------------
+if [ -f "$CONFIG_FILE" ]; then
+  info "Config'e eksik varsayılanlar ekleniyor (recording, rtsp_port)..."
+  "$INSTALL_DIR/venv/bin/python" - "$CONFIG_FILE" "$INSTALL_DIR" <<'PY'
+import json, os, sys
+p, install_dir = sys.argv[1], sys.argv[2]
+with open(p) as f: d = json.load(f)
+d.setdefault("go2rtc", {}).setdefault("rtsp_port", 8554)
+rec = d.setdefault("recording", {})
+rec.setdefault("enabled", True)
+rec.setdefault("storage_path", os.path.join(install_dir, "recordings"))
+rec.setdefault("segment_seconds", 300)
+rec.setdefault("retention_days", 14)
+rec.setdefault("max_gb", 100)
+rec.setdefault("purge_interval_seconds", 60)
+rec.setdefault("ffmpeg_path", "ffmpeg")
+for cam in d.get("cameras", []):
+    cam.setdefault("record_mode", "off")
+    cam.setdefault("record_schedule", [])
+    cam.setdefault("record_audio", False)
+    cam.setdefault("retention_days_override", 0)
+os.makedirs(rec["storage_path"], exist_ok=True)
+with open(p, "w") as f: json.dump(d, f, indent=2)
+print("recording.storage_path =", rec["storage_path"])
+PY
+fi
 
-# ------------- systemd unit refresh (varsa değişmiş) -------------
+# ------------- permissions (recording folder too) -------------
+REC_PATH=$("$INSTALL_DIR/venv/bin/python" -c "import json; print(json.load(open('$CONFIG_FILE'))['recording']['storage_path'])" 2>/dev/null || echo "$INSTALL_DIR/recordings")
+mkdir -p "$REC_PATH"
+chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
+chown -R "$SERVICE_USER":"$SERVICE_USER" "$REC_PATH" || warn "Kayıt klasörü sahipliği güncellenemedi: $REC_PATH"
+
+# ------------- systemd unit: ensure recording path + common mounts writable -------------
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 if [ -f "$UNIT_FILE" ]; then
-  # Port'u mevcut config'ten al
   PORT=$("$INSTALL_DIR/venv/bin/python" -c "import json; print(json.load(open('$CONFIG_FILE'))['app']['port'])" 2>/dev/null || echo 5000)
   info "Servis port: $PORT (config'ten okundu)"
+  # If ReadWritePaths does not already mention the recording path, drop-in extra.
+  if ! grep -q "ReadWritePaths=.*${REC_PATH}" "$UNIT_FILE"; then
+    if ! grep -q "ReadWritePaths=.*\(/mnt\|/media\|/srv\|/var/lib\)" "$UNIT_FILE"; then
+      info "Sistemd sandbox güncelleniyor (mount kökleri + kayıt yolu ekleniyor)..."
+      mkdir -p /etc/systemd/system/${SERVICE_NAME}.service.d
+      cat > /etc/systemd/system/${SERVICE_NAME}.service.d/paths.conf <<EOF
+[Service]
+ReadWritePaths=${REC_PATH} /mnt /media /srv /var/lib
+EOF
+    fi
+  fi
 fi
 systemctl daemon-reload || true
+
+# Helper CLI (idempotent)
+HELPER=/usr/local/sbin/rtcview-set-recording-path
+if [ ! -x "$HELPER" ]; then
+  cat > "$HELPER" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$(id -u)" -ne 0 ]; then echo "root gerekli"; exit 1; fi
+[ -z "${1:-}" ] && { echo "kullanım: $0 <mutlak-yol>"; exit 2; }
+case "$1" in /*) : ;; *) echo "mutlak yol gerekli"; exit 2 ;; esac
+mkdir -p "$1"; chown -R rtcview:rtcview "$1" || true
+mkdir -p /etc/systemd/system/rtcview.service.d
+cat > /etc/systemd/system/rtcview.service.d/extra-paths.conf <<EOF
+[Service]
+ReadWritePaths=$1
+EOF
+systemctl daemon-reload
+systemctl restart rtcview
+echo "Eklendi: $1 (servis yeniden başlatıldı)"
+SH
+  chmod +x "$HELPER"
+fi
 
 # ------------- restart -------------
 info "Servis başlatılıyor..."
@@ -83,6 +150,7 @@ if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
   info "Güncelleme başarılı — servis çalışıyor."
   IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
   echo "  http://${IP:-127.0.0.1}:${PORT:-5000}"
+  echo "  Kayıt klasörü: ${REC_PATH}"
 else
   err "Servis başlatılamadı. Log: journalctl -u ${SERVICE_NAME} -n 40"
   exit 1

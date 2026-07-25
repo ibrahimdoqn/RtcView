@@ -19,6 +19,8 @@ SERVICE_NAME="rtcview"
 DEFAULT_PORT=5000
 DEFAULT_G2_HOST="127.0.0.1"
 DEFAULT_G2_PORT=1984
+DEFAULT_G2_RTSP=8554
+DEFAULT_REC_PATH="${INSTALL_DIR}/recordings"
 
 info "RtcView kurulumu başlıyor. Kurulum dizini: ${INSTALL_DIR}"
 
@@ -48,6 +50,9 @@ G2_HOST="${G2_HOST:-$DEFAULT_G2_HOST}"
 read -r -p "Mevcut go2rtc API port [${DEFAULT_G2_PORT}]: " G2_PORT
 G2_PORT="${G2_PORT:-$DEFAULT_G2_PORT}"
 if ! [[ "$G2_PORT" =~ ^[0-9]+$ ]]; then die "Geçersiz go2rtc portu: $G2_PORT"; fi
+read -r -p "go2rtc RTSP portu (kayıt için) [${DEFAULT_G2_RTSP}]: " G2_RTSP
+G2_RTSP="${G2_RTSP:-$DEFAULT_G2_RTSP}"
+if ! [[ "$G2_RTSP" =~ ^[0-9]+$ ]]; then die "Geçersiz RTSP portu: $G2_RTSP"; fi
 
 # Best-effort connectivity check (non-fatal)
 if command -v curl >/dev/null 2>&1; then
@@ -58,14 +63,32 @@ if command -v curl >/dev/null 2>&1; then
   fi
 fi
 
+# ------------- recording path -------------
+echo
+info "Kayıt dosyaları için bir dizin seçin. Boş bırakırsanız varsayılan kullanılır."
+info "Örnek: /mnt/nas/rtcview, /media/usb/rtcview, /srv/rtcview, veya varsayılan."
+read -r -p "Kayıt klasörü [${DEFAULT_REC_PATH}]: " REC_PATH
+REC_PATH="${REC_PATH:-$DEFAULT_REC_PATH}"
+# Absolute path required
+case "$REC_PATH" in
+  /*) : ;;
+  *)  die "Kayıt yolu mutlak olmalı: $REC_PATH" ;;
+esac
+
 # ------------- packages -------------
-info "APT paketleri yükleniyor (python3, venv, curl, lxml derleme bağımlılıkları)..."
+info "APT paketleri yükleniyor (python3, venv, ffmpeg, lxml derleme bağımlılıkları)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y --no-install-recommends \
   python3 python3-venv python3-pip python3-dev \
   build-essential libxml2-dev libxslt1-dev libffi-dev \
-  curl ca-certificates tar
+  curl ca-certificates tar ffmpeg
+
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  warn "ffmpeg bulunamadı. Kayıt çalışmayacak — kurun: sudo apt-get install ffmpeg"
+else
+  info "ffmpeg mevcut: $(ffmpeg -version 2>/dev/null | head -1)"
+fi
 
 # ------------- user -------------
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
@@ -75,6 +98,14 @@ fi
 
 # ------------- directories -------------
 mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/config" "$INSTALL_DIR/logs"
+mkdir -p "$REC_PATH"
+chown -R "$SERVICE_USER":"$SERVICE_USER" "$REC_PATH" || warn "Kayıt klasörü sahipliği güncellenemedi (mount noyptions?)"
+
+# Verify recording path is writable by service user (best-effort)
+if ! su -s /bin/sh -c "test -w '$REC_PATH'" "$SERVICE_USER" 2>/dev/null; then
+  warn "Kayıt klasörü servis kullanıcısı için yazılabilir görünmüyor: $REC_PATH"
+  warn "Mount seçeneklerinizi (uid/gid) veya izinleri kontrol edin."
+fi
 
 # ------------- copy source -------------
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -115,18 +146,34 @@ if [ ! -f "$CONFIG_FILE" ]; then
     "auto_reconnect": true,
     "reconnect_delay_ms": 3000
   },
-  "go2rtc": { "host": "${G2_HOST}", "api_port": ${G2_PORT} },
+  "go2rtc": { "host": "${G2_HOST}", "api_port": ${G2_PORT}, "rtsp_port": ${G2_RTSP} },
+  "recording": {
+    "enabled": true,
+    "storage_path": "${REC_PATH}",
+    "segment_seconds": 300,
+    "retention_days": 14,
+    "max_gb": 100,
+    "purge_interval_seconds": 60,
+    "ffmpeg_path": "ffmpeg"
+  },
   "cameras": []
 }
 JSON
 else
   info "Mevcut config bulundu, port ve go2rtc adresi güncelleniyor..."
-  "$INSTALL_DIR/venv/bin/python" - "$CONFIG_FILE" "$USER_PORT" "$G2_HOST" "$G2_PORT" <<'PY'
+  "$INSTALL_DIR/venv/bin/python" - "$CONFIG_FILE" "$USER_PORT" "$G2_HOST" "$G2_PORT" "$G2_RTSP" "$REC_PATH" <<'PY'
 import json, sys
-p, port, host, gport = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+p, port, host, gport, grtsp, recpath = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), sys.argv[6]
 with open(p) as f: d = json.load(f)
 d.setdefault("app", {})["port"] = port
-d.setdefault("go2rtc", {}).update({"host": host, "api_port": gport})
+d.setdefault("go2rtc", {}).update({"host": host, "api_port": gport, "rtsp_port": grtsp})
+d.setdefault("recording", {}).setdefault("enabled", True)
+d["recording"]["storage_path"] = recpath
+d["recording"].setdefault("segment_seconds", 300)
+d["recording"].setdefault("retention_days", 14)
+d["recording"].setdefault("max_gb", 100)
+d["recording"].setdefault("purge_interval_seconds", 60)
+d["recording"].setdefault("ffmpeg_path", "ffmpeg")
 with open(p, "w") as f: json.dump(d, f, indent=2)
 PY
 fi
@@ -135,9 +182,12 @@ chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
 
 # ------------- systemd -------------
 info "systemd servisi kuruluyor..."
+# ReadWritePaths includes INSTALL_DIR, the chosen REC_PATH, and common mount
+# roots (/mnt /media /srv /var/lib) so the user can later switch to any of
+# those from the UI without needing a systemd unit change.
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNIT
 [Unit]
-Description=RtcView — go2rtc camera viewer
+Description=RtcView — go2rtc camera viewer + recorder
 After=network-online.target
 Wants=network-online.target
 
@@ -154,8 +204,8 @@ Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes
 ProtectSystem=full
-ProtectHome=yes
-ReadWritePaths=${INSTALL_DIR}
+ProtectHome=no
+ReadWritePaths=${INSTALL_DIR} ${REC_PATH} /mnt /media /srv /var/lib
 PrivateTmp=yes
 
 [Install]
@@ -164,6 +214,30 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}.service"
+
+# ------------- helper CLI: switch recording path (updates unit drop-in) -------------
+HELPER=/usr/local/sbin/rtcview-set-recording-path
+cat > "$HELPER" <<'SH'
+#!/usr/bin/env bash
+# Adds an extra path to the RtcView systemd sandbox ReadWritePaths.
+# Use when your desired recording directory is outside /opt/rtcview, /mnt,
+# /media, /srv, /var/lib (the pre-authorised paths).
+set -euo pipefail
+if [ "$(id -u)" -ne 0 ]; then echo "root gerekli"; exit 1; fi
+[ -z "${1:-}" ] && { echo "kullanım: $0 <mutlak-yol>"; exit 2; }
+case "$1" in /*) : ;; *) echo "mutlak yol gerekli"; exit 2 ;; esac
+mkdir -p "$1"
+chown -R rtcview:rtcview "$1" || true
+mkdir -p /etc/systemd/system/rtcview.service.d
+cat > /etc/systemd/system/rtcview.service.d/extra-paths.conf <<EOF
+[Service]
+ReadWritePaths=$1
+EOF
+systemctl daemon-reload
+systemctl restart rtcview
+echo "Eklendi: $1 (servis yeniden başlatıldı)"
+SH
+chmod +x "$HELPER"
 
 # ------------- firewall hint -------------
 if command -v ufw >/dev/null 2>&1; then
@@ -176,5 +250,10 @@ fi
 info "Kurulum tamam. Erişim adresi:"
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo "  http://${IP:-127.0.0.1}:${USER_PORT}"
-echo "go2rtc backend: http://${G2_HOST}:${G2_PORT}"
+echo "go2rtc backend: http://${G2_HOST}:${G2_PORT} (RTSP :${G2_RTSP})"
+echo "Kayıt klasörü: ${REC_PATH}"
 echo "Servis: systemctl status ${SERVICE_NAME}"
+echo
+echo "İpucu: Kayıt klasörünü /mnt, /media, /srv veya /var/lib altına"
+echo "koyarsanız UI'dan değişiklik yeterli. Başka bir yol için:"
+echo "  sudo rtcview-set-recording-path /istediginiz/yol"

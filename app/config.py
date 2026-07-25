@@ -17,8 +17,26 @@ DEFAULT_CONFIG = {
     "go2rtc": {
         "host": "127.0.0.1",
         "api_port": 1984,
+        "rtsp_port": 8554,
+    },
+    "recording": {
+        "enabled": True,
+        "storage_path": "/opt/rtcview/recordings",
+        "segment_seconds": 300,
+        "retention_days": 14,
+        "max_gb": 100,
+        "purge_interval_seconds": 60,
+        "ffmpeg_path": "ffmpeg",
     },
     "cameras": []
+}
+
+# Per-camera recording defaults merged when a camera is loaded.
+CAMERA_RECORDING_DEFAULTS = {
+    "record_mode": "off",          # off | always | schedule | manual
+    "record_schedule": [],         # list of {"days":[0..6], "start":"HH:MM", "end":"HH:MM"}
+    "record_audio": False,
+    "retention_days_override": 0,  # 0 = use global
 }
 
 _lock = threading.Lock()
@@ -51,6 +69,9 @@ class ConfigStore:
             elif isinstance(v, dict):
                 for sk, sv in v.items():
                     self._data[k].setdefault(sk, sv)
+        for cam in self._data.get("cameras", []):
+            for k, v in CAMERA_RECORDING_DEFAULTS.items():
+                cam.setdefault(k, json.loads(json.dumps(v)))
 
     def _save_locked(self):
         tmp = self.config_path.with_suffix(".tmp")
@@ -72,6 +93,14 @@ class ConfigStore:
     def get_go2rtc(self):
         return self._data["go2rtc"]
 
+    def get_recording(self):
+        return self._data["recording"]
+
+    def update_recording(self, updates: dict):
+        with _lock:
+            self._data["recording"].update(updates)
+            self._save_locked()
+
     def get_cameras(self):
         return self._data["cameras"]
 
@@ -87,6 +116,8 @@ class ConfigStore:
 
     def add_camera(self, camera: dict):
         with _lock:
+            for k, v in CAMERA_RECORDING_DEFAULTS.items():
+                camera.setdefault(k, json.loads(json.dumps(v)))
             self._data["cameras"].append(camera)
             self._save_locked()
 

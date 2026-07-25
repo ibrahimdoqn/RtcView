@@ -1,15 +1,18 @@
-/* RtcView frontend — WebRTC WHEP, glass PTZ, keyboard, touch, mobile-first. */
+/* RtcView frontend — WebRTC WHEP, PTZ, recording, playback. */
 (() => {
   const state = {
     cameras: [],
     settings: {},
     go2rtc: {},
+    recording: {},           // /api/recording/settings
+    recStatus: new Map(),    // cam_id -> { running, trigger, manual_until, ... }
     selectedId: null,
     solo: false,
     players: new Map(),
     dragging: null,
     sidebarOpen: false,
-    ptzOpen: null, // null = default per device; true/false = user preference
+    ptzOpen: null,
+    playback: null,          // playback session state, see initPlayback
   };
   const isMobile = () => window.matchMedia("(max-width: 640px), (orientation: portrait) and (max-width: 900px)").matches;
 
@@ -31,6 +34,18 @@
   };
 
   const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const fmtBytes = (b) => {
+    if (!b) return "0 B";
+    const u = ["B","KB","MB","GB","TB"]; let i = 0; let v = b;
+    while (v >= 1024 && i < u.length-1){ v/=1024; i++; }
+    return v.toFixed(v < 10 ? 2 : 1) + " " + u[i];
+  };
+  const fmtDuration = (s) => {
+    if (!isFinite(s) || s < 0) return "0:00";
+    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = Math.floor(s%60);
+    return h ? `${h}:${pad2(m)}:${pad2(sec)}` : `${m}:${pad2(sec)}`;
+  };
 
   // -------- Init --------
   async function init(){
@@ -38,14 +53,17 @@
       const cfg = await api.get("/api/config");
       state.settings = cfg.app;
       state.go2rtc  = cfg.go2rtc || {};
+      state.recording = cfg.recording || {};
       state.cameras = cfg.cameras || [];
       applySettings();
       renderSidebar(); renderGrid();
       updateStatus();
+      updateRecStatus();
       registerSW();
       wireKeyboard();
     } catch (e) { toast("Yapılandırma yüklenemedi: " + e.message, "err"); }
     setInterval(updateStatus, 5000);
+    setInterval(updateRecStatus, 4000);
   }
 
   function applySettings(){
@@ -61,6 +79,39 @@
       if (s.go2rtc_running){ el.classList.add("ok"); el.classList.remove("err"); $("#status-text").textContent = "go2rtc aktif"; }
       else { el.classList.add("err"); el.classList.remove("ok"); $("#status-text").textContent = "go2rtc kapalı"; }
     } catch { $("#status-indicator").classList.add("err"); $("#status-text").textContent = "Sunucuya bağlanılamıyor"; }
+  }
+
+  async function updateRecStatus(){
+    try {
+      const s = await api.get("/api/recording/status");
+      state.recStatus.clear();
+      let active = 0;
+      (s.cameras || []).forEach(c => {
+        state.recStatus.set(c.cam_id, c);
+        if (c.running) active++;
+      });
+      const el = $("#rec-status");
+      if (el){
+        if (!s.settings.enabled){ el.textContent = "Kayıt kapalı"; el.className = "rec-status"; }
+        else if (!s.ffmpeg_available){ el.textContent = "ffmpeg yok"; el.className = "rec-status"; }
+        else { el.textContent = active ? `${active} kayıt aktif` : "Kayıt bekliyor"; el.className = "rec-status" + (active ? " on" : ""); }
+      }
+      applyRecUiState();
+    } catch { /* ignore */ }
+  }
+
+  function applyRecUiState(){
+    $$("#camera-list .cam-item").forEach(el => {
+      const st = state.recStatus.get(el.dataset.id);
+      el.classList.toggle("rec", !!(st && st.running));
+    });
+    $$("#grid .tile").forEach(t => {
+      const st = state.recStatus.get(t.dataset.id);
+      const running = !!(st && st.running);
+      t.classList.toggle("rec", running);
+      const recBtn = t.querySelector('[data-act="rec"]');
+      if (recBtn) recBtn.classList.toggle("rec-on", running);
+    });
   }
 
   // -------- Sidebar --------
@@ -83,6 +134,7 @@
       el.dataset.id = cam.id;
       el.draggable = true;
       el.innerHTML = `<span class="grip">⋮⋮</span>
+        <span class="rec-mini" title="Kayıt aktif"></span>
         <span class="name">${escapeHtml(cam.name)}</span>
         <span class="st" data-st></span>
         <button class="cam-edit" title="Düzenle" aria-label="Kamerayı düzenle">
@@ -105,6 +157,7 @@
       list.appendChild(el);
     });
     refreshStatusDots();
+    applyRecUiState();
   }
 
   function refreshStatusDots(){
@@ -116,7 +169,6 @@
       else if (p.state === "err") st.classList.add("err");
       else st.classList.add("connecting");
     });
-    // also tile badge dots
     $$(".tile").forEach(t => {
       const dot = t.querySelector(".badge .dot"); if (!dot) return;
       dot.className = "dot";
@@ -168,7 +220,6 @@
 
   // -------- Grid --------
   function renderGrid(){
-    // Stop old players first
     for (const id of Array.from(state.players.keys())) stopPlayer(id);
 
     const grid = $("#grid"); grid.innerHTML = "";
@@ -192,6 +243,11 @@
           ${showBadge ? '<span class="dot"></span>' : ''}
           ${showName  ? `<span class="name">${escapeHtml(cam.name)}</span>` : ''}
         </div>` : ''}
+        <div class="tile-actions">
+          <button data-act="snap" title="Anlık kare">📷</button>
+          <button data-act="rec"  title="Kayıt (manuel)">⏺</button>
+        </div>
+        <div class="rec-dot">REC</div>
         <div class="zoom-info" style="display:none">1.0×</div>
         <div class="center-msg" data-msg></div>
       `;
@@ -201,21 +257,37 @@
     });
     refreshStatusDots();
     updatePtzPanel();
+    applyRecUiState();
   }
 
   function wireTile(tile, cam){
     let lastTap = 0;
-    tile.addEventListener("click", () => selectCamera(cam.id));
-    tile.addEventListener("dblclick", () => toggleSolo(cam.id));
+    tile.addEventListener("click", (e) => {
+      if (e.target.closest(".tile-actions")) return;
+      selectCamera(cam.id);
+    });
+    tile.addEventListener("dblclick", (e) => {
+      if (e.target.closest(".tile-actions")) return;
+      toggleSolo(cam.id);
+    });
 
-    // Track whether the current touch is a genuine single-finger tap
+    // Overlay buttons
+    tile.querySelectorAll(".tile-actions button").forEach(b => {
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const act = b.dataset.act;
+        if (act === "snap") return snapshotCamera(cam);
+        if (act === "rec")  return toggleManualRec(cam);
+      });
+    });
+
     let tapState = null;
     tile.addEventListener("touchstart", (e) => {
+      if (e.target.closest(".tile-actions")) { tapState = null; lastTap = 0; return; }
       if (e.touches.length === 1){
         const t = e.touches[0];
         tapState = { x: t.clientX, y: t.clientY, t0: Date.now(), moved: false, single: true };
       } else {
-        // multi-touch — cancel any pending tap detection
         tapState = null;
         lastTap = 0;
       }
@@ -227,7 +299,6 @@
       if (Math.hypot(t.clientX - tapState.x, t.clientY - tapState.y) > 10) tapState.moved = true;
     }, { passive: true });
     tile.addEventListener("touchend", (e) => {
-      // Ignore this touchend if there are still fingers down (mid-pinch) — those aren't taps.
       if (e.touches.length > 0){ tapState = null; lastTap = 0; return; }
       if (!tapState || !tapState.single || tapState.moved){ tapState = null; lastTap = 0; return; }
       const dur = Date.now() - tapState.t0;
@@ -244,7 +315,6 @@
       }
     });
 
-    // Cursor-centered wheel zoom (use TILE rect — video rect is post-transform)
     tile.addEventListener("wheel", (e) => {
       e.preventDefault();
       const p = state.players.get(cam.id); if (!p) return;
@@ -255,10 +325,10 @@
       showZoom(tile, p.zoom);
     }, { passive: false });
 
-    // Mouse drag pan
     let dragStart = null;
     tile.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
+      if (e.target.closest(".tile-actions")) return;
       const p = state.players.get(cam.id); if (!p || (p.zoom||1) <= 1) return;
       dragStart = { x: e.clientX, y: e.clientY, panX: p.panX||0, panY: p.panY||0, p, tile };
       tile.style.cursor = "grabbing";
@@ -275,7 +345,6 @@
       if (dragStart) { dragStart.tile.style.cursor = ""; dragStart = null; }
     });
 
-    // Right click resets zoom
     tile.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       const p = state.players.get(cam.id); if (!p) return;
@@ -284,9 +353,9 @@
       showZoom(tile, 1);
     });
 
-    // Touch: pinch-zoom + one-finger pan (use TILE rect)
     let touch = null;
     tile.addEventListener("touchstart", (e) => {
+      if (e.target.closest(".tile-actions")) return;
       const p = state.players.get(cam.id); if (!p) return;
       if (e.touches.length === 2){
         const [a,b] = e.touches;
@@ -309,7 +378,6 @@
         const dist = Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
         const newZ = Math.max(1, Math.min(8, touch.startZoom * (dist / touch.startDist)));
         const mx = touch.cx - rect.left, my = touch.cy - rect.top;
-        // keep the pinch midpoint stable relative to unscaled tile coordinates
         const videoX = (mx - touch.startPanX) / touch.startZoom;
         const videoY = (my - touch.startPanY) / touch.startZoom;
         touch.p.panX = mx - videoX * newZ;
@@ -341,7 +409,6 @@
     clampPan(p, rect);
     applyTransform(p);
   }
-
   function clampPan(p, rect){
     const z = p.zoom || 1;
     const minX = rect.width - rect.width * z;
@@ -349,16 +416,46 @@
     p.panX = Math.min(0, Math.max(minX, p.panX || 0));
     p.panY = Math.min(0, Math.max(minY, p.panY || 0));
   }
-
   function applyTransform(p){
     if (!p.video) return;
     p.video.style.transform = `translate(${p.panX||0}px, ${p.panY||0}px) scale(${p.zoom||1})`;
   }
-
   function showZoom(tile, z){
     const zi = tile.querySelector(".zoom-info"); if (!zi) return;
     zi.style.display = z > 1.001 ? "block" : "none";
     zi.textContent = z.toFixed(1) + "×";
+  }
+
+  // -------- Snapshot & manual recording --------
+  async function snapshotCamera(cam){
+    try {
+      const r = await api.post(`/api/snapshot/${cam.id}`, {});
+      if (r.url){
+        // Download it to the user's device.
+        const a = document.createElement("a");
+        a.href = r.url; a.download = `${cam.name || cam.id}_${Date.now()}.jpg`;
+        document.body.appendChild(a); a.click(); a.remove();
+        toast("Kare kaydedildi", "ok");
+      } else {
+        toast("Snapshot alındı", "ok");
+      }
+    } catch (e) { toast("Snapshot başarısız: " + e.message, "err"); }
+  }
+
+  async function toggleManualRec(cam){
+    const st = state.recStatus.get(cam.id) || {};
+    try {
+      if (st.running && st.trigger === "manual"){
+        await api.post(`/api/cameras/${cam.id}/record/stop`);
+        toast("Manuel kayıt durduruldu");
+      } else if (st.running){
+        toast("Zaten kayıt yapılıyor (" + st.trigger + ")");
+      } else {
+        await api.post(`/api/cameras/${cam.id}/record/start`, { seconds: 600 });
+        toast("Manuel kayıt başladı (10 dk)", "ok");
+      }
+      updateRecStatus();
+    } catch (e) { toast("Kayıt komutu başarısız: " + e.message, "err"); }
   }
 
   // -------- WebRTC (WHEP through go2rtc) --------
@@ -375,16 +472,10 @@
       pc.addTransceiver("video", { direction: "recvonly" });
       pc.addTransceiver("audio", { direction: "recvonly" });
       pc.ontrack = (ev) => { if (video.srcObject !== ev.streams[0]) video.srcObject = ev.streams[0]; };
-      // Size the tile to the stream's actual aspect ratio so the frame is
-      // never cropped and never letterboxed. Sets `aspect-ratio` AND
-      // measures/writes an explicit height for browsers where the property
-      // does not fully constrain a grid item.
       const sizeToVideo = () => {
         const w = video.videoWidth, h = video.videoHeight;
         if (!w || !h) return;
         const ar = Math.max(0.5, Math.min(3.5, w / h));
-        // In solo mode, the CSS forces full-viewport dims — don't write
-        // inline sizes that would shrink the tile back to grid layout.
         const isSoloTile = state.solo && tile.dataset.id === state.selectedId;
         if (isSoloTile){
           tile.style.height = "";
@@ -448,32 +539,23 @@
     $$("#grid .tile").forEach(el => el.classList.toggle("selected", el.dataset.id === id));
     updatePtzPanel();
   }
-
   function resetZoom(id){
     const p = state.players.get(id); if (!p) return;
     p.zoom = 1; p.panX = 0; p.panY = 0;
     applyTransform(p);
     const zi = p.tile.querySelector(".zoom-info"); if (zi) zi.style.display = "none";
   }
-
   function applySoloSizing(){
-    // In solo, the tile must fill the whole viewport — remove any inline
-    // height/aspect-ratio JS wrote for the grid layout. Restore them on exit.
     $$("#grid .tile").forEach(el => {
       if (state.solo && el.dataset.id === state.selectedId){
-        el.style.height = "";
-        el.style.aspectRatio = "";
+        el.style.height = ""; el.style.aspectRatio = "";
       } else if (!state.solo){
         const p = state.players.get(el.dataset.id);
         if (p && p.sizeToVideo) p.sizeToVideo();
       }
     });
   }
-
   function toggleSolo(id){
-    // Reset zoom whenever a tile enters or leaves solo — otherwise the
-    // scale-3× transform sized for a full-viewport tile puts the video
-    // way off-screen in the smaller grid cell, showing black.
     resetZoom(id);
     if (state.solo && state.selectedId === id){ state.solo = false; }
     else { state.selectedId = id; state.solo = true; }
@@ -482,13 +564,11 @@
     applySoloSizing();
     updatePtzPanel();
   }
-
   function exitSolo(){
     if (state.selectedId) resetZoom(state.selectedId);
     state.solo = false; $("#grid").classList.remove("solo");
     applySoloSizing();
   }
-
   function toggleFullscreen(){
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen({ navigationUI:"hide" }).catch(()=>{});
@@ -496,19 +576,25 @@
 
   $("#btn-all-grid").addEventListener("click", () => { exitSolo(); closeSidebar(); });
   $("#btn-fullscreen").addEventListener("click", () => { toggleFullscreen(); closeSidebar(); });
+  $("#btn-playback").addEventListener("click", () => { closeSidebar(); openPlayback(); });
 
   // -------- Keyboard --------
   function wireKeyboard(){
     document.addEventListener("keydown", (e) => {
       const inField = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target||{}).tagName);
       if (inField) return;
+      // Playback consumes its own keys first
+      if (state.playback && !$("#playback").classList.contains("hidden")){
+        if (playbackKey(e)) return;
+      }
       const k = e.key.toLowerCase();
       if (k === "escape"){ if (state.solo) exitSolo(); else if (state.sidebarOpen) closeSidebar(); return; }
       if (k === "b" || k === "tab"){ e.preventDefault(); toggleSidebar(); return; }
       if (k === "f"){ e.preventDefault(); toggleFullscreen(); return; }
       if (k === "g"){ exitSolo(); return; }
       if (k === "p"){ e.preventDefault(); togglePtzPanel(); return; }
-      if (k === "r"){ // reset zoom on selected tile
+      if (k === "v"){ e.preventDefault(); openPlayback(); return; }
+      if (k === "r"){
         const p = state.selectedId ? state.players.get(state.selectedId) : null;
         if (p){ p.zoom=1; p.panX=0; p.panY=0; applyTransform(p);
           const t = p.tile.querySelector(".zoom-info"); if (t) t.style.display="none"; }
@@ -534,13 +620,11 @@
       panel.classList.add("hidden"); fab.classList.add("hidden"); backdrop.classList.add("hidden");
       return;
     }
-    // Default: open on desktop, closed on mobile
     const shouldOpen = state.ptzOpen === null ? !isMobile() : state.ptzOpen;
     fab.classList.remove("hidden");
     fab.classList.toggle("active", shouldOpen);
     if (shouldOpen){
       panel.classList.remove("hidden");
-      // Show backdrop only on mobile (sheet mode)
       if (isMobile()) backdrop.classList.remove("hidden");
       else backdrop.classList.add("hidden");
       const label = $("#ptz-camname"); if (label) label.textContent = cam.name;
@@ -572,7 +656,6 @@
     upleft:[-0.4,0.4,0], upright:[0.4,0.4,0], downleft:[-0.4,-0.4,0], downright:[0.4,-0.4,0],
     "zoom-in":[0,0,0.5], "zoom-out":[0,0,-0.5], home:null,
   };
-
   $$("#ptz-panel .ptz-pad button, #ptz-panel .ptz-side button[data-dir]").forEach(btn => {
     let holding = false, timer = null;
     const fire = () => {
@@ -593,13 +676,10 @@
     btn.addEventListener("touchstart", start, { passive:false });
     btn.addEventListener("touchend", stop); btn.addEventListener("touchcancel", stop);
   });
-
-  // Wire FAB and dismissers
   $("#ptz-fab").addEventListener("click", togglePtzPanel);
   $("#ptz-close").addEventListener("click", closePtzPanel);
   $("#ptz-backdrop").addEventListener("click", closePtzPanel);
 
-  // Swipe-down on the grabber to close (mobile bottom-sheet)
   (function wirePtzSwipe(){
     const panel = $("#ptz-panel");
     const grabber = panel.querySelector(".ptz-grabber");
@@ -660,6 +740,51 @@
     }
   }
 
+  // ----- Schedule editor (per-camera weekly windows) -----
+  const DAY_LABELS = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"];
+  function renderScheduleRows(schedule){
+    const wrap = $("#rec-schedule-rows");
+    wrap.innerHTML = "";
+    (schedule || []).forEach((w, idx) => wrap.appendChild(scheduleRow(w, idx)));
+    if (!wrap.children.length){
+      wrap.appendChild(scheduleRow({ days:[0,1,2,3,4,5,6], start:"08:00", end:"18:00" }, 0));
+    }
+  }
+  function scheduleRow(w, idx){
+    const row = document.createElement("div");
+    row.className = "sched-row";
+    const days = document.createElement("div"); days.className = "days";
+    DAY_LABELS.forEach((lbl, di) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = lbl;
+      const active = (w.days || []).includes(di) || !w.days || w.days.length === 0;
+      if (active) b.classList.add("on");
+      b.addEventListener("click", () => b.classList.toggle("on"));
+      days.appendChild(b);
+    });
+    const st = document.createElement("input"); st.type = "time"; st.value = w.start || "08:00";
+    const et = document.createElement("input"); et.type = "time"; et.value = w.end   || "18:00";
+    const del = document.createElement("button"); del.type = "button";
+    del.className = "sched-del"; del.textContent = "✕"; del.title = "Bu aralığı sil";
+    del.addEventListener("click", () => row.remove());
+    row.appendChild(days); row.appendChild(st); row.appendChild(et); row.appendChild(del);
+    return row;
+  }
+  function readScheduleRows(){
+    return $$("#rec-schedule-rows .sched-row").map(r => {
+      const days = Array.from(r.querySelectorAll(".days button"))
+        .map((b, i) => b.classList.contains("on") ? i : -1).filter(i => i >= 0);
+      const times = r.querySelectorAll("input[type=time]");
+      return { days, start: times[0].value, end: times[1].value };
+    });
+  }
+  $("#rec-schedule-add").addEventListener("click", () => {
+    $("#rec-schedule-rows").appendChild(scheduleRow({ days:[], start:"08:00", end:"18:00" }, 0));
+  });
+  form.record_mode.addEventListener("change", () => {
+    $("#rec-schedule-editor").classList.toggle("hidden", form.record_mode.value !== "schedule");
+  });
+
   function openEdit(cam){
     form.reset();
     if (cam){
@@ -672,12 +797,19 @@
       form.onvif_port.value = cam.onvif_port || 80;
       form.onvif_user.value = cam.onvif_user || "";
       form.onvif_pass.value = cam.onvif_pass || "";
+      form.record_mode.value = cam.record_mode || "off";
+      form.record_audio.checked = !!cam.record_audio;
+      form.retention_days_override.value = cam.retention_days_override || 0;
+      renderScheduleRows(cam.record_schedule || []);
       loadStreamOptions(cam.stream || "");
     } else {
       $("#modal-title").textContent = "Kamera Ekle";
       delBtn.classList.add("hidden");
+      form.record_mode.value = "off";
+      renderScheduleRows([]);
       loadStreamOptions("");
     }
+    $("#rec-schedule-editor").classList.toggle("hidden", form.record_mode.value !== "schedule");
     modal.classList.remove("hidden");
   }
 
@@ -688,7 +820,10 @@
     const fd = new FormData(form);
     const body = Object.fromEntries(fd.entries());
     body.ptz_enabled = form.ptz_enabled.checked;
+    body.record_audio = form.record_audio.checked;
     body.onvif_port = parseInt(body.onvif_port || 80);
+    body.retention_days_override = parseInt(body.retention_days_override || 0);
+    body.record_schedule = readScheduleRows();
     if (!body.stream){ toast("Bir stream seçin", "err"); return; }
     const id = body.id; delete body.id;
     try {
@@ -696,6 +831,7 @@
       else { await api.post("/api/cameras", body); toast("Eklendi", "ok"); }
       modal.classList.add("hidden");
       await reloadCameras();
+      updateRecStatus();
     } catch (err) { toast("Kaydedilemedi: " + err.message, "err"); }
   });
 
@@ -730,11 +866,66 @@
       const g = await api.get("/api/go2rtc/settings");
       $("#s-g2-host").value = g.host || "127.0.0.1";
       $("#s-g2-port").value = g.api_port || 1984;
+      $("#s-g2-rtsp").value = g.rtsp_port || 8554;
     } catch {}
+    try {
+      const r = await api.get("/api/recording/settings");
+      state.recording = r;
+      $("#s-rec-enabled").checked = r.enabled !== false;
+      $("#s-rec-path").value = r.storage_path || "";
+      $("#s-rec-segment").value = r.segment_seconds || 300;
+      $("#s-rec-retention").value = r.retention_days || 14;
+      $("#s-rec-maxgb").value = r.max_gb || 100;
+    } catch {}
+    refreshUsageBar();
     sModal.classList.remove("hidden");
   });
   $$("[data-close-settings]").forEach(b => b.addEventListener("click", () => sModal.classList.add("hidden")));
   sModal.addEventListener("click", (e) => { if (e.target === sModal) sModal.classList.add("hidden"); });
+
+  async function refreshUsageBar(){
+    try {
+      const s = await api.get("/api/recording/status");
+      const bar = $("#s-rec-usage .usage-fill");
+      const txt = $("#s-rec-usage-text");
+      const st = s.storage || {};
+      const used = st.bytes_used || 0;
+      const cap = st.max_bytes || 1;
+      const pct = Math.max(0, Math.min(100, (used / cap) * 100));
+      bar.style.width = pct.toFixed(1) + "%";
+      bar.classList.remove("warn","crit");
+      if (pct >= 90) bar.classList.add("crit");
+      else if (pct >= 75) bar.classList.add("warn");
+      const disk = st.disk || {};
+      txt.textContent = `${fmtBytes(used)} / kota ${fmtBytes(cap)} · disk: ${fmtBytes(disk.free||0)} boş / ${fmtBytes(disk.total||0)} · ${st.segment_count||0} segment`
+        + (s.ffmpeg_available ? "" : " · ⚠ ffmpeg bulunamadı");
+    } catch {}
+  }
+
+  $("#s-rec-path-test").addEventListener("click", async () => {
+    const p = $("#s-rec-path").value.trim();
+    if (!p) return;
+    try {
+      await api.post("/api/recording/settings", { storage_path: p });
+      toast("Yol geçerli ve yazılabilir", "ok");
+      refreshUsageBar();
+    } catch (e) { toast("Yol reddedildi: " + e.message, "err"); }
+  });
+  $("#s-rec-rescan").addEventListener("click", async () => {
+    try {
+      const r = await api.post("/api/recording/rescan");
+      toast(`Tarama: ${r.scanned} dosya, ${r.added} yeni indexe eklendi`, "ok");
+      refreshUsageBar();
+    } catch (e) { toast("Rescan başarısız: " + e.message, "err"); }
+  });
+  $("#s-rec-purge").addEventListener("click", async () => {
+    try {
+      const r = await api.post("/api/recording/purge");
+      toast(`${r.removed} segment silindi (${fmtBytes(r.freed_bytes)})`, "ok");
+      refreshUsageBar();
+    } catch (e) { toast("Temizleme başarısız: " + e.message, "err"); }
+  });
+
   $("#s-save").addEventListener("click", async () => {
     const body = {
       grid_columns: parseInt($("#s-grid-cols").value),
@@ -749,18 +940,27 @@
       await api.post("/api/go2rtc/settings", {
         host: ($("#s-g2-host").value || "127.0.0.1").trim(),
         api_port: parseInt($("#s-g2-port").value || 1984),
+        rtsp_port: parseInt($("#s-g2-rtsp").value || 8554),
       });
+      const recBody = {
+        enabled: $("#s-rec-enabled").checked,
+        storage_path: $("#s-rec-path").value.trim(),
+        segment_seconds: parseInt($("#s-rec-segment").value || 300),
+        retention_days: parseInt($("#s-rec-retention").value || 14),
+        max_gb: parseInt($("#s-rec-maxgb").value || 100),
+      };
+      state.recording = await api.post("/api/recording/settings", recBody);
       applySettings();
       renderGrid();
       sModal.classList.add("hidden");
       toast("Ayarlar kaydedildi", "ok");
       updateStatus();
+      updateRecStatus();
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
   });
 
   $("#search-input").addEventListener("input", renderSidebar);
 
-  // Re-fit tile heights on window resize / orientation change
   let resizeTimer = null;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
@@ -769,12 +969,339 @@
     }, 120);
   });
 
+  // ========================================================================
+  // PLAYBACK (İzleme) — timeline + segment auto-next
+  // ========================================================================
+  function openPlayback(){
+    if (state.cameras.length === 0){ toast("Önce kamera ekleyin"); return; }
+    if (!state.playback) initPlayback();
+    const pb = state.playback;
+    // Prefill camera + date
+    const sel = $("#pb-cam");
+    sel.innerHTML = state.cameras.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
+    pb.camId = state.selectedId && state.cameras.some(c => c.id === state.selectedId) ? state.selectedId : state.cameras[0].id;
+    sel.value = pb.camId;
+    pb.date = pb.date || todayLocal();
+    $("#pb-date").value = pb.date;
+    $("#playback").classList.remove("hidden");
+    loadDay();
+  }
+  function closePlayback(){
+    if (state.playback){
+      const v = $("#pb-video"); v.pause(); v.removeAttribute("src"); v.load();
+      state.playback.segs = [];
+      state.playback.active = null;
+    }
+    $("#playback").classList.add("hidden");
+  }
+  function todayLocal(){
+    const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+  }
+  function dayRangeUnix(dateStr){
+    const [y,m,d] = dateStr.split("-").map(Number);
+    const start = new Date(y, m-1, d, 0, 0, 0).getTime() / 1000;
+    const end   = new Date(y, m-1, d, 23, 59, 59, 999).getTime() / 1000;
+    return [start, end];
+  }
+
+  function initPlayback(){
+    state.playback = {
+      camId: null, date: null, segs: [], active: null,
+      zoom: 1, offset: 0,   // timeline zoom (1 = whole day) and horizontal offset (0..1)
+    };
+    $("#pb-close").addEventListener("click", closePlayback);
+    $("#pb-cam").addEventListener("change", (e) => { state.playback.camId = e.target.value; loadDay(); });
+    $("#pb-date").addEventListener("change", (e) => { state.playback.date = e.target.value; loadDay(); });
+    $("#pb-prev-day").addEventListener("click", () => shiftDay(-1));
+    $("#pb-next-day").addEventListener("click", () => shiftDay(1));
+    $("#pb-today").addEventListener("click", () => { state.playback.date = todayLocal(); $("#pb-date").value = state.playback.date; loadDay(); });
+
+    const v = $("#pb-video");
+    $("#pb-play").addEventListener("click", () => v.paused ? v.play() : v.pause());
+    $("#pb-back").addEventListener("click", () => seekRelative(-10));
+    $("#pb-fwd").addEventListener("click",  () => seekRelative(10));
+    $("#pb-speed").addEventListener("change", (e) => { v.playbackRate = parseFloat(e.target.value); });
+    $("#pb-snap").addEventListener("click", playbackSnapshot);
+    $("#pb-dl").addEventListener("click", () => {
+      const a = state.playback.active; if (!a) return;
+      window.location.href = `/api/recordings/${a.id}/download`;
+    });
+    $("#pb-lock").addEventListener("click", async () => {
+      const a = state.playback.active; if (!a) return;
+      try {
+        const r = await api.post(`/api/recordings/${a.id}/lock`, { locked: !a.locked });
+        a.locked = r.locked ? 1 : 0;
+        toast(a.locked ? "Segment kilitlendi" : "Kilit kaldırıldı", "ok");
+        renderTimeline();
+        updateActiveButtons();
+      } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
+    });
+    $("#pb-del").addEventListener("click", async () => {
+      const a = state.playback.active; if (!a) return;
+      if (!confirm("Bu segment silinsin mi?")) return;
+      try {
+        await api.del(`/api/recordings/${a.id}` + (a.locked ? "?force=1" : ""));
+        toast("Silindi", "ok");
+        loadDay();
+      } catch (e) { toast("Silinemedi: " + e.message, "err"); }
+    });
+
+    v.addEventListener("timeupdate", onTimeUpdate);
+    v.addEventListener("ended", playNextSegment);
+    v.addEventListener("loadedmetadata", () => updateTimeLabel());
+
+    // Timeline mouse/touch
+    const tl = $("#pb-timeline");
+    tl.addEventListener("click", (e) => timelineSeek(e.clientX));
+    tl.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const rect = tl.getBoundingClientRect();
+      const rel = (e.clientX - rect.left) / rect.width;
+      const oldZ = state.playback.zoom;
+      const factor = e.deltaY < 0 ? 1.25 : 1/1.25;
+      const newZ = Math.max(1, Math.min(48, oldZ * factor));
+      // Keep hovered point stable: t_at_rel unchanged
+      const t_at_rel = state.playback.offset + rel / oldZ;
+      state.playback.zoom = newZ;
+      state.playback.offset = Math.max(0, Math.min(1 - 1/newZ, t_at_rel - rel/newZ));
+      renderTimeline();
+    }, { passive: false });
+    // Touch drag to pan
+    let dragS = null;
+    tl.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) return;
+      dragS = { x: e.touches[0].clientX, offset: state.playback.offset };
+    }, { passive: true });
+    tl.addEventListener("touchmove", (e) => {
+      if (!dragS || e.touches.length !== 1) return;
+      const rect = tl.getBoundingClientRect();
+      const dx = e.touches[0].clientX - dragS.x;
+      const shift = -dx / rect.width / state.playback.zoom;
+      state.playback.offset = Math.max(0, Math.min(1 - 1/state.playback.zoom, dragS.offset + shift));
+      renderTimeline();
+      e.preventDefault();
+    }, { passive: false });
+    tl.addEventListener("touchend", () => { dragS = null; });
+  }
+
+  function shiftDay(delta){
+    const [y,m,d] = state.playback.date.split("-").map(Number);
+    const dt = new Date(y, m-1, d); dt.setDate(dt.getDate() + delta);
+    state.playback.date = `${dt.getFullYear()}-${pad2(dt.getMonth()+1)}-${pad2(dt.getDate())}`;
+    $("#pb-date").value = state.playback.date;
+    loadDay();
+  }
+
+  async function loadDay(){
+    const pb = state.playback;
+    const [t0, t1] = dayRangeUnix(pb.date);
+    pb.dayStart = t0; pb.dayEnd = t1;
+    $("#pb-status").textContent = "Yükleniyor…";
+    try {
+      const segs = await api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`);
+      pb.segs = segs || [];
+      $("#pb-empty").classList.toggle("hidden", pb.segs.length > 0);
+      $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
+      renderTimeline();
+      if (pb.segs.length){
+        loadSegment(pb.segs[0], 0);
+      } else {
+        const v = $("#pb-video"); v.pause(); v.removeAttribute("src"); v.load();
+        pb.active = null; updateActiveButtons();
+      }
+    } catch (e) {
+      $("#pb-status").textContent = "Hata";
+      toast("Kayıtlar yüklenemedi: " + e.message, "err");
+    }
+  }
+
+  function renderTimeline(){
+    const pb = state.playback;
+    const track = $("#pb-track"); track.innerHTML = "";
+    const ruler = $("#pb-ruler"); ruler.innerHTML = "";
+    const rect = $("#pb-timeline").getBoundingClientRect();
+    const span = pb.dayEnd - pb.dayStart; // 86399
+    const viewFrac = 1 / pb.zoom;
+    const viewStart = pb.dayStart + pb.offset * span;
+    const viewEnd   = viewStart + viewFrac * span;
+
+    // Ruler ticks — pick step from zoom level
+    const stepMin = pb.zoom >= 12 ? 5 : pb.zoom >= 6 ? 15 : pb.zoom >= 3 ? 30 : 60;
+    const [dy,dm,dd] = pb.date.split("-").map(Number);
+    for (let m = 0; m <= 24*60; m += stepMin){
+      const t = new Date(dy, dm-1, dd, 0, 0, 0).getTime()/1000 + m*60;
+      if (t < viewStart - 60 || t > viewEnd + 60) continue;
+      const x = ((t - viewStart) / (viewEnd - viewStart)) * 100;
+      const tick = document.createElement("div"); tick.className = "tick";
+      tick.style.left = x + "%";
+      const hh = Math.floor(m/60), mm = m % 60;
+      if (mm === 0 || pb.zoom >= 12){
+        const lbl = document.createElement("div"); lbl.className = "lbl";
+        lbl.textContent = `${pad2(hh)}:${pad2(mm)}`;
+        tick.appendChild(lbl);
+      }
+      ruler.appendChild(tick);
+    }
+
+    // Segment bars
+    pb.segs.forEach(s => {
+      const s0 = Math.max(s.started_at, viewStart);
+      const s1 = Math.min(s.ended_at, viewEnd);
+      if (s1 <= s0) return;
+      const left = ((s0 - viewStart) / (viewEnd - viewStart)) * 100;
+      const width = Math.max(0.15, ((s1 - s0) / (viewEnd - viewStart)) * 100);
+      const el = document.createElement("div");
+      el.className = "pb-seg" + (s.locked ? " locked" : "") + (s.trigger === "manual" ? " manual" : "")
+        + (pb.active && s.id === pb.active.id ? " active" : "");
+      el.style.left = left + "%"; el.style.width = width + "%";
+      el.title = `${new Date(s.started_at*1000).toLocaleTimeString()} · ${fmtDuration(s.duration)} · ${fmtBytes(s.bytes)}`;
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const rect2 = el.getBoundingClientRect();
+        const rel = (e.clientX - rect2.left) / rect2.width;
+        loadSegment(s, rel * s.duration);
+      });
+      track.appendChild(el);
+    });
+
+    updateCursor();
+  }
+
+  function updateCursor(){
+    const pb = state.playback;
+    const v = $("#pb-video");
+    if (!pb.active){ $("#pb-cursor").style.left = "0%"; return; }
+    const now = pb.active.started_at + (v.currentTime || 0);
+    const span = pb.dayEnd - pb.dayStart;
+    const viewFrac = 1 / pb.zoom;
+    const viewStart = pb.dayStart + pb.offset * span;
+    const viewEnd   = viewStart + viewFrac * span;
+    const pct = ((now - viewStart) / (viewEnd - viewStart)) * 100;
+    $("#pb-cursor").style.left = Math.max(0, Math.min(100, pct)) + "%";
+  }
+
+  function timelineSeek(clientX){
+    const pb = state.playback;
+    if (!pb.segs.length) return;
+    const tl = $("#pb-timeline"); const rect = tl.getBoundingClientRect();
+    const rel = (clientX - rect.left) / rect.width;
+    const span = pb.dayEnd - pb.dayStart;
+    const viewFrac = 1 / pb.zoom;
+    const viewStart = pb.dayStart + pb.offset * span;
+    const t = viewStart + rel * viewFrac * span;
+    // Find segment containing t, or nearest after
+    let target = pb.segs.find(s => s.started_at <= t && t <= s.ended_at);
+    let offset = 0;
+    if (target){ offset = t - target.started_at; }
+    else {
+      target = pb.segs.find(s => s.started_at > t) || pb.segs[pb.segs.length - 1];
+      offset = 0;
+    }
+    loadSegment(target, offset);
+  }
+
+  function loadSegment(seg, offset){
+    const pb = state.playback;
+    const v = $("#pb-video");
+    const changing = !pb.active || pb.active.id !== seg.id;
+    pb.active = seg;
+    if (changing){
+      v.src = seg.url;
+      v.load();
+    }
+    v.playbackRate = parseFloat($("#pb-speed").value || "1");
+    const applyOffset = () => {
+      try { v.currentTime = Math.max(0, Math.min((seg.duration || 3600) - 0.1, offset || 0)); } catch {}
+      v.play().catch(()=>{});
+    };
+    if (changing){
+      v.addEventListener("loadedmetadata", applyOffset, { once: true });
+    } else {
+      applyOffset();
+    }
+    renderTimeline();
+    updateActiveButtons();
+  }
+
+  function updateActiveButtons(){
+    const a = state.playback && state.playback.active;
+    $("#pb-lock").textContent = a && a.locked ? "🔒" : "🔓";
+  }
+
+  function seekRelative(dt){
+    const pb = state.playback; if (!pb.active) return;
+    const v = $("#pb-video");
+    const targetInSeg = (v.currentTime || 0) + dt;
+    if (targetInSeg >= 0 && targetInSeg <= (pb.active.duration || 0)){
+      v.currentTime = targetInSeg; return;
+    }
+    // Cross segment boundaries
+    const absTime = pb.active.started_at + (v.currentTime || 0) + dt;
+    let target = pb.segs.find(s => s.started_at <= absTime && absTime <= s.ended_at);
+    if (!target){
+      if (dt > 0) target = pb.segs.find(s => s.started_at > absTime);
+      else { const prior = pb.segs.filter(s => s.ended_at < absTime); target = prior[prior.length-1]; }
+    }
+    if (target) loadSegment(target, Math.max(0, absTime - target.started_at));
+  }
+
+  function playNextSegment(){
+    const pb = state.playback; if (!pb.active) return;
+    const idx = pb.segs.findIndex(s => s.id === pb.active.id);
+    const next = pb.segs[idx + 1];
+    if (next) loadSegment(next, 0);
+  }
+
+  function onTimeUpdate(){
+    updateCursor();
+    updateTimeLabel();
+  }
+  function updateTimeLabel(){
+    const pb = state.playback; if (!pb || !pb.active){ $("#pb-time").textContent = "—"; return; }
+    const v = $("#pb-video");
+    const wall = new Date((pb.active.started_at + (v.currentTime||0)) * 1000);
+    const dur = pb.active.duration || 0;
+    $("#pb-time").textContent = `${pad2(wall.getHours())}:${pad2(wall.getMinutes())}:${pad2(wall.getSeconds())}  ·  ${fmtDuration(v.currentTime||0)} / ${fmtDuration(dur)}`;
+  }
+
+  async function playbackSnapshot(){
+    const v = $("#pb-video");
+    if (!v.videoWidth || !v.videoHeight) return;
+    try {
+      const c = document.createElement("canvas");
+      c.width = v.videoWidth; c.height = v.videoHeight;
+      c.getContext("2d").drawImage(v, 0, 0);
+      c.toBlob((blob) => {
+        if (!blob) return;
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `${state.playback.camId}_${Date.now()}.jpg`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+      }, "image/jpeg", 0.92);
+    } catch (e) { toast("Kare kaydedilemedi: " + e.message, "err"); }
+  }
+
+  function playbackKey(e){
+    const v = $("#pb-video");
+    const k = e.key.toLowerCase();
+    if (k === "escape"){ closePlayback(); return true; }
+    if (k === " " || k === "spacebar"){ e.preventDefault(); v.paused ? v.play() : v.pause(); return true; }
+    if (k === "arrowleft"){  e.preventDefault(); seekRelative(-10); return true; }
+    if (k === "arrowright"){ e.preventDefault(); seekRelative(10);  return true; }
+    if (k === ","){ if (v.paused) v.currentTime = Math.max(0, v.currentTime - 1/25); return true; }
+    if (k === "."){ if (v.paused) v.currentTime = Math.min(v.duration||0, v.currentTime + 1/25); return true; }
+    if (k === "1"){ v.playbackRate = 0.5; $("#pb-speed").value = "0.5"; return true; }
+    if (k === "2"){ v.playbackRate = 1;   $("#pb-speed").value = "1";   return true; }
+    if (k === "3"){ v.playbackRate = 2;   $("#pb-speed").value = "2";   return true; }
+    if (k === "4"){ v.playbackRate = 4;   $("#pb-speed").value = "4";   return true; }
+    return false;
+  }
+
   // -------- PWA --------
   function registerSW(){
     if (!("serviceWorker" in navigator)) return;
     navigator.serviceWorker.register("/sw.js").catch(()=>{});
-    // If the SW controller changes (new SW took over), reload once so
-    // the page also picks up any newly-cached / newly-served assets.
     let reloaded = false;
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       if (reloaded) return; reloaded = true;

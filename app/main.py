@@ -1,18 +1,25 @@
 import argparse
+import atexit
 import logging
+import mimetypes
 import os
+import re
 import socket
 import sys
+import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import requests
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory, stream_with_context
 from flask_cors import CORS
 
 from app.config import ConfigStore
 from app.go2rtc_client import Go2RtcClient
 from app.ptz import ptz_controller, ONVIF_AVAILABLE
+from app.recorder import RecordingManager, MANUAL_DEFAULT_SECONDS
+from app.storage import Storage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,13 +40,26 @@ def create_app(config_path: str) -> Flask:
 
     store = ConfigStore(config_path)
     go2rtc = Go2RtcClient(store)
+    storage = Storage(store)
+    recorder = RecordingManager(store, storage)
 
     app.config["STORE"] = store
     app.config["GO2RTC"] = go2rtc
+    app.config["STORAGE"] = storage
+    app.config["RECORDER"] = recorder
+
+    storage.start()
+    recorder.start()
+
+    def _shutdown():
+        try: recorder.stop()
+        except Exception: pass
+        try: storage.stop()
+        except Exception: pass
+    atexit.register(_shutdown)
 
     # ---------- Pages ----------
     def _asset_version():
-        # Bust CSS/JS caches whenever any static asset changes.
         try:
             base = Path(app.static_folder)
             latest = max(
@@ -72,7 +92,8 @@ def create_app(config_path: str) -> Flask:
             "go2rtc_running": go2rtc.is_running(),
             "go2rtc": gc,
             "onvif_available": ONVIF_AVAILABLE,
-            "version": "1.0.0",
+            "recording_enabled": store.get_recording().get("enabled", True),
+            "version": "1.1.0",
         })
 
     @app.get("/api/config")
@@ -107,13 +128,15 @@ def create_app(config_path: str) -> Flask:
     @app.post("/api/go2rtc/settings")
     def api_go2rtc_set():
         body = request.get_json(force=True) or {}
-        allowed = {"host", "api_port"}
+        allowed = {"host", "api_port", "rtsp_port"}
         clean = {k: v for k, v in body.items() if k in allowed}
-        if "api_port" in clean:
-            try: clean["api_port"] = int(clean["api_port"])
-            except Exception: return jsonify({"error": "invalid api_port"}), 400
+        for key in ("api_port", "rtsp_port"):
+            if key in clean:
+                try: clean[key] = int(clean[key])
+                except Exception: return jsonify({"error": f"invalid {key}"}), 400
         store.data["go2rtc"].update(clean)
         store.save()
+        recorder.reload_all()  # RTSP port could have changed
         return jsonify(store.get_go2rtc())
 
     @app.get("/api/go2rtc/streams")
@@ -141,8 +164,13 @@ def create_app(config_path: str) -> Flask:
             "onvif_port": int(body.get("onvif_port", 80) or 80),
             "onvif_user": body.get("onvif_user", ""),
             "onvif_pass": body.get("onvif_pass", ""),
+            "record_mode": body.get("record_mode", "off"),
+            "record_schedule": body.get("record_schedule", []),
+            "record_audio": bool(body.get("record_audio", False)),
+            "retention_days_override": int(body.get("retention_days_override", 0) or 0),
         }
         store.add_camera(cam)
+        recorder.reload_camera(cam["id"])
         return jsonify(cam), 201
 
     @app.put("/api/cameras/<camera_id>")
@@ -152,6 +180,7 @@ def create_app(config_path: str) -> Flask:
         if not ok:
             return jsonify({"error": "not found"}), 404
         ptz_controller.invalidate(camera_id)
+        recorder.reload_camera(camera_id)
         return jsonify({"ok": True})
 
     @app.delete("/api/cameras/<camera_id>")
@@ -160,6 +189,7 @@ def create_app(config_path: str) -> Flask:
         if not ok:
             return jsonify({"error": "not found"}), 404
         ptz_controller.invalidate(camera_id)
+        recorder.reload_camera(camera_id)
         return jsonify({"ok": True})
 
     @app.post("/api/cameras/reorder")
@@ -229,6 +259,172 @@ def create_app(config_path: str) -> Flask:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    # ---------- Recording: settings, status ----------
+    @app.get("/api/recording/settings")
+    def api_rec_settings_get():
+        return jsonify(store.get_recording())
+
+    @app.post("/api/recording/settings")
+    def api_rec_settings_set():
+        body = request.get_json(force=True) or {}
+        allowed = {"enabled", "storage_path", "segment_seconds",
+                   "retention_days", "max_gb", "purge_interval_seconds", "ffmpeg_path"}
+        clean = {k: v for k, v in body.items() if k in allowed}
+        # Path change is validated separately (writability check).
+        new_path = clean.pop("storage_path", None)
+        if "segment_seconds" in clean:
+            try:
+                s = int(clean["segment_seconds"])
+                if s < 30 or s > 3600: return jsonify({"error": "segment_seconds 30-3600"}), 400
+                clean["segment_seconds"] = s
+            except Exception: return jsonify({"error": "invalid segment_seconds"}), 400
+        for key in ("retention_days", "max_gb", "purge_interval_seconds"):
+            if key in clean:
+                try: clean[key] = int(clean[key])
+                except Exception: return jsonify({"error": f"invalid {key}"}), 400
+        if "enabled" in clean: clean["enabled"] = bool(clean["enabled"])
+        if clean: store.update_recording(clean)
+        if new_path is not None:
+            ok, msg = storage.set_root(str(new_path))
+            if not ok:
+                return jsonify({"error": msg}), 400
+        recorder.reload_all()
+        return jsonify(store.get_recording())
+
+    @app.get("/api/recording/status")
+    def api_rec_status():
+        return jsonify({
+            "settings": store.get_recording(),
+            "cameras": recorder.status(),
+            "storage": storage.stats(),
+            "ffmpeg_available": bool(_which(store.get_recording().get("ffmpeg_path") or "ffmpeg")),
+        })
+
+    @app.post("/api/recording/rescan")
+    def api_rec_rescan():
+        return jsonify(storage.rescan())
+
+    @app.post("/api/recording/purge")
+    def api_rec_purge():
+        return jsonify(storage.purge_once())
+
+    @app.post("/api/cameras/<camera_id>/record/start")
+    def api_rec_manual_start(camera_id):
+        body = request.get_json(silent=True) or {}
+        seconds = int(body.get("seconds", MANUAL_DEFAULT_SECONDS) or MANUAL_DEFAULT_SECONDS)
+        ok = recorder.manual_start(camera_id, seconds=seconds)
+        if not ok:
+            return jsonify({"error": "camera not found or recording disabled"}), 400
+        return jsonify({"ok": True, "seconds": seconds})
+
+    @app.post("/api/cameras/<camera_id>/record/stop")
+    def api_rec_manual_stop(camera_id):
+        ok = recorder.manual_stop(camera_id)
+        if not ok: return jsonify({"error": "not recording"}), 404
+        return jsonify({"ok": True})
+
+    # ---------- Recording: segments (playback) ----------
+    @app.get("/api/recordings")
+    def api_recordings():
+        cam = request.args.get("cam")
+        try:
+            t_from = float(request.args.get("from")) if request.args.get("from") else None
+            t_to = float(request.args.get("to")) if request.args.get("to") else None
+        except ValueError:
+            return jsonify({"error": "invalid time range"}), 400
+        limit = int(request.args.get("limit", 2000))
+        segs = storage.list_segments(cam_id=cam, t_from=t_from, t_to=t_to, limit=limit)
+        # Strip absolute path from response — expose only id-referenced URLs.
+        for s in segs:
+            s["url"] = f"/api/recordings/{s['id']}/stream"
+            s["download_url"] = f"/api/recordings/{s['id']}/download"
+            del s["path"]
+        return jsonify(segs)
+
+    @app.get("/api/recordings/<int:seg_id>")
+    def api_recording_meta(seg_id):
+        seg = storage.get_segment(seg_id)
+        if not seg: return jsonify({"error": "not found"}), 404
+        seg["url"] = f"/api/recordings/{seg_id}/stream"
+        seg["download_url"] = f"/api/recordings/{seg_id}/download"
+        del seg["path"]
+        return jsonify(seg)
+
+    @app.get("/api/recordings/<int:seg_id>/stream")
+    def api_recording_stream(seg_id):
+        seg = storage.get_segment(seg_id)
+        if not seg: return jsonify({"error": "not found"}), 404
+        return _serve_range(seg["path"], as_attachment=False)
+
+    @app.get("/api/recordings/<int:seg_id>/download")
+    def api_recording_download(seg_id):
+        seg = storage.get_segment(seg_id)
+        if not seg: return jsonify({"error": "not found"}), 404
+        return _serve_range(seg["path"], as_attachment=True)
+
+    @app.delete("/api/recordings/<int:seg_id>")
+    def api_recording_delete(seg_id):
+        force = request.args.get("force") in ("1", "true", "yes")
+        ok = storage.delete_segment(seg_id, force=force)
+        if not ok: return jsonify({"error": "not found or locked"}), 400
+        return jsonify({"ok": True})
+
+    @app.post("/api/recordings/<int:seg_id>/lock")
+    def api_recording_lock(seg_id):
+        body = request.get_json(silent=True) or {}
+        locked = bool(body.get("locked", True))
+        ok = storage.set_locked(seg_id, locked)
+        if not ok: return jsonify({"error": "not found"}), 404
+        return jsonify({"ok": True, "locked": locked})
+
+    # ---------- Snapshots ----------
+    @app.post("/api/snapshot/<camera_id>")
+    def api_snapshot(camera_id):
+        cam = _find_camera(camera_id)
+        if not cam: return jsonify({"error": "not found"}), 404
+        gc = store.get_go2rtc()
+        url = f"http://{gc['host']}:{gc['api_port']}/api/frame.jpeg?src={cam.get('stream') or camera_id}"
+        try:
+            r = requests.get(url, timeout=5)
+            if r.status_code != 200 or not r.content:
+                return jsonify({"error": f"go2rtc returned {r.status_code}"}), 502
+        except Exception as e:
+            return jsonify({"error": f"go2rtc unavailable: {e}"}), 502
+        save = request.args.get("save", "1") not in ("0", "false", "no")
+        payload = {"ok": True, "bytes": len(r.content)}
+        if save:
+            root = storage.snapshots_root()
+            day_dir = root / camera_id / datetime.now().strftime("%Y/%m/%d")
+            day_dir.mkdir(parents=True, exist_ok=True)
+            fname = f"{camera_id}_{datetime.now():%Y%m%d_%H%M%S}.jpg"
+            fpath = day_dir / fname
+            fpath.write_bytes(r.content)
+            sid = storage.register_snapshot(camera_id, str(fpath), time.time())
+            payload.update({"id": sid, "url": f"/api/snapshots/{sid}"})
+        # Also return the raw JPEG so the client can preview/download without a round-trip.
+        if request.args.get("return") == "image":
+            return Response(r.content, mimetype="image/jpeg")
+        return jsonify(payload)
+
+    @app.get("/api/snapshots")
+    def api_snapshots_list():
+        cam = request.args.get("cam")
+        rows = storage.list_snapshots(cam_id=cam, limit=int(request.args.get("limit", 200)))
+        for s in rows:
+            s["url"] = f"/api/snapshots/{s['id']}"
+            del s["path"]
+        return jsonify(rows)
+
+    @app.get("/api/snapshots/<int:sid>")
+    def api_snapshot_get(sid):
+        # Minimal fetch: reuse storage._db (small object, safe)
+        with storage._lock:
+            r = storage._db.execute(
+                "SELECT path FROM snapshots WHERE id = ?", (sid,)
+            ).fetchone()
+        if not r: return jsonify({"error": "not found"}), 404
+        return _serve_range(r[0], as_attachment=False)
+
     # ---------- go2rtc proxy (WHEP + API) ----------
     @app.route("/go2rtc/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
     def go2rtc_proxy(subpath):
@@ -251,6 +447,71 @@ def create_app(config_path: str) -> Flask:
         return Response(r.iter_content(chunk_size=8192), status=r.status_code, headers=headers)
 
     return app
+
+
+# ---------- helpers ----------
+_RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+
+
+def _serve_range(path: str, as_attachment: bool = False):
+    """Serve a file with HTTP Range support (required for HTML5 <video> seek)."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return jsonify({"error": "file missing"}), 404
+    mime, _ = mimetypes.guess_type(path)
+    mime = mime or "application/octet-stream"
+    fname = os.path.basename(path)
+
+    range_hdr = request.headers.get("Range", "")
+    start, end = 0, size - 1
+    status = 200
+    if range_hdr:
+        m = _RANGE_RE.match(range_hdr)
+        if m:
+            s, e = m.group(1), m.group(2)
+            if s == "" and e != "":
+                length = int(e)
+                start = max(0, size - length); end = size - 1
+            else:
+                start = int(s or 0)
+                end = int(e) if e else size - 1
+            end = min(end, size - 1)
+            if start > end or start >= size:
+                resp = Response(status=416)
+                resp.headers["Content-Range"] = f"bytes */{size}"
+                return resp
+            status = 206
+
+    length = end - start + 1
+    CHUNK = 64 * 1024
+
+    def gen():
+        with open(path, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                data = f.read(min(CHUNK, remaining))
+                if not data: break
+                remaining -= len(data)
+                yield data
+
+    resp = Response(stream_with_context(gen()), status=status, mimetype=mime, direct_passthrough=True)
+    resp.headers["Accept-Ranges"] = "bytes"
+    resp.headers["Content-Length"] = str(length)
+    if status == 206:
+        resp.headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    disp = "attachment" if as_attachment else "inline"
+    resp.headers["Content-Disposition"] = f'{disp}; filename="{fname}"'
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+def _which(cmd: str) -> bool:
+    import shutil as _sh
+    if not cmd: return False
+    if os.path.isfile(cmd): return True
+    return bool(_sh.which(cmd))
 
 
 def port_available(port: int, host: str = "0.0.0.0") -> bool:
