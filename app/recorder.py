@@ -143,7 +143,7 @@ class CameraRecorder:
             cmd += [
                 "-f", "segment",
                 "-segment_time", str(self.segment_seconds),
-                "-segment_format", "mp4" if ext == "mp4" else "matroska",
+                "-segment_format", "mp4" if self.ext == "mp4" else "matroska",
                 "-reset_timestamps", "1",
                 "-strftime", "1",
                 "-movflags", "+faststart",
