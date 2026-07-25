@@ -299,53 +299,6 @@ class Storage:
             log.info("purged %d segments (%.2f MB freed)", removed, freed / 1e6)
         return {"removed": removed, "freed_bytes": freed}
 
-    # ---------- Refresh durations from real MP4 files (fixes bad DB rows) ----------
-    def refresh_durations(self, ffmpeg_path: str = "ffmpeg", limit: int = 5000) -> dict:
-        """Re-derive ended_at / duration for existing rows by probing the file.
-
-        Uses ``ffprobe`` when present, falls back to reading the MP4 mvhd atom.
-        Fixes rows recorded before per-segment start-time tracking landed
-        (they had duration≈1 s because Linux st_ctime tracks writes).
-        """
-        import shutil as _sh, subprocess as _sp
-        probe = _sh.which("ffprobe") or (
-            _sh.which("ffprobe", path=str(Path(ffmpeg_path).parent)) if Path(ffmpeg_path).parent.as_posix() else None
-        )
-        with self._lock:
-            rows = self._db.execute(
-                "SELECT id, path, started_at, duration FROM segments ORDER BY id ASC LIMIT ?", (limit,)
-            ).fetchall()
-        fixed = 0; skipped = 0; missing = 0
-        for sid, path, started_at, duration in rows:
-            if not Path(path).exists():
-                missing += 1
-                continue
-            real = None
-            if probe:
-                try:
-                    out = _sp.check_output(
-                        [probe, "-v", "error", "-show_entries", "format=duration",
-                         "-of", "default=nw=1:nk=1", path],
-                        timeout=10, stderr=_sp.DEVNULL,
-                    )
-                    real = float(out.strip())
-                except Exception:
-                    real = None
-            if real is None:
-                real = _mp4_duration_from_mvhd(path)
-            if real is None or real <= 0:
-                skipped += 1
-                continue
-            # Keep started_at; recompute ended_at from real duration.
-            new_end = float(started_at) + real
-            with self._lock:
-                self._db.execute(
-                    "UPDATE segments SET duration = ?, ended_at = ? WHERE id = ?",
-                    (real, new_end, sid),
-                )
-            fixed += 1
-        return {"fixed": fixed, "skipped": skipped, "missing": missing, "total": len(rows)}
-
     # ---------- Rescan (index rebuild from disk) ----------
     def rescan(self) -> dict:
         """Walk storage root and register any MP4 not already in the index."""
@@ -369,52 +322,6 @@ class Storage:
             self.register_segment(cam_id, abs_p, st.st_mtime - 1, st.st_mtime, trigger="rescan")
             added += 1
         return {"scanned": found, "added": added}
-
-
-def _mp4_duration_from_mvhd(path: str) -> Optional[float]:
-    """Parse an MP4's mvhd box to read duration in seconds.
-
-    Faststart files put the moov early, but for -movflags +faststart or a
-    non-faststart file we may need to walk boxes. Keep it small: scan up to
-    16 MB, follow moov > mvhd. Returns None on any parse error.
-    """
-    import struct
-    try:
-        with open(path, "rb") as f:
-            data = f.read(16 * 1024 * 1024)
-    except OSError:
-        return None
-    pos = 0
-    def _boxes(buf, start, end):
-        i = start
-        while i + 8 <= end:
-            size = struct.unpack(">I", buf[i:i+4])[0]
-            btype = buf[i+4:i+8]
-            hdr = 8
-            if size == 1:
-                if i + 16 > end: return
-                size = struct.unpack(">Q", buf[i+8:i+16])[0]
-                hdr = 16
-            if size < hdr or i + size > end + 1:
-                return
-            yield btype, i + hdr, i + size
-            i += size
-    for btype, s, e in _boxes(data, 0, len(data)):
-        if btype == b"moov":
-            for bt2, s2, e2 in _boxes(data, s, e):
-                if bt2 == b"mvhd":
-                    if e2 - s2 < 32: return None
-                    version = data[s2]
-                    if version == 1:
-                        if e2 - s2 < 32: return None
-                        timescale = struct.unpack(">I", data[s2+20:s2+24])[0]
-                        duration  = struct.unpack(">Q", data[s2+24:s2+32])[0]
-                    else:
-                        timescale = struct.unpack(">I", data[s2+12:s2+16])[0]
-                        duration  = struct.unpack(">I", data[s2+16:s2+20])[0]
-                    if timescale == 0: return None
-                    return float(duration) / float(timescale)
-    return None
 
 
 def _try_prune_empty(dir_path: Path, root: Path):

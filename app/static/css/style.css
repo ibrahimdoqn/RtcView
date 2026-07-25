@@ -408,8 +408,10 @@ kbd{
     grid-auto-rows:auto!important;
     overflow-y:auto;overflow-x:hidden;
     padding:10px;gap:10px;
-    padding-top:calc(10px + var(--safe-t));
-    padding-bottom:calc(90px + var(--safe-b)); /* room for FAB */
+    /* Top padding clears the hamburger FAB so it never covers the first
+       tile's name badge. FAB is 48px + top:14px + safe area. */
+    padding-top:calc(72px + var(--safe-t));
+    padding-bottom:calc(90px + var(--safe-b));
     -webkit-overflow-scrolling:touch;
   }
   .grid::-webkit-scrollbar{display:none;}
@@ -419,6 +421,9 @@ kbd{
   .tile video{object-fit:contain;width:100%;height:100%;} /* always show the full frame */
   .tile .badge{font-size:.72rem;padding:.18rem .5rem;top:6px;left:6px;}
   .tile.selected .badge{font-size:.8rem;padding:.24rem .6rem;}
+  /* User request: no REC pill overlay on mobile — the sidebar footer
+     summary and the sidebar per-camera red dot are enough. */
+  .tile .rec-dot,.tile.rec .rec-dot{display:none!important;}
   .fab{width:48px;height:48px;}
   .sidebar{width:88vw;}
   /* Mobile: PTZ becomes a bottom sheet */

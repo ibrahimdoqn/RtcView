@@ -13,6 +13,7 @@ Design
 """
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -34,8 +35,22 @@ def _cam_dir(root: Path, cam_id: str) -> Path:
     return root / cam_id / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
 
 
-def _now_ts_slug() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
+# Segment filenames are strftime-templated by ffmpeg so each file's name
+# encodes the exact wall-clock instant it was opened. This lets scan_and_
+# register recover accurate started_at values from the filename alone —
+# no memory dicts, no watcher-polling drift.
+_FNAME_RE = re.compile(r"_(\d{8})_(\d{6})\.[A-Za-z0-9]+$")
+
+
+def _parse_fname_ts(path: Path) -> Optional[float]:
+    m = _FNAME_RE.search(path.name)
+    if not m:
+        return None
+    try:
+        dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+        return dt.timestamp()
+    except ValueError:
+        return None
 
 
 def _schedule_active(schedule: list, now: Optional[datetime] = None) -> bool:
@@ -81,15 +96,15 @@ class CameraRecorder:
         self.started_at: Optional[float] = None
         self.day_dir: Optional[Path] = None
         self.pattern: Optional[str] = None
-        self.slug: Optional[str] = None
         self.ext: str = "mp4"
         self.manual_until: float = 0.0  # unix ts; > now means manual override on
         self.trigger: str = "schedule"
-        # Per-segment first-seen timestamp — the authoritative segment start,
-        # since Linux st_ctime is updated by every write and st_mtime is the
-        # close time. When file N+1 first appears, that moment is file N's
-        # close time and file N+1's start time.
-        self._seg_start: dict[str, float] = {}
+        # Session tracks the files this recorder instance has spawned. A file
+        # is registered as closed the first time we see a NEWER sibling in
+        # this session (or on final flush). Filenames are strftime-templated
+        # so the exact wall-clock start time comes from the name itself —
+        # no polling drift.
+        self._session_files: list[Path] = []
         self._stderr_tail: list[str] = []
         self._stderr_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -102,9 +117,11 @@ class CameraRecorder:
             if self.is_running(): return
             self.day_dir = _cam_dir(self.root, self.cam_id)
             self.day_dir.mkdir(parents=True, exist_ok=True)
-            self.slug = _now_ts_slug()
             self.ext = "mp4" if self.container == "mp4" else "mkv"
-            self.pattern = str(self.day_dir / f"{self.cam_id}_{self.slug}_%05d.{self.ext}")
+            # Filename encodes each segment's own wall-clock start time via
+            # ffmpeg's -strftime 1. Second resolution is unique because
+            # segment_time >= 30 s.
+            self.pattern = str(self.day_dir / f"{self.cam_id}_%Y%m%d_%H%M%S.{self.ext}")
             audio = bool(self.cam.get("record_audio", False))
             cmd = [
                 self.ffmpeg_path,
@@ -128,7 +145,7 @@ class CameraRecorder:
                 "-segment_time", str(self.segment_seconds),
                 "-segment_format", "mp4" if ext == "mp4" else "matroska",
                 "-reset_timestamps", "1",
-                "-strftime", "0",
+                "-strftime", "1",
                 "-movflags", "+faststart",
                 self.pattern,
             ]
@@ -144,7 +161,7 @@ class CameraRecorder:
                 return
             self.started_at = time.time()
             self.trigger = trigger
-            self._seg_start.clear()
+            self._session_files = []
             self._stderr_tail = []
             self._stderr_thread = threading.Thread(
                 target=self._drain_stderr, daemon=True, name=f"rec-err-{self.cam_id}")
@@ -183,60 +200,52 @@ class CameraRecorder:
     def _scan_and_register(self, final: bool = False):
         """Register newly-closed segments.
 
-        Segment start/end times are tracked in memory (``self._seg_start``)
-        because Linux ``st_ctime`` is inode-change time — it updates on
-        every write, so it equals ``st_mtime`` (close time) for a written
-        file, which would give bogus 1-second durations.
-
-        The rule: when file N+1 first appears on a scan, file N has just
-        rolled over. File N's ``end`` is that observation instant; file
-        N+1's ``start`` is also that instant. File 0's start is the
-        recorder's spawn time. The active (latest) file is only registered
-        on a final flush, with ``end = mtime``.
+        Filenames encode each segment's own wall-clock start time (ffmpeg
+        ``-strftime 1``). ``started_at`` is parsed from the filename; the
+        end of a closed file equals the start of the next file (accurate
+        to the second — no watcher-polling drift). Only files that were
+        opened by THIS recorder instance are considered, so leftover files
+        from a previous crashed process are never double-registered.
         """
-        if not self.day_dir or not self.slug: return
+        if not self.day_dir or not self.started_at:
+            return
+        # Only pick up files whose parsed start is >= this session's spawn
+        # time — everything else belongs to a previous run and is already
+        # (or will be) recorded through its own recorder or via rescan.
+        session_start = self.started_at - 5  # 5s slack for clock jitter
         try:
-            files = sorted(self.day_dir.glob(f"{self.cam_id}_{self.slug}_*.{self.ext}"))
+            candidates = sorted(self.day_dir.glob(f"{self.cam_id}_*.{self.ext}"))
         except Exception:
             return
-        now = time.time()
+        files: list[tuple[Path, float]] = []
+        for p in candidates:
+            ts = _parse_fname_ts(p)
+            if ts is None or ts < session_start:
+                continue
+            files.append((p, ts))
+        if not files:
+            return
+        # keep session_files in sync so tests / status reflect what we saw
+        self._session_files = [f for f, _ in files]
 
-        # 1) Assign a start time to any file we're seeing for the first time.
-        for i, f in enumerate(files):
-            path = str(f.resolve())
-            if path in self._seg_start: continue
-            if i == 0 and self.started_at:
-                # First segment of this ffmpeg run — starts at spawn time.
-                self._seg_start[path] = self.started_at
-            elif i > 0:
-                # A newer file appeared => it was created at ~now.
-                self._seg_start[path] = now
-            else:
-                # No spawn time known (shouldn't happen), fall back to mtime.
-                try: self._seg_start[path] = f.stat().st_mtime
-                except OSError: self._seg_start[path] = now
-
-        # 2) Register closed files. A file is closed iff:
-        #    - a newer sibling exists (rollover), OR
-        #    - final flush (recorder is stopping).
         get_by_path = getattr(self.storage, "get_segment_by_path", None)
-        for i, f in enumerate(files):
+        for i, (f, started) in enumerate(files):
             path = str(f.resolve())
-            try: st = f.stat()
-            except OSError: continue
+            try:
+                st = f.stat()
+            except OSError:
+                continue
             is_latest = (i == len(files) - 1)
             if not (final or not is_latest):
+                # Latest file is still being written; register on rollover.
                 continue
             if get_by_path and get_by_path(path):
                 continue
-            started = self._seg_start.get(path, st.st_mtime - self.segment_seconds)
             if not is_latest:
-                next_path = str(files[i+1].resolve())
-                ended = self._seg_start.get(next_path, st.st_mtime)
+                ended = files[i+1][1]  # next segment's start = this one's close
             else:
                 ended = st.st_mtime  # final flush
             if ended <= started:
-                # Should not happen — safeguard so duration is at least 1 s.
                 ended = started + max(1.0, st.st_size / 500_000.0)
             self.storage.register_segment(self.cam_id, path, started, ended, trigger=self.trigger)
 

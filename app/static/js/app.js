@@ -63,7 +63,7 @@
       wireKeyboard();
     } catch (e) { toast("Yapılandırma yüklenemedi: " + e.message, "err"); }
     setInterval(updateStatus, 5000);
-    setInterval(updateRecStatus, 4000);
+    setInterval(updateRecStatus, 2000);
   }
 
   function applySettings(){
@@ -918,13 +918,6 @@
       refreshUsageBar();
     } catch (e) { toast("Rescan başarısız: " + e.message, "err"); }
   });
-  $("#s-rec-fix").addEventListener("click", async () => {
-    try {
-      const r = await api.post("/api/recording/refresh_durations");
-      toast(`Onarım: ${r.fixed}/${r.total} kayıt düzeltildi` + (r.skipped ? ` (${r.skipped} atlandı)` : "") + (r.missing ? `, ${r.missing} dosya eksik` : ""), "ok");
-      refreshUsageBar();
-    } catch (e) { toast("Onarım başarısız: " + e.message, "err"); }
-  });
   $("#s-rec-purge").addEventListener("click", async () => {
     try {
       const r = await api.post("/api/recording/purge");
@@ -1064,9 +1057,13 @@
   }
 
   // ---------- Timeline: click-seek, drag-scrub, shift/middle-drag pan, wheel zoom, right-click reset ----------
+  // Scrub behavior: within the active segment we seek the video in real time
+  // (cheap — no reload). Crossing into another segment during drag only
+  // moves the visual cursor; the actual load happens on release, so a fast
+  // sweep across the day doesn't thrash video.src through 20 files.
   function wireTimeline(){
     const tl = $("#pb-timeline");
-    let drag = null;   // {mode:'scrub'|'pan', startX, startY, startOffset, moved}
+    let drag = null;
 
     const timeFromX = (clientX) => {
       const pb = state.playback;
@@ -1077,9 +1074,27 @@
       const viewStart = pb.dayStart + pb.offset * span;
       return viewStart + rel * viewFrac * span;
     };
+    const moveGhostCursor = (absTime) => {
+      const pb = state.playback;
+      const span = pb.dayEnd - pb.dayStart;
+      const viewFrac = 1 / pb.zoom;
+      const viewStart = pb.dayStart + pb.offset * span;
+      const viewEnd   = viewStart + viewFrac * span;
+      const pct = ((absTime - viewStart) / (viewEnd - viewStart)) * 100;
+      $("#pb-cursor").style.left = Math.max(0, Math.min(100, pct)) + "%";
+    };
+    const scrubLive = (absTime) => {
+      const pb = state.playback;
+      moveGhostCursor(absTime);
+      // If the current segment covers this time, seek within the video —
+      // instant, no reload. Otherwise defer to release.
+      if (pb.active && absTime >= pb.active.started_at && absTime <= pb.active.ended_at){
+        const v = $("#pb-video");
+        try { v.currentTime = absTime - pb.active.started_at; } catch {}
+      }
+    };
 
     tl.addEventListener("contextmenu", (e) => {
-      // Right-click resets zoom + offset (matches live-view muscle memory).
       e.preventDefault();
       state.playback.zoom = 1;
       state.playback.offset = 0;
@@ -1087,36 +1102,48 @@
     });
 
     tl.addEventListener("mousedown", (e) => {
-      if (e.button === 2) return;  // right button handled by contextmenu
+      if (e.button === 2) return;
       e.preventDefault();
       const panMode = e.shiftKey || e.button === 1;
       drag = {
         mode: panMode ? "pan" : "scrub",
-        startX: e.clientX, startY: e.clientY,
+        startX: e.clientX,
         startOffset: state.playback.offset,
-        moved: false,
+        scrubTime: null,
       };
       tl.classList.add(panMode ? "panning" : "scrubbing");
-      if (!panMode) seekToAbsTime(timeFromX(e.clientX));
+      if (!panMode){
+        drag.scrubTime = timeFromX(e.clientX);
+        scrubLive(drag.scrubTime);
+      }
     });
     window.addEventListener("mousemove", (e) => {
       if (!drag) return;
-      const dx = e.clientX - drag.startX;
-      if (Math.abs(dx) > 2) drag.moved = true;
       if (drag.mode === "pan"){
         const rect = tl.getBoundingClientRect();
+        const dx = e.clientX - drag.startX;
         const shift = -dx / rect.width / state.playback.zoom;
         state.playback.offset = Math.max(0, Math.min(1 - 1/state.playback.zoom, drag.startOffset + shift));
         renderTimeline();
       } else {
-        // Live scrub — no play spam, just move cursor + set currentTime
-        seekToAbsTime(timeFromX(e.clientX), { keepPlaying: true, silent: true });
+        drag.scrubTime = timeFromX(e.clientX);
+        scrubLive(drag.scrubTime);
       }
     });
     window.addEventListener("mouseup", () => {
       if (!drag) return;
+      const wasScrub = drag.mode === "scrub" && drag.scrubTime != null;
+      const target = drag.scrubTime;
+      const pb = state.playback;
       tl.classList.remove("scrubbing", "panning");
       drag = null;
+      if (wasScrub){
+        // Cross-segment jumps happen here (release) so a rapid drag doesn't
+        // ping-pong video.src. Within-segment scrubs already updated v.currentTime.
+        if (!pb.active || target < pb.active.started_at || target > pb.active.ended_at){
+          seekToAbsTime(target);
+        }
+      }
     });
 
     tl.addEventListener("wheel", (e) => {
@@ -1127,20 +1154,19 @@
       const oldZ = pb.zoom;
       const factor = e.deltaY < 0 ? 1.25 : 1/1.25;
       const newZ = Math.max(1, Math.min(96, oldZ * factor));
-      // Keep hovered point stable
       const tAtRel = pb.offset + rel / oldZ;
       pb.zoom = newZ;
       pb.offset = Math.max(0, Math.min(1 - 1/newZ, tAtRel - rel/newZ));
       renderTimeline();
     }, { passive: false });
 
-    // Touch: single-finger drag = scrub, two-finger = pinch zoom (like live view)
+    // Touch: single-finger drag = scrub (same rules), two-finger = pinch zoom
     let touch = null;
     tl.addEventListener("touchstart", (e) => {
       if (e.touches.length === 1){
         const t = e.touches[0];
-        touch = { mode:"scrub", x: t.clientX };
-        seekToAbsTime(timeFromX(t.clientX));
+        touch = { mode:"scrub", scrubTime: timeFromX(t.clientX) };
+        scrubLive(touch.scrubTime);
       } else if (e.touches.length === 2){
         const [a,b] = e.touches;
         touch = { mode:"pinch",
@@ -1155,7 +1181,8 @@
       if (!touch) return;
       const rect = tl.getBoundingClientRect();
       if (touch.mode === "scrub" && e.touches.length === 1){
-        seekToAbsTime(timeFromX(e.touches[0].clientX), { keepPlaying: true, silent: true });
+        touch.scrubTime = timeFromX(e.touches[0].clientX);
+        scrubLive(touch.scrubTime);
         e.preventDefault();
       } else if (touch.mode === "pinch" && e.touches.length === 2){
         const [a,b] = e.touches;
@@ -1170,7 +1197,15 @@
         e.preventDefault();
       }
     }, { passive: false });
-    tl.addEventListener("touchend", () => { touch = null; });
+    tl.addEventListener("touchend", () => {
+      if (touch && touch.mode === "scrub" && touch.scrubTime != null){
+        const pb = state.playback;
+        if (!pb.active || touch.scrubTime < pb.active.started_at || touch.scrubTime > pb.active.ended_at){
+          seekToAbsTime(touch.scrubTime);
+        }
+      }
+      touch = null;
+    });
   }
 
   // ---------- Video zoom/pan (same UX as live tiles) ----------
