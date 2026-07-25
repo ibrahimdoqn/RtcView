@@ -282,10 +282,24 @@
       <div id="pb-empty" class="pb-empty hidden">Bu gün için kayıt yok.</div>
     </div>
     <div class="pb-controls">
-      <button id="pb-play" class="btn ghost small" title="Oynat/Duraklat (Space)">⏯</button>
-      <button id="pb-back" class="btn ghost small" title="-10 sn (←)">⏪ 10s</button>
-      <button id="pb-fwd" class="btn ghost small" title="+10 sn (→)">10s ⏩</button>
-      <select id="pb-speed" title="Hız">
+      <button id="pb-play" class="pb-btn" title="Oynat/Duraklat (Space)" aria-label="Oynat/Duraklat">
+        <svg id="pb-play-icon" viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button id="pb-back" class="pb-btn" title="-10 sn (←)" aria-label="10 saniye geri">
+        <svg viewBox="0 0 32 32" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22.6 6.2 A 12 12 0 1 0 26 18"/>
+          <path d="M22.6 6.2 L 18 5.5 M 22.6 6.2 L 22 10.8"/>
+          <text x="16" y="20" font-size="9.5" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none" style="font-family:-apple-system,BlinkMacSystemFont,sans-serif">10</text>
+        </svg>
+      </button>
+      <button id="pb-fwd" class="pb-btn" title="+10 sn (→)" aria-label="10 saniye ileri">
+        <svg viewBox="0 0 32 32" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9.4 6.2 A 12 12 0 1 1 6 18"/>
+          <path d="M9.4 6.2 L 14 5.5 M 9.4 6.2 L 10 10.8"/>
+          <text x="16" y="20" font-size="9.5" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none" style="font-family:-apple-system,BlinkMacSystemFont,sans-serif">10</text>
+        </svg>
+      </button>
+      <select id="pb-speed" class="pb-select" title="Hız">
         <option value="0.5">0.5×</option>
         <option value="1" selected>1×</option>
         <option value="2">2×</option>
@@ -293,18 +307,26 @@
       </select>
       <span id="pb-time" class="pb-time">—</span>
       <div class="pb-spacer"></div>
-      <button id="pb-snap" class="btn ghost small" title="Kare kaydet">📷</button>
-      <button id="pb-dl" class="btn ghost small" title="Segmenti indir">⬇</button>
-      <button id="pb-lock" class="btn ghost small" title="Kilitle/aç">🔓</button>
-      <button id="pb-del" class="btn danger small" title="Segmenti sil">🗑</button>
+      <button id="pb-snap" class="pb-btn" title="Kare kaydet" aria-label="Kare kaydet">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      </button>
+      <button id="pb-dl" class="pb-btn" title="Segmenti indir" aria-label="İndir">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      </button>
+      <button id="pb-lock" class="pb-btn" title="Kilitle/aç" aria-label="Kilitle">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+      </button>
+      <button id="pb-del" class="pb-btn pb-danger" title="Segmenti sil" aria-label="Sil">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/></svg>
+      </button>
     </div>
     <div class="pb-timeline-wrap">
-      <div id="pb-timeline" class="pb-timeline" aria-label="24 saat zaman çizelgesi">
-        <div class="pb-ruler" id="pb-ruler"></div>
-        <div class="pb-track" id="pb-track"></div>
-        <div class="pb-cursor" id="pb-cursor"></div>
+      <div id="pb-timeline" class="pb-timeline" aria-label="Zaman çizelgesi">
+        <div id="pb-track" class="pb-track"></div>
+        <div id="pb-playhead" class="pb-playhead">
+          <div id="pb-time-badge" class="pb-time-badge">--:--:--</div>
+        </div>
       </div>
-      <div class="pb-hint">Tıkla veya sürükle: konumu seç • Tekerlek: yakınlaş • Sağ tık: zoom sıfırla • Shift+sürükle veya orta tuş: pan</div>
     </div>
   </div>
 

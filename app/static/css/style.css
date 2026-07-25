@@ -499,18 +499,29 @@ kbd{
     max-width:100%;max-height:100%;
     justify-self:center;align-self:center;
   }
-  .pb-controls{padding:.3rem .5rem;gap:.35rem;}
-  .pb-controls .btn.small{min-height:36px;padding:.3rem .55rem;font-size:.95rem;}
-  .pb-controls select{min-height:34px;padding:.25rem .4rem;font-size:.85rem;}
-  .pb-time{
-    /* Give the time its own full-width line so it never squishes into the buttons */
-    flex-basis:100%;order:99;text-align:center;font-size:.75rem;margin-top:.15rem;
-  }
-  .pb-timeline-wrap{padding:.35rem .5rem calc(.4rem + var(--safe-b));}
-  /* Taller timeline on mobile so the scrub target is finger-friendly */
-  .pb-timeline{height:64px;}
-  .pb-hint{display:none;}
-  .pb-ruler .tick .lbl{font-size:.55rem;}
+  /* One tight row for all 8 controls; hide the numeric time (playhead
+     badge already shows it, no need to repeat inside the toolbar). */
+  .pb-controls{padding:.35rem .45rem;gap:.3rem;flex-wrap:nowrap;overflow-x:auto;}
+  .pb-controls::-webkit-scrollbar{display:none;}
+  .pb-btn{width:38px;height:38px;flex:0 0 auto;}
+  .pb-select{height:38px;min-width:56px;flex:0 0 auto;padding:0 .35rem;font-size:.82rem;}
+  .pb-time{display:none;}
+  .pb-timeline-wrap{padding:.5rem .5rem calc(.6rem + var(--safe-b));}
+  /* Slightly taller playhead-style timeline on mobile */
+  .pb-timeline{height:78px;}
+  .pb-tick .pb-tick-lbl{font-size:.6rem;}
+  .pb-time-badge{font-size:.8rem;padding:.3rem .6rem;}
+}
+
+/* Tighten fieldsets on narrow screens so the go2rtc / recording sections
+   don't sprawl unnecessarily wide inside the settings modal. */
+@media (max-width: 480px){
+  .modal-body{gap:.6rem;padding:.85rem;}
+  .modal-body fieldset{padding:.55rem .6rem;gap:.4rem;}
+  .modal-body fieldset legend{font-size:.72rem;padding:0 .3rem;}
+  .modal-body label{font-size:.78rem;}
+  .modal-body .grid2{gap:.4rem;grid-template-columns:2fr 1fr;}
+  .modal-body label input,.modal-body label select{padding:.5rem .6rem;min-height:36px;}
 }
 /* Time picker (same visual as other header controls) */
 .pb-header input[type=time]{
@@ -699,63 +710,117 @@ kbd{
   position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);
   background:radial-gradient(ellipse at center, #14171f 0%, #05070a 100%);
 }
+/* ----- Playback control bar (Apple-style monotone icon buttons) ----- */
 .pb-controls{
-  display:flex;align-items:center;gap:.4rem;padding:.5rem .8rem;
-  background:rgba(20,22,28,.9);border-top:1px solid var(--border);flex-wrap:wrap;
+  display:flex;align-items:center;gap:.35rem;padding:.5rem .7rem;
+  background:rgba(20,22,28,.92);border-top:1px solid var(--border);
+  backdrop-filter:blur(20px) saturate(1.6);-webkit-backdrop-filter:blur(20px) saturate(1.6);
 }
 .pb-controls .pb-spacer{flex:1;}
-.pb-controls select{
-  background:rgba(255,255,255,.08);color:#fff;border:1px solid var(--border);
-  border-radius:8px;padding:.35rem .5rem;min-height:32px;
+.pb-btn{
+  display:inline-grid;place-items:center;
+  width:38px;height:38px;padding:0;border-radius:10px;
+  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);
+  color:#fff;
+  transition:background .12s var(--ease-out), transform .08s var(--ease-out);
 }
-.pb-time{color:var(--muted);font-size:.85rem;font-family:ui-monospace,"SF Mono",monospace;}
+.pb-btn:hover{background:rgba(255,255,255,.14);}
+.pb-btn:active{transform:scale(0.92);background:rgba(255,255,255,.22);}
+.pb-btn svg{display:block;}
+.pb-btn.pb-danger{color:#ff453a;background:rgba(255,69,58,.14);border-color:rgba(255,69,58,.28);}
+.pb-btn.pb-danger:hover{background:rgba(255,69,58,.28);}
+.pb-select{
+  height:38px;padding:0 .55rem;border-radius:10px;font-weight:500;font-size:.85rem;
+  background:rgba(255,255,255,.06);color:#fff;border:1px solid rgba(255,255,255,.08);
+  color-scheme:dark;
+}
+.pb-time{color:var(--muted);font-size:.82rem;font-family:ui-monospace,"SF Mono",monospace;margin-left:.15rem;}
 
-/* Timeline */
+/* ----- Timeline: fixed centre playhead + sliding track (Apple/Nest style) ----- */
 .pb-timeline-wrap{
-  padding:.4rem .8rem .8rem;background:rgba(14,16,20,.95);
+  padding:.4rem .6rem calc(.6rem + var(--safe-b));
+  background:rgba(14,16,20,.96);
   border-top:1px solid var(--border);
 }
 .pb-timeline{
-  position:relative;height:64px;
-  background:linear-gradient(#101218,#0a0c11);
-  border:1px solid var(--border);border-radius:9px;overflow:hidden;
-  cursor:pointer;user-select:none;
-  touch-action:none;
+  position:relative;height:74px;
+  background:linear-gradient(180deg,#0f1218 0%,#0a0c11 100%);
+  border:1px solid rgba(255,255,255,.06);border-radius:12px;overflow:hidden;
+  user-select:none;touch-action:none;
+  cursor:grab;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
 }
-.pb-timeline.scrubbing{cursor:ew-resize;}
-.pb-timeline.panning{cursor:grabbing;}
-.pb-ruler{
-  position:absolute;left:0;right:0;top:0;height:16px;
-  border-bottom:1px solid rgba(255,255,255,.06);pointer-events:none;
-}
-.pb-ruler .tick{
-  position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.15);
-}
-.pb-ruler .tick .lbl{
-  position:absolute;left:2px;top:0;font-size:.65rem;color:var(--muted);white-space:nowrap;
-}
+.pb-timeline.scrubbing{cursor:grabbing;}
+/* The track is what "moves". Its width is (dayEnd-dayStart)*pxPerSec;
+   JS translates it so `centerTime` sits under the playhead. */
 .pb-track{
-  position:absolute;left:0;right:0;top:16px;bottom:0;
+  position:absolute;top:0;bottom:0;left:0;
+  will-change:transform;
+  transition:none;
+  pointer-events:none;             /* Interaction is on .pb-timeline */
 }
+/* Ticks (minor + major) live inside the track */
+.pb-tick{
+  position:absolute;top:32px;bottom:8px;width:1px;background:rgba(255,255,255,.10);
+}
+.pb-tick.major{background:rgba(255,255,255,.22);top:24px;}
+.pb-tick .pb-tick-lbl{
+  position:absolute;top:-20px;left:0;transform:translateX(-50%);
+  font-size:.66rem;color:rgba(255,255,255,.55);font-weight:500;
+  white-space:nowrap;letter-spacing:.02em;
+  font-family:ui-monospace,"SF Mono",monospace;
+}
+/* Segment bars sit above the ruler ticks, rounded */
 .pb-seg{
-  position:absolute;top:6px;bottom:6px;background:rgba(10,132,255,.55);
-  border:1px solid rgba(10,132,255,.85);border-radius:3px;
-  transition:background .1s var(--ease-out);
+  position:absolute;top:44px;height:20px;
+  background:linear-gradient(180deg,rgba(10,132,255,.85),rgba(10,132,255,.65));
+  border-radius:4px;
+  box-shadow:0 1px 3px rgba(0,0,0,.25);
+  transition:filter .1s var(--ease-out);
 }
-.pb-seg:hover{background:rgba(10,132,255,.85);}
-.pb-seg.active{background:rgba(48,209,88,.85);border-color:#30d158;}
-.pb-seg.locked{background:rgba(255,214,10,.75);border-color:#ffd60a;}
-.pb-seg.manual{background:rgba(255,69,58,.75);border-color:#ff453a;}
-.pb-cursor{
-  position:absolute;top:0;bottom:0;width:2px;background:#fff;
-  box-shadow:0 0 10px rgba(255,255,255,.7);pointer-events:none;left:0;z-index:2;
+.pb-seg.active{
+  background:linear-gradient(180deg,rgba(48,209,88,.95),rgba(48,209,88,.75));
 }
-.pb-cursor::before{
-  content:"";position:absolute;top:0;left:-6px;
-  width:14px;height:14px;border-radius:50%;background:#fff;
-  box-shadow:0 0 12px rgba(255,255,255,.7);
+.pb-seg.locked{
+  background:linear-gradient(180deg,rgba(255,214,10,.85),rgba(255,159,10,.7));
 }
-.pb-hint{color:var(--muted);font-size:.7rem;text-align:center;margin-top:.35rem;}
+.pb-seg.manual{
+  background:linear-gradient(180deg,rgba(255,69,58,.85),rgba(255,69,58,.65));
+}
+/* Fixed centre playhead: a thin vertical line that spans the timeline */
+.pb-playhead{
+  position:absolute;top:0;bottom:0;left:50%;width:2px;transform:translateX(-1px);
+  background:#fff;box-shadow:0 0 12px rgba(255,255,255,.55);
+  pointer-events:none;z-index:3;
+}
+.pb-playhead::before,.pb-playhead::after{
+  content:"";position:absolute;left:50%;transform:translateX(-50%);
+  width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;
+}
+.pb-playhead::before{top:0;border-top:8px solid #fff;}
+.pb-playhead::after{bottom:0;border-bottom:8px solid #fff;}
+/* Time label above (below on mobile portrait if space is tight) */
+.pb-time-badge{
+  position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);
+  padding:.35rem .75rem;border-radius:9px;
+  background:rgba(28,30,38,.88);color:#fff;
+  border:1px solid rgba(255,255,255,.14);
+  font-family:ui-monospace,"SF Mono",monospace;font-weight:600;font-size:.85rem;
+  letter-spacing:.02em;white-space:nowrap;
+  backdrop-filter:blur(20px) saturate(1.6);-webkit-backdrop-filter:blur(20px) saturate(1.6);
+  box-shadow:0 4px 14px rgba(0,0,0,.35);
+  pointer-events:none;
+}
+.pb-time-badge::after{
+  content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);
+  width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;
+  border-top:5px solid rgba(28,30,38,.88);
+}
+.pb-timeline.empty::before{
+  content:"Bu gün için kayıt yok";
+  position:absolute;inset:0;display:grid;place-items:center;
+  color:rgba(255,255,255,.35);font-size:.85rem;
+}
 
 @media (max-width:640px){
   .pb-header{flex-wrap:wrap;padding:.4rem .5rem;gap:.35rem;}
