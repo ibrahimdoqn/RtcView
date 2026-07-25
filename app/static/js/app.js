@@ -105,13 +105,8 @@
       const st = state.recStatus.get(el.dataset.id);
       el.classList.toggle("rec", !!(st && st.running));
     });
-    $$("#grid .tile").forEach(t => {
-      const st = state.recStatus.get(t.dataset.id);
-      const running = !!(st && st.running);
-      t.classList.toggle("rec", running);
-      const recBtn = t.querySelector('[data-act="rec"]');
-      if (recBtn) recBtn.classList.toggle("rec-on", running);
-    });
+    // Tile-level REC indicator was removed by user request; the sidebar
+    // footer summary and per-camera row dot are enough.
   }
 
   // -------- Sidebar --------
@@ -245,9 +240,7 @@
         </div>` : ''}
         <div class="tile-actions">
           <button data-act="snap" title="Anlık kare">📷</button>
-          <button data-act="rec"  title="Kayıt (manuel)">⏺</button>
         </div>
-        <div class="rec-dot">REC</div>
         <div class="zoom-info" style="display:none">1.0×</div>
         <div class="center-msg" data-msg></div>
       `;
@@ -275,9 +268,7 @@
     tile.querySelectorAll(".tile-actions button").forEach(b => {
       b.addEventListener("click", (e) => {
         e.stopPropagation();
-        const act = b.dataset.act;
-        if (act === "snap") return snapshotCamera(cam);
-        if (act === "rec")  return toggleManualRec(cam);
+        if (b.dataset.act === "snap") return snapshotCamera(cam);
       });
     });
 
@@ -442,21 +433,6 @@
     } catch (e) { toast("Snapshot başarısız: " + e.message, "err"); }
   }
 
-  async function toggleManualRec(cam){
-    const st = state.recStatus.get(cam.id) || {};
-    try {
-      if (st.running && st.trigger === "manual"){
-        await api.post(`/api/cameras/${cam.id}/record/stop`);
-        toast("Manuel kayıt durduruldu");
-      } else if (st.running){
-        toast("Zaten kayıt yapılıyor (" + st.trigger + ")");
-      } else {
-        await api.post(`/api/cameras/${cam.id}/record/start`, { seconds: 600 });
-        toast("Manuel kayıt başladı (10 dk)", "ok");
-      }
-      updateRecStatus();
-    } catch (e) { toast("Kayıt komutu başarısız: " + e.message, "err"); }
-  }
 
   // -------- WebRTC (WHEP through go2rtc) --------
   async function startPlayer(cam, tile){
@@ -985,15 +961,38 @@
     $("#pb-date").value = pb.date;
     $("#playback").classList.remove("hidden");
     loadDay();
+    // While the panel is open, refresh the day's segment list so newly
+    // closed segments appear on the timeline without a manual rescan.
+    if (pb._refreshTimer) clearInterval(pb._refreshTimer);
+    pb._refreshTimer = setInterval(refreshDaySilent, 10000);
   }
   function closePlayback(){
     if (state.playback){
+      if (state.playback._refreshTimer){
+        clearInterval(state.playback._refreshTimer);
+        state.playback._refreshTimer = null;
+      }
       const v = $("#pb-video"); v.pause(); v.removeAttribute("src"); v.load();
       state.playback.segs = [];
       state.playback.active = null;
       if (state.playback._resetVideoZoom) state.playback._resetVideoZoom();
     }
     $("#playback").classList.add("hidden");
+  }
+
+  async function refreshDaySilent(){
+    const pb = state.playback;
+    if (!pb || $("#playback").classList.contains("hidden")) return;
+    try {
+      const [t0, t1] = dayRangeUnix(pb.date);
+      const segs = await api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`);
+      const oldActiveId = pb.active ? pb.active.id : null;
+      pb.segs = segs || [];
+      if (oldActiveId) pb.active = pb.segs.find(s => s.id === oldActiveId) || pb.active;
+      $("#pb-empty").classList.toggle("hidden", pb.segs.length > 0);
+      $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
+      renderTimeline();
+    } catch { /* keep quiet — this is a background refresh */ }
   }
   function todayLocal(){
     const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
@@ -1385,9 +1384,15 @@
     const viewStart = pb.dayStart + pb.offset * span;
     const viewEnd   = viewStart + viewFrac * span;
 
-    // Ruler ticks — pick step from zoom level
+    // Ruler ticks — density picked from zoom level AND available pixel
+    // width, so labels never crash into each other on narrow phones.
     const stepMin = pb.zoom >= 24 ? 1 : pb.zoom >= 12 ? 5 : pb.zoom >= 6 ? 15 : pb.zoom >= 3 ? 30 : 60;
+    const tlWidth = $("#pb-timeline").getBoundingClientRect().width || 320;
+    const secondsPerPx = (viewEnd - viewStart) / tlWidth;
+    const MIN_LABEL_PX = 44;                       // min horizontal room per label
+    const minSecondsBetweenLabels = MIN_LABEL_PX * secondsPerPx;
     const [dy,dm,dd] = pb.date.split("-").map(Number);
+    let lastLabelSec = -Infinity;
     for (let m = 0; m <= 24*60; m += stepMin){
       const t = new Date(dy, dm-1, dd, 0, 0, 0).getTime()/1000 + m*60;
       if (t < viewStart - 60 || t > viewEnd + 60) continue;
@@ -1395,13 +1400,13 @@
       const tick = document.createElement("div"); tick.className = "tick";
       tick.style.left = x + "%";
       const hh = Math.floor(m/60), mm = m % 60;
-      // Show label on major ticks (hour boundary) or when zoomed in enough that minor ticks are readable
-      const majorLabel = mm === 0;
-      const minorLabel = pb.zoom >= 12 && mm % (pb.zoom >= 24 ? 5 : 15) === 0;
-      if (majorLabel || minorLabel){
+      // Only label if enough pixels have passed since the last label
+      const wantLabel = mm === 0 || (pb.zoom >= 12 && mm % (pb.zoom >= 24 ? 5 : 15) === 0);
+      if (wantLabel && (t - lastLabelSec) >= minSecondsBetweenLabels){
         const lbl = document.createElement("div"); lbl.className = "lbl";
         lbl.textContent = `${pad2(hh)}:${pad2(mm)}`;
         tick.appendChild(lbl);
+        lastLabelSec = t;
       }
       ruler.appendChild(tick);
     }
