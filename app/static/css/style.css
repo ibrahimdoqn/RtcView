@@ -355,7 +355,11 @@ input,select{font:inherit;color:inherit;}
   background:var(--panel-2);border:1px solid var(--border-solid);
   border-radius:9px;padding:.6rem .75rem;color:var(--text);min-height:40px;
   transition:border-color .12s var(--ease-out);
+  color-scheme:dark;
 }
+:root[data-theme="light"] .modal-body label input,
+:root[data-theme="light"] .modal-body label select{color-scheme:light;}
+.modal-body label select option{background:var(--panel-solid);color:var(--text);}
 .modal-body label input:focus,.modal-body label select:focus{border-color:var(--accent);}
 .modal-body label.row{flex-direction:row;align-items:center;gap:.55rem;color:var(--text);font-size:.92rem;font-weight:400;}
 .modal-body label.row input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent);}
@@ -603,15 +607,42 @@ kbd{
   border-bottom:1px solid var(--border);
 }
 .pb-header .pb-title{font-weight:600;letter-spacing:-0.01em;}
-.pb-header select,.pb-header input[type=date]{
-  background:rgba(255,255,255,.08);color:#fff;border:1px solid var(--border);
+.pb-header select,.pb-header input[type=date],
+.pb-controls select{
+  background:#17191f;color:#fff;border:1px solid var(--border);
   border-radius:8px;padding:.4rem .55rem;min-height:34px;
+  color-scheme:dark;  /* Native date/time picker follows dark theme */
+}
+/* Dropdown options — <option> ignores parent styling on some browsers */
+.pb-header select option,.pb-controls select option{
+  background:#17191f;color:#fff;
+}
+:root[data-theme="light"] .pb-header select,
+:root[data-theme="light"] .pb-header input[type=date],
+:root[data-theme="light"] .pb-controls select{
+  background:#fff;color:#0e1116;color-scheme:light;
+}
+:root[data-theme="light"] .pb-header select option,
+:root[data-theme="light"] .pb-controls select option{
+  background:#fff;color:#0e1116;
 }
 .pb-header .pb-spacer{flex:1;}
 .pb-status{color:var(--muted);font-size:.8rem;}
 .pb-stage{position:relative;background:#000;min-height:0;overflow:hidden;
-  display:grid;place-items:center;}
-.pb-stage video{width:100%;height:100%;object-fit:contain;background:#000;}
+  display:grid;place-items:center;touch-action:none;user-select:none;}
+.pb-stage video{
+  width:100%;height:100%;object-fit:contain;background:#000;
+  transform-origin:0 0;will-change:transform;transition:none;
+}
+.pb-stage.grabbing{cursor:grabbing;}
+.pb-stage.zoomed{cursor:grab;}
+.pb-zoom-info{
+  position:absolute;top:10px;right:10px;
+  background:rgba(0,0,0,.6);color:#fff;font-size:.75rem;font-weight:500;
+  padding:.22rem .55rem;border-radius:7px;pointer-events:none;
+  border:1px solid rgba(255,255,255,.1);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+}
 .pb-empty{
   position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);
   background:radial-gradient(ellipse at center, #14171f 0%, #05070a 100%);
@@ -633,12 +664,14 @@ kbd{
   border-top:1px solid var(--border);
 }
 .pb-timeline{
-  position:relative;height:56px;
+  position:relative;height:64px;
   background:linear-gradient(#101218,#0a0c11);
   border:1px solid var(--border);border-radius:9px;overflow:hidden;
-  cursor:crosshair;user-select:none;
+  cursor:pointer;user-select:none;
   touch-action:none;
 }
+.pb-timeline.scrubbing{cursor:ew-resize;}
+.pb-timeline.panning{cursor:grabbing;}
 .pb-ruler{
   position:absolute;left:0;right:0;top:0;height:16px;
   border-bottom:1px solid rgba(255,255,255,.06);pointer-events:none;
@@ -662,8 +695,13 @@ kbd{
 .pb-seg.locked{background:rgba(255,214,10,.75);border-color:#ffd60a;}
 .pb-seg.manual{background:rgba(255,69,58,.75);border-color:#ff453a;}
 .pb-cursor{
-  position:absolute;top:16px;bottom:0;width:2px;background:#fff;
-  box-shadow:0 0 10px rgba(255,255,255,.6);pointer-events:none;left:0;
+  position:absolute;top:0;bottom:0;width:2px;background:#fff;
+  box-shadow:0 0 10px rgba(255,255,255,.7);pointer-events:none;left:0;z-index:2;
+}
+.pb-cursor::before{
+  content:"";position:absolute;top:0;left:-6px;
+  width:14px;height:14px;border-radius:50%;background:#fff;
+  box-shadow:0 0 12px rgba(255,255,255,.7);
 }
 .pb-hint{color:var(--muted);font-size:.7rem;text-align:center;margin-top:.35rem;}
 

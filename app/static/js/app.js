@@ -991,6 +991,7 @@
       const v = $("#pb-video"); v.pause(); v.removeAttribute("src"); v.load();
       state.playback.segs = [];
       state.playback.active = null;
+      if (state.playback._resetVideoZoom) state.playback._resetVideoZoom();
     }
     $("#playback").classList.add("hidden");
   }
@@ -1007,7 +1008,8 @@
   function initPlayback(){
     state.playback = {
       camId: null, date: null, segs: [], active: null,
-      zoom: 1, offset: 0,   // timeline zoom (1 = whole day) and horizontal offset (0..1)
+      zoom: 1, offset: 0,       // timeline zoom (1 = whole day) and horizontal offset (0..1)
+      videoZoom: 1, videoPanX: 0, videoPanY: 0,
     };
     $("#pb-close").addEventListener("click", closePlayback);
     $("#pb-cam").addEventListener("change", (e) => { state.playback.camId = e.target.value; loadDay(); });
@@ -1018,8 +1020,8 @@
 
     const v = $("#pb-video");
     $("#pb-play").addEventListener("click", () => v.paused ? v.play() : v.pause());
-    $("#pb-back").addEventListener("click", () => seekRelative(-10));
-    $("#pb-fwd").addEventListener("click",  () => seekRelative(10));
+    $("#pb-back").addEventListener("click", (e) => { e.preventDefault(); seekRelative(-10); });
+    $("#pb-fwd").addEventListener("click",  (e) => { e.preventDefault(); seekRelative(10);  });
     $("#pb-speed").addEventListener("change", (e) => { v.playbackRate = parseFloat(e.target.value); });
     $("#pb-snap").addEventListener("click", playbackSnapshot);
     $("#pb-dl").addEventListener("click", () => {
@@ -1050,38 +1052,255 @@
     v.addEventListener("ended", playNextSegment);
     v.addEventListener("loadedmetadata", () => updateTimeLabel());
 
-    // Timeline mouse/touch
+    wireTimeline();
+    wireVideoZoom();
+  }
+
+  // ---------- Timeline: click-seek, drag-scrub, shift/middle-drag pan, wheel zoom, right-click reset ----------
+  function wireTimeline(){
     const tl = $("#pb-timeline");
-    tl.addEventListener("click", (e) => timelineSeek(e.clientX));
+    let drag = null;   // {mode:'scrub'|'pan', startX, startY, startOffset, moved}
+
+    const timeFromX = (clientX) => {
+      const pb = state.playback;
+      const rect = tl.getBoundingClientRect();
+      const rel = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      const span = pb.dayEnd - pb.dayStart;
+      const viewFrac = 1 / pb.zoom;
+      const viewStart = pb.dayStart + pb.offset * span;
+      return viewStart + rel * viewFrac * span;
+    };
+
+    tl.addEventListener("contextmenu", (e) => {
+      // Right-click resets zoom + offset (matches live-view muscle memory).
+      e.preventDefault();
+      state.playback.zoom = 1;
+      state.playback.offset = 0;
+      renderTimeline();
+    });
+
+    tl.addEventListener("mousedown", (e) => {
+      if (e.button === 2) return;  // right button handled by contextmenu
+      e.preventDefault();
+      const panMode = e.shiftKey || e.button === 1;
+      drag = {
+        mode: panMode ? "pan" : "scrub",
+        startX: e.clientX, startY: e.clientY,
+        startOffset: state.playback.offset,
+        moved: false,
+      };
+      tl.classList.add(panMode ? "panning" : "scrubbing");
+      if (!panMode) seekToAbsTime(timeFromX(e.clientX));
+    });
+    window.addEventListener("mousemove", (e) => {
+      if (!drag) return;
+      const dx = e.clientX - drag.startX;
+      if (Math.abs(dx) > 2) drag.moved = true;
+      if (drag.mode === "pan"){
+        const rect = tl.getBoundingClientRect();
+        const shift = -dx / rect.width / state.playback.zoom;
+        state.playback.offset = Math.max(0, Math.min(1 - 1/state.playback.zoom, drag.startOffset + shift));
+        renderTimeline();
+      } else {
+        // Live scrub — no play spam, just move cursor + set currentTime
+        seekToAbsTime(timeFromX(e.clientX), { keepPlaying: true, silent: true });
+      }
+    });
+    window.addEventListener("mouseup", () => {
+      if (!drag) return;
+      tl.classList.remove("scrubbing", "panning");
+      drag = null;
+    });
+
     tl.addEventListener("wheel", (e) => {
       e.preventDefault();
       const rect = tl.getBoundingClientRect();
-      const rel = (e.clientX - rect.left) / rect.width;
-      const oldZ = state.playback.zoom;
+      const rel = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const pb = state.playback;
+      const oldZ = pb.zoom;
       const factor = e.deltaY < 0 ? 1.25 : 1/1.25;
-      const newZ = Math.max(1, Math.min(48, oldZ * factor));
-      // Keep hovered point stable: t_at_rel unchanged
-      const t_at_rel = state.playback.offset + rel / oldZ;
-      state.playback.zoom = newZ;
-      state.playback.offset = Math.max(0, Math.min(1 - 1/newZ, t_at_rel - rel/newZ));
+      const newZ = Math.max(1, Math.min(96, oldZ * factor));
+      // Keep hovered point stable
+      const tAtRel = pb.offset + rel / oldZ;
+      pb.zoom = newZ;
+      pb.offset = Math.max(0, Math.min(1 - 1/newZ, tAtRel - rel/newZ));
       renderTimeline();
     }, { passive: false });
-    // Touch drag to pan
-    let dragS = null;
+
+    // Touch: single-finger drag = scrub, two-finger = pinch zoom (like live view)
+    let touch = null;
     tl.addEventListener("touchstart", (e) => {
-      if (e.touches.length !== 1) return;
-      dragS = { x: e.touches[0].clientX, offset: state.playback.offset };
+      if (e.touches.length === 1){
+        const t = e.touches[0];
+        touch = { mode:"scrub", x: t.clientX };
+        seekToAbsTime(timeFromX(t.clientX));
+      } else if (e.touches.length === 2){
+        const [a,b] = e.touches;
+        touch = { mode:"pinch",
+          startDist: Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY),
+          cx: (a.clientX + b.clientX)/2,
+          startZoom: state.playback.zoom,
+          startOffset: state.playback.offset,
+        };
+      }
     }, { passive: true });
     tl.addEventListener("touchmove", (e) => {
-      if (!dragS || e.touches.length !== 1) return;
+      if (!touch) return;
       const rect = tl.getBoundingClientRect();
-      const dx = e.touches[0].clientX - dragS.x;
-      const shift = -dx / rect.width / state.playback.zoom;
-      state.playback.offset = Math.max(0, Math.min(1 - 1/state.playback.zoom, dragS.offset + shift));
-      renderTimeline();
-      e.preventDefault();
+      if (touch.mode === "scrub" && e.touches.length === 1){
+        seekToAbsTime(timeFromX(e.touches[0].clientX), { keepPlaying: true, silent: true });
+        e.preventDefault();
+      } else if (touch.mode === "pinch" && e.touches.length === 2){
+        const [a,b] = e.touches;
+        const dist = Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+        const oldZ = touch.startZoom;
+        const newZ = Math.max(1, Math.min(96, oldZ * (dist / touch.startDist)));
+        const rel = (touch.cx - rect.left) / rect.width;
+        const tAtRel = touch.startOffset + rel / oldZ;
+        state.playback.zoom = newZ;
+        state.playback.offset = Math.max(0, Math.min(1 - 1/newZ, tAtRel - rel/newZ));
+        renderTimeline();
+        e.preventDefault();
+      }
     }, { passive: false });
-    tl.addEventListener("touchend", () => { dragS = null; });
+    tl.addEventListener("touchend", () => { touch = null; });
+  }
+
+  // ---------- Video zoom/pan (same UX as live tiles) ----------
+  function wireVideoZoom(){
+    const stage = $("#pb-stage");
+    const v = $("#pb-video");
+    const info = $("#pb-zoom-info");
+
+    const applyVideoTransform = () => {
+      const pb = state.playback;
+      v.style.transform = `translate(${pb.videoPanX}px, ${pb.videoPanY}px) scale(${pb.videoZoom})`;
+      stage.classList.toggle("zoomed", pb.videoZoom > 1.001);
+      info.style.display = pb.videoZoom > 1.001 ? "block" : "none";
+      info.textContent = pb.videoZoom.toFixed(1) + "×";
+    };
+    const clampPan = (rect) => {
+      const pb = state.playback;
+      const z = pb.videoZoom;
+      const minX = rect.width - rect.width * z;
+      const minY = rect.height - rect.height * z;
+      pb.videoPanX = Math.min(0, Math.max(minX, pb.videoPanX));
+      pb.videoPanY = Math.min(0, Math.max(minY, pb.videoPanY));
+    };
+    const zoomAt = (mx, my, factor, rect) => {
+      const pb = state.playback;
+      const oldZ = pb.videoZoom;
+      const newZ = Math.max(1, Math.min(8, oldZ * factor));
+      const videoX = (mx - pb.videoPanX) / oldZ;
+      const videoY = (my - pb.videoPanY) / oldZ;
+      pb.videoPanX = mx - videoX * newZ;
+      pb.videoPanY = my - videoY * newZ;
+      pb.videoZoom = newZ;
+      clampPan(rect);
+      applyVideoTransform();
+    };
+    state.playback._resetVideoZoom = () => {
+      state.playback.videoZoom = 1;
+      state.playback.videoPanX = 0;
+      state.playback.videoPanY = 0;
+      applyVideoTransform();
+    };
+    state.playback._applyVideoTransform = applyVideoTransform;
+
+    stage.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const rect = stage.getBoundingClientRect();
+      zoomAt(e.clientX - rect.left, e.clientY - rect.top,
+             e.deltaY < 0 ? 1.15 : 1/1.15, rect);
+    }, { passive: false });
+
+    stage.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      state.playback._resetVideoZoom();
+    });
+
+    // Mouse pan when zoomed
+    let mp = null;
+    stage.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      if (state.playback.videoZoom <= 1) return;
+      mp = { x: e.clientX, y: e.clientY, panX: state.playback.videoPanX, panY: state.playback.videoPanY };
+      stage.classList.add("grabbing");
+    });
+    window.addEventListener("mousemove", (e) => {
+      if (!mp) return;
+      state.playback.videoPanX = mp.panX + (e.clientX - mp.x);
+      state.playback.videoPanY = mp.panY + (e.clientY - mp.y);
+      clampPan(stage.getBoundingClientRect());
+      applyVideoTransform();
+    });
+    window.addEventListener("mouseup", () => { if (mp){ mp = null; stage.classList.remove("grabbing"); } });
+
+    // Touch: pinch zoom + one-finger pan
+    let tp = null;
+    stage.addEventListener("touchstart", (e) => {
+      const pb = state.playback;
+      if (e.touches.length === 2){
+        const [a,b] = e.touches;
+        tp = { mode:"pinch",
+          startDist: Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY),
+          startZoom: pb.videoZoom,
+          startPanX: pb.videoPanX, startPanY: pb.videoPanY,
+          cx: (a.clientX+b.clientX)/2, cy: (a.clientY+b.clientY)/2 };
+      } else if (e.touches.length === 1 && pb.videoZoom > 1){
+        const t0 = e.touches[0];
+        tp = { mode:"pan", x0:t0.clientX, y0:t0.clientY,
+          panX:pb.videoPanX, panY:pb.videoPanY };
+      }
+    }, { passive: true });
+    stage.addEventListener("touchmove", (e) => {
+      if (!tp) return;
+      const rect = stage.getBoundingClientRect();
+      const pb = state.playback;
+      if (tp.mode === "pinch" && e.touches.length === 2){
+        const [a,b] = e.touches;
+        const dist = Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+        const newZ = Math.max(1, Math.min(8, tp.startZoom * (dist / tp.startDist)));
+        const mx = tp.cx - rect.left, my = tp.cy - rect.top;
+        const videoX = (mx - tp.startPanX) / tp.startZoom;
+        const videoY = (my - tp.startPanY) / tp.startZoom;
+        pb.videoPanX = mx - videoX * newZ;
+        pb.videoPanY = my - videoY * newZ;
+        pb.videoZoom = newZ;
+        clampPan(rect); applyVideoTransform();
+        e.preventDefault();
+      } else if (tp.mode === "pan" && e.touches.length === 1){
+        const t0 = e.touches[0];
+        pb.videoPanX = tp.panX + (t0.clientX - tp.x0);
+        pb.videoPanY = tp.panY + (t0.clientY - tp.y0);
+        clampPan(rect); applyVideoTransform();
+        e.preventDefault();
+      }
+    }, { passive: false });
+    stage.addEventListener("touchend", () => { tp = null; });
+
+    // Double-click resets zoom (nice to have)
+    stage.addEventListener("dblclick", (e) => {
+      // Ignore double-clicks that originate on controls (none currently
+      // overlap the stage, but keep the guard).
+      if (state.playback.videoZoom > 1) state.playback._resetVideoZoom();
+    });
+  }
+
+  // Seek to an absolute wall-clock unix time. Options:
+  //   keepPlaying: don't force play() (used during scrub)
+  //   silent: don't rerender timeline (cursor updates via timeupdate)
+  function seekToAbsTime(absTime, opts = {}){
+    const pb = state.playback;
+    if (!pb.segs.length) return;
+    let target = pb.segs.find(s => s.started_at <= absTime && absTime <= s.ended_at);
+    let offset = 0;
+    if (target){ offset = absTime - target.started_at; }
+    else {
+      target = pb.segs.find(s => s.started_at > absTime) || pb.segs[pb.segs.length - 1];
+      offset = absTime <= target.started_at ? 0 : (target.duration || target.ended_at - target.started_at);
+    }
+    loadSegment(target, offset, opts);
   }
 
   function shiftDay(delta){
@@ -1119,14 +1338,13 @@
     const pb = state.playback;
     const track = $("#pb-track"); track.innerHTML = "";
     const ruler = $("#pb-ruler"); ruler.innerHTML = "";
-    const rect = $("#pb-timeline").getBoundingClientRect();
     const span = pb.dayEnd - pb.dayStart; // 86399
     const viewFrac = 1 / pb.zoom;
     const viewStart = pb.dayStart + pb.offset * span;
     const viewEnd   = viewStart + viewFrac * span;
 
     // Ruler ticks — pick step from zoom level
-    const stepMin = pb.zoom >= 12 ? 5 : pb.zoom >= 6 ? 15 : pb.zoom >= 3 ? 30 : 60;
+    const stepMin = pb.zoom >= 24 ? 1 : pb.zoom >= 12 ? 5 : pb.zoom >= 6 ? 15 : pb.zoom >= 3 ? 30 : 60;
     const [dy,dm,dd] = pb.date.split("-").map(Number);
     for (let m = 0; m <= 24*60; m += stepMin){
       const t = new Date(dy, dm-1, dd, 0, 0, 0).getTime()/1000 + m*60;
@@ -1135,7 +1353,10 @@
       const tick = document.createElement("div"); tick.className = "tick";
       tick.style.left = x + "%";
       const hh = Math.floor(m/60), mm = m % 60;
-      if (mm === 0 || pb.zoom >= 12){
+      // Show label on major ticks (hour boundary) or when zoomed in enough that minor ticks are readable
+      const majorLabel = mm === 0;
+      const minorLabel = pb.zoom >= 12 && mm % (pb.zoom >= 24 ? 5 : 15) === 0;
+      if (majorLabel || minorLabel){
         const lbl = document.createElement("div"); lbl.className = "lbl";
         lbl.textContent = `${pad2(hh)}:${pad2(mm)}`;
         tick.appendChild(lbl);
@@ -1143,7 +1364,7 @@
       ruler.appendChild(tick);
     }
 
-    // Segment bars
+    // Segment bars — visible slices only, clipped to viewport
     pb.segs.forEach(s => {
       const s0 = Math.max(s.started_at, viewStart);
       const s1 = Math.min(s.ended_at, viewEnd);
@@ -1154,13 +1375,12 @@
       el.className = "pb-seg" + (s.locked ? " locked" : "") + (s.trigger === "manual" ? " manual" : "")
         + (pb.active && s.id === pb.active.id ? " active" : "");
       el.style.left = left + "%"; el.style.width = width + "%";
-      el.title = `${new Date(s.started_at*1000).toLocaleTimeString()} · ${fmtDuration(s.duration)} · ${fmtBytes(s.bytes)}`;
-      el.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const rect2 = el.getBoundingClientRect();
-        const rel = (e.clientX - rect2.left) / rect2.width;
-        loadSegment(s, rel * s.duration);
-      });
+      const startTs = new Date(s.started_at*1000);
+      el.title = `${pad2(startTs.getHours())}:${pad2(startTs.getMinutes())}:${pad2(startTs.getSeconds())} · ${fmtDuration(s.duration)} · ${fmtBytes(s.bytes)}`
+        + (s.locked ? " · KİLİTLİ" : "") + (s.trigger === "manual" ? " · manuel" : "");
+      // Segment bars don't stop propagation — clicks bubble to the timeline
+      // handler which computes the exact wall-clock time and seeks. This
+      // makes clicking anywhere in the timeline consistent.
       track.appendChild(el);
     });
 
@@ -1170,56 +1390,51 @@
   function updateCursor(){
     const pb = state.playback;
     const v = $("#pb-video");
-    if (!pb.active){ $("#pb-cursor").style.left = "0%"; return; }
+    if (!pb || !pb.active){ $("#pb-cursor").style.left = "-4px"; return; }
     const now = pb.active.started_at + (v.currentTime || 0);
     const span = pb.dayEnd - pb.dayStart;
     const viewFrac = 1 / pb.zoom;
     const viewStart = pb.dayStart + pb.offset * span;
     const viewEnd   = viewStart + viewFrac * span;
     const pct = ((now - viewStart) / (viewEnd - viewStart)) * 100;
+    // Hide cursor entirely when out of the visible window
+    if (pct < -1 || pct > 101){ $("#pb-cursor").style.left = "-4px"; return; }
     $("#pb-cursor").style.left = Math.max(0, Math.min(100, pct)) + "%";
   }
 
-  function timelineSeek(clientX){
-    const pb = state.playback;
-    if (!pb.segs.length) return;
-    const tl = $("#pb-timeline"); const rect = tl.getBoundingClientRect();
-    const rel = (clientX - rect.left) / rect.width;
-    const span = pb.dayEnd - pb.dayStart;
-    const viewFrac = 1 / pb.zoom;
-    const viewStart = pb.dayStart + pb.offset * span;
-    const t = viewStart + rel * viewFrac * span;
-    // Find segment containing t, or nearest after
-    let target = pb.segs.find(s => s.started_at <= t && t <= s.ended_at);
-    let offset = 0;
-    if (target){ offset = t - target.started_at; }
-    else {
-      target = pb.segs.find(s => s.started_at > t) || pb.segs[pb.segs.length - 1];
-      offset = 0;
-    }
-    loadSegment(target, offset);
-  }
-
-  function loadSegment(seg, offset){
+  function loadSegment(seg, offset, opts = {}){
     const pb = state.playback;
     const v = $("#pb-video");
     const changing = !pb.active || pb.active.id !== seg.id;
     pb.active = seg;
+    const rate = parseFloat($("#pb-speed").value || "1");
+    const wasPlaying = !v.paused;
+    const applyOffset = () => {
+      const dur = (isFinite(v.duration) && v.duration > 0) ? v.duration
+                : (seg.duration || (seg.ended_at - seg.started_at) || 3600);
+      const off = Math.max(0, Math.min(Math.max(0.1, dur - 0.05), offset || 0));
+      try { v.currentTime = off; } catch (e) { console.warn("seek failed:", e); }
+      v.playbackRate = rate;
+      if (!opts.keepPlaying || wasPlaying) v.play().catch(()=>{});
+    };
     if (changing){
       v.src = seg.url;
       v.load();
-    }
-    v.playbackRate = parseFloat($("#pb-speed").value || "1");
-    const applyOffset = () => {
-      try { v.currentTime = Math.max(0, Math.min((seg.duration || 3600) - 0.1, offset || 0)); } catch {}
-      v.play().catch(()=>{});
-    };
-    if (changing){
-      v.addEventListener("loadedmetadata", applyOffset, { once: true });
+      // Reset video zoom on segment change so a leftover pan/zoom doesn't
+      // show black bars on a new stream that may have different dimensions.
+      if (pb._resetVideoZoom) pb._resetVideoZoom();
+      const onMeta = () => { v.removeEventListener("loadedmetadata", onMeta); applyOffset(); };
+      v.addEventListener("loadedmetadata", onMeta);
+      // Fallback: some browsers fire loadeddata without loadedmetadata reliably
+      const onData = () => {
+        v.removeEventListener("loadeddata", onData);
+        if (v.readyState >= 1) applyOffset();
+      };
+      v.addEventListener("loadeddata", onData);
     } else {
       applyOffset();
     }
-    renderTimeline();
+    if (!opts.silent) renderTimeline();
     updateActiveButtons();
   }
 
@@ -1231,18 +1446,18 @@
   function seekRelative(dt){
     const pb = state.playback; if (!pb.active) return;
     const v = $("#pb-video");
-    const targetInSeg = (v.currentTime || 0) + dt;
-    if (targetInSeg >= 0 && targetInSeg <= (pb.active.duration || 0)){
-      v.currentTime = targetInSeg; return;
+    const cur = v.currentTime || 0;
+    const dur = (isFinite(v.duration) && v.duration > 0) ? v.duration
+              : (pb.active.duration || (pb.active.ended_at - pb.active.started_at) || 0);
+    const targetInSeg = cur + dt;
+    // In-segment seek — always attempted first
+    if (targetInSeg >= 0 && targetInSeg < Math.max(0.1, dur - 0.05)){
+      try { v.currentTime = targetInSeg; } catch (e) { console.warn("seek failed:", e); }
+      return;
     }
-    // Cross segment boundaries
-    const absTime = pb.active.started_at + (v.currentTime || 0) + dt;
-    let target = pb.segs.find(s => s.started_at <= absTime && absTime <= s.ended_at);
-    if (!target){
-      if (dt > 0) target = pb.segs.find(s => s.started_at > absTime);
-      else { const prior = pb.segs.filter(s => s.ended_at < absTime); target = prior[prior.length-1]; }
-    }
-    if (target) loadSegment(target, Math.max(0, absTime - target.started_at));
+    // Cross segment boundaries (absolute wall time)
+    const absTime = pb.active.started_at + cur + dt;
+    seekToAbsTime(absTime, { keepPlaying: true });
   }
 
   function playNextSegment(){

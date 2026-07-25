@@ -266,8 +266,9 @@
       <div class="pb-spacer"></div>
       <span id="pb-status" class="pb-status">—</span>
     </header>
-    <div class="pb-stage">
-      <video id="pb-video" playsinline controls preload="metadata"></video>
+    <div class="pb-stage" id="pb-stage">
+      <video id="pb-video" playsinline preload="metadata"></video>
+      <div id="pb-zoom-info" class="pb-zoom-info" style="display:none">1.0×</div>
       <div id="pb-empty" class="pb-empty hidden">Bu gün için kayıt yok.</div>
     </div>
     <div class="pb-controls">
@@ -293,7 +294,7 @@
         <div class="pb-track" id="pb-track"></div>
         <div class="pb-cursor" id="pb-cursor"></div>
       </div>
-      <div class="pb-hint">Kaydırarak / tıklayarak konum seç. Fare tekerleği ile zoom.</div>
+      <div class="pb-hint">Tıkla veya sürükle: konumu seç • Tekerlek: yakınlaş • Sağ tık: zoom sıfırla • Shift+sürükle veya orta tuş: pan</div>
     </div>
   </div>
 
