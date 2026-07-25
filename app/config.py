@@ -46,6 +46,19 @@ class ConfigStore:
     def __init__(self, config_path: str):
         self.config_path = Path(config_path)
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        # An interrupted _save_locked() leaves a `.tmp` sibling — sweep any
+        # older than 5 minutes so the config dir doesn't accumulate cruft.
+        try:
+            import time as _t
+            cutoff = _t.time() - 300
+            for tmp in self.config_path.parent.glob("*.tmp"):
+                try:
+                    if tmp.stat().st_mtime < cutoff:
+                        tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except Exception:
+            pass
         self._data = None
         self.load()
 

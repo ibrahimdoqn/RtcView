@@ -484,21 +484,42 @@ kbd{
     padding:.4rem .55rem;flex-wrap:wrap;gap:.3rem;
   }
   .pb-header .pb-title{display:none;}
-  .pb-header select,.pb-header input[type=date]{min-height:32px;padding:.3rem .45rem;font-size:.85rem;}
+  .pb-header select,.pb-header input[type=date],
+  .pb-header input[type=time]{min-height:32px;padding:.3rem .45rem;font-size:.85rem;}
   .pb-header .btn.small{min-height:32px;padding:.25rem .5rem;}
   .pb-status{width:100%;text-align:center;font-size:.72rem;}
-  .pb-stage{background:#000;}
+  /* Stage sizes itself to the video's real aspect-ratio and centers in
+     the 1fr row. That way there is no black bar under (or above) the
+     video — the video area exactly matches the picture, and the black
+     you see is the .playback background outside the stage. */
+  .pb-stage{
+    background:#000;
+    aspect-ratio:16/9;              /* JS overrides on loadedmetadata */
+    width:auto;height:auto;
+    max-width:100%;max-height:100%;
+    justify-self:center;align-self:center;
+  }
   .pb-controls{padding:.3rem .5rem;gap:.35rem;}
-  .pb-controls .btn.small{min-height:34px;padding:.3rem .5rem;font-size:.9rem;}
-  .pb-controls select{min-height:32px;padding:.25rem .4rem;font-size:.85rem;}
+  .pb-controls .btn.small{min-height:36px;padding:.3rem .55rem;font-size:.95rem;}
+  .pb-controls select{min-height:34px;padding:.25rem .4rem;font-size:.85rem;}
   .pb-time{
     /* Give the time its own full-width line so it never squishes into the buttons */
     flex-basis:100%;order:99;text-align:center;font-size:.75rem;margin-top:.15rem;
   }
-  .pb-timeline-wrap{padding:.3rem .5rem calc(.4rem + var(--safe-b));}
-  .pb-timeline{height:44px;}
+  .pb-timeline-wrap{padding:.35rem .5rem calc(.4rem + var(--safe-b));}
+  /* Taller timeline on mobile so the scrub target is finger-friendly */
+  .pb-timeline{height:64px;}
   .pb-hint{display:none;}
   .pb-ruler .tick .lbl{font-size:.55rem;}
+}
+/* Time picker (same visual as other header controls) */
+.pb-header input[type=time]{
+  background:#17191f;color:#fff;border:1px solid var(--border);
+  border-radius:8px;padding:.4rem .55rem;min-height:34px;
+  color-scheme:dark;font-family:ui-monospace,"SF Mono",monospace;
+}
+:root[data-theme="light"] .pb-header input[type=time]{
+  background:#fff;color:#0e1116;color-scheme:light;
 }
 
 /* Landscape phone: 2 columns, fill height */

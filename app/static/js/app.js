@@ -214,7 +214,37 @@
   }
 
   // -------- Grid --------
+  // Concurrent-start throttling. Mobile Safari/Chrome cap simultaneous
+  // WebRTC PeerConnections (~4-6); starting 10 at once silently fails a
+  // few of them. Queue and drip-feed instead.
+  const _startQueue = [];
+  let _startingCount = 0;
+  const _MAX_CONCURRENT_STARTS = isMobile() ? 3 : 8;
+  function queueStart(cam, tile){
+    _startQueue.push({cam, tile});
+    _drainStartQueue();
+  }
+  function _drainStartQueue(){
+    while (_startingCount < _MAX_CONCURRENT_STARTS && _startQueue.length){
+      const {cam, tile} = _startQueue.shift();
+      // If the tile has already been removed (grid re-render), skip.
+      if (!document.body.contains(tile)) continue;
+      _startingCount++;
+      Promise.resolve(startPlayer(cam, tile))
+        .finally(() => {
+          _startingCount = Math.max(0, _startingCount - 1);
+          _drainStartQueue();
+        });
+    }
+  }
+  function _resetStartQueue(){
+    _startQueue.length = 0;
+    // In-flight starts finish on their own; the finally-hook won't spawn
+    // more because the queue is empty.
+  }
+
   function renderGrid(){
+    _resetStartQueue();
     for (const id of Array.from(state.players.keys())) stopPlayer(id);
 
     const grid = $("#grid"); grid.innerHTML = "";
@@ -246,12 +276,28 @@
       `;
       wireTile(tile, cam);
       grid.appendChild(tile);
-      startPlayer(cam, tile);
+      queueStart(cam, tile);
     });
     refreshStatusDots();
     updatePtzPanel();
     applyRecUiState();
   }
+
+  // Module-level tile drag state so we don't add a new global mousemove/
+  // mouseup handler per rendered tile (which was leaking listeners on
+  // every grid re-render). Only one pair of listeners is installed.
+  let _tileDrag = null;
+  window.addEventListener("mousemove", (e) => {
+    if (!_tileDrag) return;
+    const p = _tileDrag.p;
+    p.panX = _tileDrag.panX + (e.clientX - _tileDrag.x);
+    p.panY = _tileDrag.panY + (e.clientY - _tileDrag.y);
+    clampPan(p, _tileDrag.tile.getBoundingClientRect());
+    applyTransform(p);
+  });
+  window.addEventListener("mouseup", () => {
+    if (_tileDrag){ _tileDrag.tile.style.cursor = ""; _tileDrag = null; }
+  });
 
   function wireTile(tile, cam){
     let lastTap = 0;
@@ -316,24 +362,12 @@
       showZoom(tile, p.zoom);
     }, { passive: false });
 
-    let dragStart = null;
     tile.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
       if (e.target.closest(".tile-actions")) return;
       const p = state.players.get(cam.id); if (!p || (p.zoom||1) <= 1) return;
-      dragStart = { x: e.clientX, y: e.clientY, panX: p.panX||0, panY: p.panY||0, p, tile };
+      _tileDrag = { x: e.clientX, y: e.clientY, panX: p.panX||0, panY: p.panY||0, p, tile };
       tile.style.cursor = "grabbing";
-    });
-    window.addEventListener("mousemove", (e) => {
-      if (!dragStart) return;
-      const p = dragStart.p;
-      p.panX = dragStart.panX + (e.clientX - dragStart.x);
-      p.panY = dragStart.panY + (e.clientY - dragStart.y);
-      clampPan(p, dragStart.tile.getBoundingClientRect());
-      applyTransform(p);
-    });
-    window.addEventListener("mouseup", () => {
-      if (dragStart) { dragStart.tile.style.cursor = ""; dragStart = null; }
     });
 
     tile.addEventListener("contextmenu", (e) => {
@@ -983,6 +1017,9 @@
   async function refreshDaySilent(){
     const pb = state.playback;
     if (!pb || $("#playback").classList.contains("hidden")) return;
+    // Auto-refresh only makes sense on TODAY (past days don't change).
+    // Also cheap: if the tab is hidden, don't burn API calls.
+    if (pb.date !== todayLocal() || document.hidden) return;
     try {
       const [t0, t1] = dayRangeUnix(pb.date);
       const segs = await api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`);
@@ -1049,7 +1086,29 @@
 
     v.addEventListener("timeupdate", onTimeUpdate);
     v.addEventListener("ended", playNextSegment);
-    v.addEventListener("loadedmetadata", () => updateTimeLabel());
+    v.addEventListener("loadedmetadata", () => {
+      // Size the playback stage to the video's real aspect ratio so on
+      // mobile the video area exactly matches the frame — no black bar
+      // under (or above) the picture.
+      if (v.videoWidth && v.videoHeight){
+        const ar = v.videoWidth / v.videoHeight;
+        if (ar > 0.3 && ar < 4) $("#pb-stage").style.aspectRatio = String(ar);
+      }
+      updateTimeLabel();
+    });
+
+    // Time picker: jump to an exact HH:MM(:SS) on the current date.
+    const jumpToPickedTime = () => {
+      const val = $("#pb-time-picker").value;
+      if (!val) return;
+      const parts = val.split(":").map(Number);
+      const hh = parts[0] || 0, mm = parts[1] || 0, ss = parts[2] || 0;
+      const [y, mo, d] = state.playback.date.split("-").map(Number);
+      const target = new Date(y, mo-1, d, hh, mm, ss).getTime() / 1000;
+      seekToAbsTime(target);
+    };
+    $("#pb-time-picker").addEventListener("change", jumpToPickedTime);
+    $("#pb-time-go").addEventListener("click", jumpToPickedTime);
 
     wireTimeline();
     wireVideoZoom();

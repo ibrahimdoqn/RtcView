@@ -175,7 +175,7 @@ class CameraRecorder:
                 line = raw.decode("utf-8", "replace").rstrip()
                 if not line: continue
                 self._stderr_tail.append(line)
-                if len(self._stderr_tail) > 30:
+                if len(self._stderr_tail) > 200:
                     self._stderr_tail.pop(0)
         except Exception:
             pass
@@ -316,14 +316,16 @@ class RecordingManager:
     def manual_start(self, cam_id: str, seconds: int = MANUAL_DEFAULT_SECONDS) -> bool:
         cam = self._find_cam(cam_id)
         if not cam: return False
+        # One atomic critical section covers get-or-create so two racing
+        # POSTs never both build a recorder and orphan one of them.
         with self._lock:
             r = self._recs.get(cam_id)
-        if not r:
-            r = self._build(cam)
-            if not r: return False
-            with self._lock: self._recs[cam_id] = r
-        r.manual_until = time.time() + max(10, int(seconds))
-        r.trigger = "manual"
+            if not r:
+                r = self._build(cam)
+                if not r: return False
+                self._recs[cam_id] = r
+            r.manual_until = time.time() + max(10, int(seconds))
+            r.trigger = "manual"
         if not r.is_running(): r.start(trigger="manual")
         return True
 

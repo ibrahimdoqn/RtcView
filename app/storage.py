@@ -53,7 +53,10 @@ class Storage:
         self._db_path: Optional[Path] = None
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._purge_cb = None  # optional: called with cam_id when a lock is released
+        # Disk-usage syscalls are cached so a 2-s status poll doesn't
+        # hammer statfs on the storage device (which on NAS mounts can
+        # actually stall).
+        self._disk_cache: Optional[tuple[float, dict]] = None
         self._ensure_root()
 
     # ---------- Root / DB ----------
@@ -113,13 +116,26 @@ class Storage:
             log.warning("register_segment: file gone before index: %s", path)
             return None
         duration = max(0.0, ended_at - started_at)
+        abs_path = str(Path(path).resolve())
         with self._lock:
+            # INSERT OR IGNORE preserves the row (and its id + locked flag) if
+            # a segment is re-registered; then an UPDATE tops up the ended_at
+            # / bytes / trigger values. INSERT OR REPLACE would delete-then-
+            # insert with a new id, breaking any URLs the client already holds.
             cur = self._db.execute(
-                "INSERT OR REPLACE INTO segments"
+                "INSERT OR IGNORE INTO segments"
                 " (cam_id, path, started_at, ended_at, duration, bytes, trigger)"
                 " VALUES (?,?,?,?,?,?,?)",
-                (cam_id, str(Path(path).resolve()), started_at, ended_at, duration, size, trigger),
+                (cam_id, abs_path, started_at, ended_at, duration, size, trigger),
             )
+            if cur.rowcount == 0:
+                self._db.execute(
+                    "UPDATE segments SET ended_at=?, duration=?, bytes=?, trigger=?"
+                    " WHERE path=?",
+                    (ended_at, duration, size, trigger, abs_path),
+                )
+                r = self._db.execute("SELECT id FROM segments WHERE path=?", (abs_path,)).fetchone()
+                return r[0] if r else None
             return cur.lastrowid
 
     def list_segments(self, cam_id: Optional[str] = None,
@@ -207,11 +223,17 @@ class Storage:
                 " MIN(started_at), MAX(ended_at)"
                 " FROM segments GROUP BY cam_id"
             ).fetchall()
-        try:
-            du = shutil.disk_usage(str(self.root()))
-            disk = {"total": du.total, "free": du.free, "used": du.used}
-        except Exception:
-            disk = {"total": 0, "free": 0, "used": 0}
+        now_ts = time.time()
+        cached = self._disk_cache
+        if cached and (now_ts - cached[0]) < 5:
+            disk = cached[1]
+        else:
+            try:
+                du = shutil.disk_usage(str(self.root()))
+                disk = {"total": du.total, "free": du.free, "used": du.used}
+            except Exception:
+                disk = {"total": 0, "free": 0, "used": 0}
+            self._disk_cache = (now_ts, disk)
         rc = self._rec_cfg()
         return {
             "root": str(self.root()),
@@ -302,24 +324,37 @@ class Storage:
     # ---------- Rescan (index rebuild from disk) ----------
     def rescan(self) -> dict:
         """Walk storage root and register any MP4 not already in the index."""
-        root = self.root()
+        from app.recorder import _parse_fname_ts  # local import to avoid cycle
+        root = self.root().resolve()
+        snap_root = self.snapshots_root().resolve()
         found = 0; added = 0
         for p in root.rglob("*.mp4"):
             if not p.is_file(): continue
+            # Never touch the snapshots tree (it holds .jpg today, but be
+            # defensive in case that changes).
+            try:
+                if snap_root in p.parents: continue
+            except Exception:
+                pass
             found += 1
             abs_p = str(p.resolve())
             with self._lock:
                 exists = self._db.execute("SELECT 1 FROM segments WHERE path = ?", (abs_p,)).fetchone()
             if exists: continue
+            # cam_id lives directly under the storage root: <root>/<cam>/...
             try:
-                cam_id = p.parent.parent.parent.parent.name  # <root>/<cam>/YYYY/MM/DD/file
-            except Exception:
+                rel = p.relative_to(root)
+                cam_id = rel.parts[0] if rel.parts else "unknown"
+            except ValueError:
                 cam_id = "unknown"
             try:
                 st = p.stat()
             except OSError:
                 continue
-            self.register_segment(cam_id, abs_p, st.st_mtime - 1, st.st_mtime, trigger="rescan")
+            # Prefer the filename's embedded timestamp for started_at
+            fts = _parse_fname_ts(p)
+            started = fts if fts is not None else max(0.0, st.st_mtime - 1)
+            self.register_segment(cam_id, abs_p, started, st.st_mtime, trigger="rescan")
             added += 1
         return {"scanned": found, "added": added}
 

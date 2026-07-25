@@ -36,6 +36,10 @@ def resolve_paths():
 
 def create_app(config_path: str) -> Flask:
     app = Flask(__name__, static_folder="static", template_folder="templates")
+    # Cap request bodies at 2 MB so a stray/malicious POST can't OOM the
+    # server. All real payloads (config, camera CRUD, recording settings)
+    # are far below this.
+    app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
     CORS(app)
 
     store = ConfigStore(config_path)
@@ -270,8 +274,9 @@ def create_app(config_path: str) -> Flask:
         allowed = {"enabled", "storage_path", "segment_seconds",
                    "retention_days", "max_gb", "purge_interval_seconds", "ffmpeg_path"}
         clean = {k: v for k, v in body.items() if k in allowed}
-        # Path change is validated separately (writability check).
         new_path = clean.pop("storage_path", None)
+        # Validate everything BEFORE mutating anything — an invalid field
+        # must not leave the recording config half-updated.
         if "segment_seconds" in clean:
             try:
                 s = int(clean["segment_seconds"])
@@ -283,12 +288,23 @@ def create_app(config_path: str) -> Flask:
                 try: clean[key] = int(clean[key])
                 except Exception: return jsonify({"error": f"invalid {key}"}), 400
         if "enabled" in clean: clean["enabled"] = bool(clean["enabled"])
+        # If the storage root is moving, stop the recorders BEFORE the switch
+        # so the currently-writing segment doesn't get orphaned between the
+        # old path (still on disk) and the new index (points elsewhere).
+        moving_root = new_path is not None and str(Path(new_path).expanduser().resolve()) != \
+            str(Path(store.get_recording().get("storage_path", "")).expanduser().resolve())
+        if moving_root:
+            recorder.stop()
         if clean: store.update_recording(clean)
         if new_path is not None:
             ok, msg = storage.set_root(str(new_path))
             if not ok:
+                if moving_root: recorder.start()
                 return jsonify({"error": msg}), 400
-        recorder.reload_all()
+        if moving_root:
+            recorder.start()
+        else:
+            recorder.reload_all()
         return jsonify(store.get_recording())
 
     @app.get("/api/recording/status")
@@ -378,8 +394,12 @@ def create_app(config_path: str) -> Flask:
         return jsonify({"ok": True, "locked": locked})
 
     # ---------- Snapshots ----------
+    _CAM_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
     @app.post("/api/snapshot/<camera_id>")
     def api_snapshot(camera_id):
+        if not _CAM_ID_RE.match(camera_id or ""):
+            return jsonify({"error": "invalid camera id"}), 400
         cam = _find_camera(camera_id)
         if not cam: return jsonify({"error": "not found"}), 404
         gc = store.get_go2rtc()
@@ -393,15 +413,17 @@ def create_app(config_path: str) -> Flask:
         save = request.args.get("save", "1") not in ("0", "false", "no")
         payload = {"ok": True, "bytes": len(r.content)}
         if save:
+            # Compute date parts ONCE so a saved snapshot near midnight
+            # doesn't end up with day-dir=today and filename=tomorrow.
+            now_dt = datetime.now()
             root = storage.snapshots_root()
-            day_dir = root / camera_id / datetime.now().strftime("%Y/%m/%d")
+            day_dir = root / camera_id / now_dt.strftime("%Y/%m/%d")
             day_dir.mkdir(parents=True, exist_ok=True)
-            fname = f"{camera_id}_{datetime.now():%Y%m%d_%H%M%S}.jpg"
+            fname = f"{camera_id}_{now_dt:%Y%m%d_%H%M%S}.jpg"
             fpath = day_dir / fname
             fpath.write_bytes(r.content)
-            sid = storage.register_snapshot(camera_id, str(fpath), time.time())
+            sid = storage.register_snapshot(camera_id, str(fpath), now_dt.timestamp())
             payload.update({"id": sid, "url": f"/api/snapshots/{sid}"})
-        # Also return the raw JPEG so the client can preview/download without a round-trip.
         if request.args.get("return") == "image":
             return Response(r.content, mimetype="image/jpeg")
         return jsonify(payload)
@@ -486,19 +508,27 @@ def _serve_range(path: str, as_attachment: bool = False):
     length = end - start + 1
     CHUNK = 64 * 1024
 
-    def gen():
-        with open(path, "rb") as f:
-            f.seek(start)
-            remaining = length
-            while remaining > 0:
-                data = f.read(min(CHUNK, remaining))
-                if not data: break
-                remaining -= len(data)
-                yield data
-
-    resp = Response(stream_with_context(gen()), status=status, mimetype=mime, direct_passthrough=True)
+    # HEAD wants headers only — don't open the file, don't stream.
+    if request.method == "HEAD":
+        resp = Response(status=status)
+    else:
+        def gen():
+            try:
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    remaining = length
+                    while remaining > 0:
+                        data = f.read(min(CHUNK, remaining))
+                        if not data: break
+                        remaining -= len(data)
+                        yield data
+            except OSError as e:
+                log.warning("stream aborted for %s: %s", path, e)
+                return
+        resp = Response(stream_with_context(gen()), status=status, mimetype=mime, direct_passthrough=True)
     resp.headers["Accept-Ranges"] = "bytes"
     resp.headers["Content-Length"] = str(length)
+    resp.headers["Content-Type"] = mime
     if status == 206:
         resp.headers["Content-Range"] = f"bytes {start}-{end}/{size}"
     disp = "attachment" if as_attachment else "inline"
