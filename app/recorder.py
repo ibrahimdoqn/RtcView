@@ -110,8 +110,14 @@ class CameraRecorder:
             ]
             if audio:
                 cmd += ["-map", "0:a:0?"]
+            # Video is always stream-copied (H.264/H.265 from go2rtc → MP4).
+            # Audio, when requested, is transcoded to AAC so MP4 muxing works
+            # regardless of what the camera sends (pcm_alaw / pcm_mulaw / mp2
+            # / opus are all common but MP4-incompatible with -c copy).
+            cmd += ["-c:v", "copy"]
+            if audio:
+                cmd += ["-c:a", "aac", "-b:a", "96k", "-ac", "1"]
             cmd += [
-                "-c", "copy",
                 "-f", "segment",
                 "-segment_time", str(self.segment_seconds),
                 "-segment_format", "mp4" if ext == "mp4" else "matroska",
