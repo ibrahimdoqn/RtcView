@@ -304,6 +304,11 @@ def create_app(config_path: str) -> Flask:
     def api_rec_rescan():
         return jsonify(storage.rescan())
 
+    @app.post("/api/recording/refresh_durations")
+    def api_rec_refresh_durations():
+        ff = store.get_recording().get("ffmpeg_path") or "ffmpeg"
+        return jsonify(storage.refresh_durations(ffmpeg_path=ff))
+
     @app.post("/api/recording/purge")
     def api_rec_purge():
         return jsonify(storage.purge_once())

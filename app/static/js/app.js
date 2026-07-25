@@ -918,6 +918,13 @@
       refreshUsageBar();
     } catch (e) { toast("Rescan başarısız: " + e.message, "err"); }
   });
+  $("#s-rec-fix").addEventListener("click", async () => {
+    try {
+      const r = await api.post("/api/recording/refresh_durations");
+      toast(`Onarım: ${r.fixed}/${r.total} kayıt düzeltildi` + (r.skipped ? ` (${r.skipped} atlandı)` : "") + (r.missing ? `, ${r.missing} dosya eksik` : ""), "ok");
+      refreshUsageBar();
+    } catch (e) { toast("Onarım başarısız: " + e.message, "err"); }
+  });
   $("#s-rec-purge").addEventListener("click", async () => {
     try {
       const r = await api.post("/api/recording/purge");
@@ -1410,8 +1417,7 @@
     const rate = parseFloat($("#pb-speed").value || "1");
     const wasPlaying = !v.paused;
     const applyOffset = () => {
-      const dur = (isFinite(v.duration) && v.duration > 0) ? v.duration
-                : (seg.duration || (seg.ended_at - seg.started_at) || 3600);
+      const dur = bestDuration(seg, v) || 3600;
       const off = Math.max(0, Math.min(Math.max(0.1, dur - 0.05), offset || 0));
       try { v.currentTime = off; } catch (e) { console.warn("seek failed:", e); }
       v.playbackRate = rate;
@@ -1443,17 +1449,32 @@
     $("#pb-lock").textContent = a && a.locked ? "🔒" : "🔓";
   }
 
+  function bestDuration(seg, v){
+    // Prefer the actual video's decoded duration when available (most
+    // trustworthy). Fall back to DB metadata; use the widest positive value
+    // so wrong-in-DB entries (older segments before the recorder fix) still
+    // let in-segment seek work.
+    const vDur = (isFinite(v && v.duration) && v.duration > 0) ? v.duration : 0;
+    const segDur = seg ? (seg.duration || 0) : 0;
+    const segSpan = seg ? Math.max(0, (seg.ended_at || 0) - (seg.started_at || 0)) : 0;
+    return Math.max(vDur, segDur, segSpan, 0);
+  }
+
   function seekRelative(dt){
     const pb = state.playback; if (!pb.active) return;
     const v = $("#pb-video");
     const cur = v.currentTime || 0;
-    const dur = (isFinite(v.duration) && v.duration > 0) ? v.duration
-              : (pb.active.duration || (pb.active.ended_at - pb.active.started_at) || 0);
+    const dur = bestDuration(pb.active, v);
     const targetInSeg = cur + dt;
-    // In-segment seek — always attempted first
-    if (targetInSeg >= 0 && targetInSeg < Math.max(0.1, dur - 0.05)){
-      try { v.currentTime = targetInSeg; } catch (e) { console.warn("seek failed:", e); }
-      return;
+    // In-segment seek — try if we have a plausible duration and target fits
+    if (dur > 1 && targetInSeg >= 0 && targetInSeg < dur - 0.05){
+      try { v.currentTime = targetInSeg; return; }
+      catch (e) { console.warn("in-seg seek failed:", e); }
+    }
+    // If duration is unknown/zero but seeking forward, just try — browser
+    // will clamp. This handles legacy DB rows with duration=1.
+    if (dur === 0 && targetInSeg > 0){
+      try { v.currentTime = targetInSeg; return; } catch {}
     }
     // Cross segment boundaries (absolute wall time)
     const absTime = pb.active.started_at + cur + dt;
@@ -1475,7 +1496,7 @@
     const pb = state.playback; if (!pb || !pb.active){ $("#pb-time").textContent = "—"; return; }
     const v = $("#pb-video");
     const wall = new Date((pb.active.started_at + (v.currentTime||0)) * 1000);
-    const dur = pb.active.duration || 0;
+    const dur = bestDuration(pb.active, v);
     $("#pb-time").textContent = `${pad2(wall.getHours())}:${pad2(wall.getMinutes())}:${pad2(wall.getSeconds())}  ·  ${fmtDuration(v.currentTime||0)} / ${fmtDuration(dur)}`;
   }
 
