@@ -202,11 +202,11 @@
         </label>
         <fieldset>
           <legend>go2rtc bağlantısı</legend>
+          <label>Host <input id="s-g2-host" placeholder="127.0.0.1" /></label>
           <div class="grid2">
-            <label>Host <input id="s-g2-host" placeholder="127.0.0.1" /></label>
             <label>API Port <input id="s-g2-port" type="number" placeholder="1984" /></label>
+            <label>RTSP Port <input id="s-g2-rtsp" type="number" placeholder="8554" /></label>
           </div>
-          <label>RTSP Port (kayıt için) <input id="s-g2-rtsp" type="number" placeholder="8554" /></label>
         </fieldset>
         <fieldset>
           <legend>Kayıt &amp; Depolama</legend>
@@ -232,6 +232,33 @@
             <button type="button" id="s-rec-purge" class="btn ghost small">Şimdi temizle</button>
           </div>
         </fieldset>
+        <details><summary>Sistem Kaynakları</summary>
+          <div id="s-sys-stats" class="sys-stats">Yükleniyor…</div>
+          <div class="row" style="gap:.4rem;margin-top:.4rem;">
+            <button type="button" id="s-sys-refresh" class="btn ghost small">Yenile</button>
+            <label class="row" style="margin-left:auto;color:var(--muted);font-size:.8rem;gap:.35rem;">
+              <input type="checkbox" id="s-sys-auto" /> otomatik
+            </label>
+          </div>
+        </details>
+        <details><summary>Loglar</summary>
+          <div class="row" style="gap:.4rem;margin-bottom:.4rem;flex-wrap:wrap;">
+            <select id="s-log-lines" class="pb-select" style="min-height:32px;">
+              <option value="100">Son 100</option>
+              <option value="200" selected>Son 200</option>
+              <option value="500">Son 500</option>
+              <option value="1000">Son 1000</option>
+            </select>
+            <select id="s-log-level" class="pb-select" style="min-height:32px;">
+              <option value="">Tümü</option>
+              <option value="warn">Uyarı+</option>
+              <option value="err">Hata</option>
+            </select>
+            <button type="button" id="s-log-refresh" class="btn ghost small">Yenile</button>
+            <button type="button" id="s-log-copy" class="btn ghost small">Panoya kopyala</button>
+          </div>
+          <pre id="s-log-view" class="log-view">—</pre>
+        </details>
         <details><summary>Klavye kısayolları</summary>
           <ul class="kbd-list">
             <li><kbd>B</kbd> / <kbd>Tab</kbd> menü aç/kapat</li>

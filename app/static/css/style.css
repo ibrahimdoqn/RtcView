@@ -372,6 +372,46 @@ input,select{font:inherit;color:inherit;}
 .modal-body details summary{cursor:pointer;padding:.3rem 0;color:var(--muted);font-weight:500;}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:.55rem;}
 .modal-actions{display:flex;justify-content:flex-end;gap:.55rem;margin-top:.6rem;flex-wrap:wrap;}
+/* System-stats table (compact metric rows) */
+.sys-stats{
+  display:grid;grid-template-columns:auto 1fr;gap:.2rem .7rem;
+  font-size:.8rem;color:var(--text);align-items:center;
+  padding:.4rem .1rem;
+}
+.sys-stats .k{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;}
+.sys-stats .v{font-family:ui-monospace,"SF Mono",monospace;font-weight:500;}
+.sys-stats .bar{
+  grid-column:1 / -1;height:6px;border-radius:4px;
+  background:rgba(255,255,255,.08);overflow:hidden;margin:.15rem 0 .4rem;
+}
+.sys-stats .bar-fill{
+  height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));
+  transition:width .3s var(--ease-out);
+}
+.sys-stats .bar-fill.warn{background:linear-gradient(90deg,#ffd60a,#ff9500);}
+.sys-stats .bar-fill.crit{background:linear-gradient(90deg,#ff9500,#ff453a);}
+.sys-stats .section-title{
+  grid-column:1 / -1;color:var(--muted);font-size:.7rem;font-weight:600;
+  text-transform:uppercase;letter-spacing:.06em;margin-top:.55rem;
+  padding-top:.35rem;border-top:1px solid var(--border);
+}
+.sys-stats .ff-row{
+  grid-column:1 / -1;display:flex;justify-content:space-between;
+  gap:.5rem;padding:.2rem 0;font-size:.75rem;
+}
+.sys-stats .ff-row .name{color:var(--muted);font-family:ui-monospace,monospace;}
+
+/* Log viewer */
+.log-view{
+  max-height:340px;overflow:auto;
+  background:var(--panel-2);border:1px solid var(--border-solid);border-radius:9px;
+  padding:.55rem .7rem;margin:0;
+  font-family:ui-monospace,"SF Mono",monospace;font-size:.72rem;
+  line-height:1.4;color:var(--text);white-space:pre;
+  -webkit-overflow-scrolling:touch;
+}
+.log-view.err{color:#ff453a;}
+
 .kbd-list{margin:.4rem 0 0;padding:0 0 0 1.1rem;color:var(--muted);font-size:.84rem;}
 .kbd-list li{margin:.28rem 0;}
 kbd{
@@ -516,12 +556,14 @@ kbd{
 /* Tighten fieldsets on narrow screens so the go2rtc / recording sections
    don't sprawl unnecessarily wide inside the settings modal. */
 @media (max-width: 480px){
-  .modal-body{gap:.6rem;padding:.85rem;}
-  .modal-body fieldset{padding:.55rem .6rem;gap:.4rem;}
-  .modal-body fieldset legend{font-size:.72rem;padding:0 .3rem;}
-  .modal-body label{font-size:.78rem;}
-  .modal-body .grid2{gap:.4rem;grid-template-columns:2fr 1fr;}
-  .modal-body label input,.modal-body label select{padding:.5rem .6rem;min-height:36px;}
+  .modal-body{gap:.5rem;padding:.7rem;}
+  .modal-body fieldset{padding:.45rem .55rem;gap:.35rem;border-radius:9px;}
+  .modal-body fieldset legend{font-size:.68rem;padding:0 .3rem;letter-spacing:.02em;}
+  .modal-body label{font-size:.74rem;gap:.2rem;}
+  .modal-body .grid2{gap:.35rem;grid-template-columns:1fr 1fr;}
+  .modal-body label input,.modal-body label select{padding:.45rem .55rem;min-height:34px;font-size:.85rem;}
+  .modal-header{padding:.8rem 1rem;}
+  .modal-header h3{font-size:1rem;}
 }
 /* Time picker (same visual as other header controls) */
 .pb-header input[type=time]{

@@ -95,6 +95,11 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
   info "Servis kullanıcısı ($SERVICE_USER) oluşturuluyor..."
   useradd --system --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
+# Grant read access to systemd journal so the UI's log viewer works
+if getent group systemd-journal >/dev/null 2>&1; then
+  usermod -aG systemd-journal "$SERVICE_USER" 2>/dev/null || true
+  info "Servis kullanıcısı systemd-journal grubuna eklendi (UI log görüntüleyicisi için)."
+fi
 
 # ------------- directories -------------
 mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/config" "$INSTALL_DIR/logs"

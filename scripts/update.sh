@@ -94,6 +94,14 @@ print("recording.storage_path =", rec["storage_path"])
 PY
 fi
 
+# ------------- journal group (for UI log viewer) -------------
+if getent group systemd-journal >/dev/null 2>&1 && id -u "$SERVICE_USER" >/dev/null 2>&1; then
+  if ! id -nG "$SERVICE_USER" | grep -qw systemd-journal; then
+    info "Servis kullanıcısı systemd-journal grubuna ekleniyor (UI log görüntüleyicisi için)..."
+    usermod -aG systemd-journal "$SERVICE_USER" 2>/dev/null || true
+  fi
+fi
+
 # ------------- permissions (recording folder too) -------------
 REC_PATH=$("$INSTALL_DIR/venv/bin/python" -c "import json; print(json.load(open('$CONFIG_FILE'))['recording']['storage_path'])" 2>/dev/null || echo "$INSTALL_DIR/recordings")
 mkdir -p "$REC_PATH"

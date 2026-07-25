@@ -5,6 +5,7 @@ import mimetypes
 import os
 import re
 import socket
+import subprocess
 import sys
 import time
 import uuid
@@ -331,6 +332,37 @@ def create_app(config_path: str) -> Flask:
     def api_rec_purge():
         return jsonify(storage.purge_once())
 
+    # ---------- System stats + logs ----------
+    @app.get("/api/system/stats")
+    def api_system_stats():
+        return jsonify(_read_system_stats(recorder))
+
+    @app.get("/api/system/logs")
+    def api_system_logs():
+        try: lines = max(20, min(1000, int(request.args.get("lines", 200))))
+        except ValueError: lines = 200
+        level = (request.args.get("level") or "").lower()
+        # journalctl priority: 0=emerg .. 7=debug; 4=warning, 3=err
+        prio_arg = []
+        if level == "err":  prio_arg = ["-p", "3"]
+        elif level == "warn": prio_arg = ["-p", "4"]
+        try:
+            r = subprocess.run(
+                ["journalctl", "-u", "rtcview.service", "-n", str(lines),
+                 "--no-pager", "--output=short-iso"] + prio_arg,
+                capture_output=True, text=True, timeout=6,
+            )
+            if r.returncode != 0:
+                return jsonify({"ok": False, "error": (r.stderr or "").strip() or "journalctl failed",
+                                "hint": "rtcview kullanıcısını systemd-journal grubuna ekleyin: sudo usermod -aG systemd-journal rtcview"}), 500
+            return jsonify({"ok": True, "log": r.stdout, "lines": r.stdout.count("\n")})
+        except FileNotFoundError:
+            return jsonify({"ok": False, "error": "journalctl bulunamadı (systemd yok?)"}), 500
+        except subprocess.TimeoutExpired:
+            return jsonify({"ok": False, "error": "journalctl zaman aşımı"}), 500
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+
     @app.post("/api/cameras/<camera_id>/record/start")
     def api_rec_manual_start(camera_id):
         body = request.get_json(silent=True) or {}
@@ -549,6 +581,132 @@ def _which(cmd: str) -> bool:
     if not cmd: return False
     if os.path.isfile(cmd): return True
     return bool(_sh.which(cmd))
+
+
+# ---------- System stats (Linux /proc; no extra deps) ----------
+# Per-process CPU% needs two samples ~a few 100 ms apart. Cache the previous
+# jiffies snapshot so successive calls compute a real percentage without
+# blocking sleep() on the request thread.
+_CPU_SAMPLES: dict[int, tuple[float, int, int]] = {}
+
+
+def _read_proc_stat(pid: int):
+    """Return (cpu_jiffies, rss_bytes, threads, name, ppid) or None."""
+    try:
+        with open(f"/proc/{pid}/stat", "r") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    # Field 2 is comm in parens (may contain spaces); split around last ')'
+    lp = raw.find("(")
+    rp = raw.rfind(")")
+    if lp < 0 or rp < 0: return None
+    name = raw[lp+1:rp]
+    rest = raw[rp+2:].split()
+    # Adjusted indexes: field 4 (ppid) = rest[1], utime=rest[11], stime=rest[12],
+    # num_threads=rest[17], rss (pages)=rest[21]
+    try:
+        ppid = int(rest[1])
+        utime = int(rest[11]); stime = int(rest[12])
+        threads = int(rest[17])
+        rss_pages = int(rest[21])
+    except (IndexError, ValueError):
+        return None
+    return utime + stime, rss_pages * os.sysconf("SC_PAGE_SIZE"), threads, name, ppid
+
+
+def _cpu_percent(pid: int) -> float:
+    stat = _read_proc_stat(pid)
+    if not stat: return 0.0
+    cpu, _, _, _, _ = stat
+    now = time.time()
+    prev = _CPU_SAMPLES.get(pid)
+    _CPU_SAMPLES[pid] = (now, cpu, os.sysconf("SC_CLK_TCK"))
+    if not prev or now - prev[0] < 0.05:
+        return 0.0
+    tick = prev[2]
+    dt = now - prev[0]
+    d_cpu = (cpu - prev[1]) / tick
+    return round(max(0.0, min(100.0 * os.cpu_count() or 1, d_cpu / dt * 100.0)), 1)
+
+
+def _read_meminfo():
+    try:
+        d = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, rest = line.partition(":")
+                d[k.strip()] = int(rest.strip().split()[0]) * 1024  # kB → B
+        return d
+    except OSError:
+        return {}
+
+
+def _read_loadavg():
+    try:
+        with open("/proc/loadavg") as f:
+            parts = f.read().split()
+        return {"1m": float(parts[0]), "5m": float(parts[1]), "15m": float(parts[2])}
+    except (OSError, ValueError, IndexError):
+        return {"1m": 0, "5m": 0, "15m": 0}
+
+
+def _read_system_stats(recorder):
+    my_pid = os.getpid()
+    my_stat = _read_proc_stat(my_pid)
+    my_cpu = _cpu_percent(my_pid)
+    mem = _read_meminfo()
+    load = _read_loadavg()
+
+    process = {
+        "pid": my_pid,
+        "cpu_percent": my_cpu,
+        "rss": my_stat[1] if my_stat else 0,
+        "threads": my_stat[2] if my_stat else 0,
+        "name": my_stat[3] if my_stat else "rtcview",
+    }
+
+    # Walk /proc to find ffmpeg children of this rtcview process
+    ffmpeg = []
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit(): continue
+            pid = int(entry)
+            if pid == my_pid: continue
+            s = _read_proc_stat(pid)
+            if not s: continue
+            _, rss, threads, name, ppid = s
+            if ppid != my_pid: continue
+            if "ffmpeg" not in name.lower(): continue
+            ffmpeg.append({
+                "pid": pid,
+                "name": name,
+                "cpu_percent": _cpu_percent(pid),
+                "rss": rss,
+                "threads": threads,
+            })
+    except OSError:
+        pass
+
+    mem_total = mem.get("MemTotal", 0)
+    mem_avail = mem.get("MemAvailable", 0)
+    mem_used = mem_total - mem_avail if mem_total else 0
+
+    return {
+        "process": process,
+        "ffmpeg": sorted(ffmpeg, key=lambda x: -x["cpu_percent"]),
+        "system": {
+            "cpu_count": os.cpu_count() or 1,
+            "load": load,
+            "mem_total": mem_total,
+            "mem_used": mem_used,
+            "mem_free": mem.get("MemFree", 0),
+            "mem_available": mem_avail,
+            "swap_total": mem.get("SwapTotal", 0),
+            "swap_used": mem.get("SwapTotal", 0) - mem.get("SwapFree", 0),
+        },
+        "recorders": len(recorder._recs) if hasattr(recorder, "_recs") else 0,
+    }
 
 
 def port_available(port: int, host: str = "0.0.0.0") -> bool:

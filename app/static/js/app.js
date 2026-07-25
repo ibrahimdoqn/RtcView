@@ -1128,6 +1128,104 @@
     } catch (e) { toast("Temizleme başarısız: " + e.message, "err"); }
   });
 
+  // ---------- System stats panel ----------
+  let _sysAutoTimer = null;
+  async function refreshSysStats(){
+    const el = $("#s-sys-stats"); if (!el) return;
+    try {
+      const s = await api.get("/api/system/stats");
+      const cpuMax = 100 * (s.system.cpu_count || 1);
+      const cpuPct = (s.process.cpu_percent / cpuMax) * 100;
+      const memPct = s.system.mem_total ? (s.system.mem_used / s.system.mem_total) * 100 : 0;
+      const barCls = (p) => p >= 90 ? "crit" : p >= 70 ? "warn" : "";
+      let html = "";
+      html += `<div class="section-title">RtcView süreci</div>`;
+      html += `<div class="k">CPU</div><div class="v">${s.process.cpu_percent.toFixed(1)}%  /  ${cpuMax}%  (${s.system.cpu_count} çekirdek)</div>`;
+      html += `<div class="bar"><div class="bar-fill ${barCls(cpuPct)}" style="width:${cpuPct.toFixed(1)}%"></div></div>`;
+      html += `<div class="k">RAM (RSS)</div><div class="v">${fmtBytes(s.process.rss)}</div>`;
+      html += `<div class="k">Thread</div><div class="v">${s.process.threads}</div>`;
+      html += `<div class="k">PID</div><div class="v">${s.process.pid}</div>`;
+
+      html += `<div class="section-title">FFmpeg (${s.ffmpeg.length})</div>`;
+      if (s.ffmpeg.length === 0){
+        html += `<div class="ff-row"><span class="name">— hiç aktif kayıt yok —</span></div>`;
+      } else {
+        s.ffmpeg.forEach(f => {
+          html += `<div class="ff-row"><span class="name">pid ${f.pid}</span><span>${f.cpu_percent.toFixed(1)}%  ·  ${fmtBytes(f.rss)}</span></div>`;
+        });
+      }
+      const total = s.ffmpeg.reduce((a,f)=>a+f.cpu_percent, 0);
+      html += `<div class="k">FFmpeg toplam CPU</div><div class="v">${total.toFixed(1)}%</div>`;
+
+      html += `<div class="section-title">Sistem</div>`;
+      html += `<div class="k">Yük</div><div class="v">${s.system.load["1m"].toFixed(2)}  /  ${s.system.load["5m"].toFixed(2)}  /  ${s.system.load["15m"].toFixed(2)}</div>`;
+      html += `<div class="k">Bellek</div><div class="v">${fmtBytes(s.system.mem_used)} / ${fmtBytes(s.system.mem_total)} (${memPct.toFixed(0)}%)</div>`;
+      html += `<div class="bar"><div class="bar-fill ${barCls(memPct)}" style="width:${memPct.toFixed(1)}%"></div></div>`;
+      if (s.system.swap_total){
+        const swapPct = (s.system.swap_used / s.system.swap_total) * 100;
+        html += `<div class="k">Swap</div><div class="v">${fmtBytes(s.system.swap_used)} / ${fmtBytes(s.system.swap_total)} (${swapPct.toFixed(0)}%)</div>`;
+      }
+      el.innerHTML = html;
+    } catch (e) {
+      el.innerHTML = `<span style="color:var(--danger)">Hata: ${escapeHtml(e.message)}</span>`;
+    }
+  }
+  $("#s-sys-refresh").addEventListener("click", refreshSysStats);
+  // First refresh happens when the <details> is opened
+  const sysDetails = $("#s-sys-stats").closest("details");
+  if (sysDetails){
+    sysDetails.addEventListener("toggle", () => {
+      if (sysDetails.open) refreshSysStats();
+      // Auto refresh only while open AND checkbox on
+      if (sysDetails.open && $("#s-sys-auto").checked){
+        _sysAutoTimer = _sysAutoTimer || setInterval(refreshSysStats, 2000);
+      } else {
+        clearInterval(_sysAutoTimer); _sysAutoTimer = null;
+      }
+    });
+  }
+  $("#s-sys-auto").addEventListener("change", () => {
+    clearInterval(_sysAutoTimer); _sysAutoTimer = null;
+    if ($("#s-sys-auto").checked && sysDetails && sysDetails.open){
+      _sysAutoTimer = setInterval(refreshSysStats, 2000);
+    }
+  });
+
+  // ---------- Logs panel ----------
+  async function refreshLogs(){
+    const view = $("#s-log-view"); if (!view) return;
+    view.classList.remove("err");
+    view.textContent = "Yükleniyor…";
+    try {
+      const url = `/api/system/logs?lines=${encodeURIComponent($("#s-log-lines").value)}`
+                + `&level=${encodeURIComponent($("#s-log-level").value)}`;
+      const r = await api.get(url);
+      view.textContent = r.log || "(boş)";
+      // Scroll to bottom (newest lines)
+      view.scrollTop = view.scrollHeight;
+    } catch (e) {
+      view.classList.add("err");
+      view.textContent = "Hata: " + e.message
+        + "\n\nİpucu: rtcview kullanıcısı systemd-journal grubunda olmalı:\n"
+        + "  sudo usermod -aG systemd-journal rtcview && sudo systemctl restart rtcview";
+    }
+  }
+  $("#s-log-refresh").addEventListener("click", refreshLogs);
+  $("#s-log-lines").addEventListener("change", refreshLogs);
+  $("#s-log-level").addEventListener("change", refreshLogs);
+  $("#s-log-copy").addEventListener("click", async () => {
+    const txt = $("#s-log-view").textContent || "";
+    try { await navigator.clipboard.writeText(txt); toast("Kopyalandı", "ok"); }
+    catch { toast("Kopyalanamadı", "err"); }
+  });
+  const logDetails = $("#s-log-view").closest("details");
+  if (logDetails){
+    logDetails.addEventListener("toggle", () => {
+      if (logDetails.open) refreshLogs();
+    });
+  }
+
+
   $("#s-save").addEventListener("click", async () => {
     const body = {
       grid_columns: parseInt($("#s-grid-cols").value),
@@ -1341,13 +1439,40 @@
     return _clampPxPerSec(w / 1800);
   }
 
+  function _dateStrFromUnix(t){
+    const d = new Date(t * 1000);
+    return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+  }
+  let _dayReloadInFlight = false;
+  async function _reloadDayKeepingCenter(){
+    const pb = state.playback;
+    if (_dayReloadInFlight) return;
+    _dayReloadInFlight = true;
+    const [t0, t1] = dayRangeUnix(pb.date);
+    pb.dayStart = t0; pb.dayEnd = t1;
+    try {
+      const segs = await api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`);
+      pb.segs = segs || [];
+      $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
+      renderTimeline();
+    } catch { /* keep quiet */ }
+    finally { _dayReloadInFlight = false; }
+  }
+
   function setCenterTime(t, { fromScrub = false } = {}){
     const pb = state.playback;
     if (!pb) return;
-    // Clamp centerTime to today's range so users can't scroll into empty void
-    const lo = pb.dayStart, hi = pb.dayEnd;
-    pb.centerTime = Math.max(lo, Math.min(hi, t));
+    pb.centerTime = t;
     if (fromScrub) pb.scrubbing = true;
+    // Detect crossing day boundary — auto-load that day's segments so the
+    // user can freely scroll into previous / next days without touching
+    // the date picker.
+    const newDate = _dateStrFromUnix(t);
+    if (newDate !== pb.date){
+      pb.date = newDate;
+      const dateInput = $("#pb-date"); if (dateInput) dateInput.value = newDate;
+      _reloadDayKeepingCenter();
+    }
     renderTimeline();
   }
 
@@ -1464,6 +1589,26 @@
       stage.classList.toggle("zoomed", pb.videoZoom > 1.001);
       info.style.display = pb.videoZoom > 1.001 ? "block" : "none";
       info.textContent = pb.videoZoom.toFixed(1) + "×";
+      // On mobile the stage is normally sized to the video's aspect ratio
+      // (no black bars outside). When the user zooms in, expand the stage
+      // to fill the whole row so the zoomed content can bleed into the
+      // otherwise-empty top/bottom space above and below the video.
+      if (isMobile()){
+        if (pb.videoZoom > 1.05){
+          stage.style.aspectRatio = "auto";
+          stage.style.width = "100%";
+          stage.style.height = "100%";
+          stage.style.maxWidth = "";
+          stage.style.maxHeight = "";
+        } else {
+          // Restore aspect ratio (defaults set by loadedmetadata)
+          if (v.videoWidth && v.videoHeight){
+            stage.style.aspectRatio = String(v.videoWidth / v.videoHeight);
+          }
+          stage.style.width = "";
+          stage.style.height = "";
+        }
+      }
     };
     const clampPan = (rect) => {
       const pb = state.playback;
