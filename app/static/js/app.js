@@ -468,17 +468,42 @@
   }
 
 
-  // -------- Player (WHEP first, MSE fallback) --------
-  // go2rtc can serve a stream two ways depending on codec compatibility:
-  //   WebRTC (WHEP) — low latency, needs codecs the browser accepts in
-  //     WebRTC (H.264/VP8/VP9/AV1 video, Opus/G711 audio in a specific
-  //     shape). Some streams (H.265, PCM_alaw camera audio, etc.) fail
-  //     negotiation and go2rtc's own UI shows the source as "MSE".
-  //   MSE — fragmented MP4 over WebSocket, higher latency but supports
-  //     everything MP4 can carry.
-  // We try WHEP with a short timeout; on any failure fall back to MSE so
-  // no camera silently disappears.
+  // -------- Player (single WebSocket to go2rtc, mirrors its own UI) --------
+  //
+  // go2rtc's own web player (video-rtc custom element) opens ONE WebSocket
+  // to /api/ws?src=<stream>, tries WebRTC first, and if that doesn't yield
+  // video, asks for MSE on the same socket. That's what makes its
+  // fallback instant and reliable — server-side decides, single connection,
+  // no HTTP timing games. We do the same here.
+  //
+  // Requirement: go2rtc must be reachable from the browser on its API port.
+  // If go2rtc.host is loopback we substitute location.hostname (works when
+  // RtcView and go2rtc share a machine, which is the common case).
   const WHEP_TIMEOUT_MS = 4000;
+
+  function _wsUrlFor(streamName){
+    const gc = state.go2rtc || {};
+    let host = gc.host || "127.0.0.1";
+    if (host === "127.0.0.1" || host === "localhost" || host === "0.0.0.0"){
+      host = location.hostname;
+    }
+    const port = gc.api_port || 1984;
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${host}:${port}/api/ws?src=${encodeURIComponent(streamName)}`;
+  }
+  function _getSupportedMSECodecs(){
+    if (!window.MediaSource) return "";
+    const codecs = [
+      "avc1.640029", "avc1.640028", "avc1.4d0028", "avc1.42e01e",
+      "hvc1.1.6.L153.B0", "hvc1.2.4.L120.B0",
+      "mp4a.40.2", "mp4a.40.5", "opus", "flac"
+    ];
+    return codecs.filter(c => {
+      const t = (c.startsWith("mp4a.") || c === "opus" || c === "flac") ? "audio/mp4" : "video/mp4";
+      try { return MediaSource.isTypeSupported(`${t}; codecs="${c}"`); }
+      catch { return false; }
+    }).join(",");
+  }
 
   function _wireSizeToVideo(p, cam, tile){
     const video = p.video;
@@ -518,157 +543,280 @@
     state.players.set(cam.id, p);
     if (msg) msg.textContent = "Bağlanıyor…";
     _wireSizeToVideo(p, cam, tile);
-
-    const mode = (cam.stream_mode || "auto").toLowerCase();
-    // "mse" — skip WebRTC entirely.
-    if (mode === "mse"){
-      return _startMSE(cam, tile, p).catch(e => {
-        p.state = "err"; if (msg) msg.textContent = "MSE: " + e.message;
-        refreshStatusDots(); maybeReconnect(cam, tile);
-      });
-    }
-
-    // "webrtc" or "auto" — attempt WHEP with timeout.
+    const prefer = (cam.stream_mode || "auto").toLowerCase();
     try {
-      await _startWHEP(cam, tile, p);
-      _tileMode(tile, "webrtc");
-      p.mode = "webrtc";
-      // In auto mode, watch for a "connected but frozen" stream and
-      // fall back to MSE if the video stops advancing for a while.
-      if (mode === "auto") _startWebRTCStallWatcher(cam, tile, p);
-    } catch (e) {
-      // Clean up half-open PC before falling back
-      try { p.pc && p.pc.close(); } catch {}
-      p.pc = null;
-      if (mode === "webrtc"){
-        p.state = "err"; if (msg) msg.textContent = "WebRTC: " + e.message;
-        refreshStatusDots(); maybeReconnect(cam, tile); return;
-      }
-      // Auto mode → try MSE
-      console.log(`[${cam.id}] WebRTC failed (${e.message}), falling back to MSE`);
-      if (msg) msg.textContent = "MSE'ye geçiliyor…";
-      try {
-        await _startMSE(cam, tile, p);
-        _tileMode(tile, "mse");
-      } catch (e2) {
-        p.state = "err";
-        if (msg) msg.textContent = "Bağlanamadı (WebRTC & MSE)";
-        refreshStatusDots(); maybeReconnect(cam, tile);
-      }
+      await _startUnified(cam, tile, p, prefer);
+      p.state = "live";
+      if (msg) msg.textContent = "";
+      refreshStatusDots();
+    } catch (e){
+      console.warn(`[${cam.id}] player failed:`, e.message);
+      p.state = "err";
+      if (msg) msg.textContent = "Bağlanamadı: " + e.message;
+      refreshStatusDots();
+      maybeReconnect(cam, tile);
     }
   }
 
-  // ---------- WHEP (WebRTC) ----------
-  function _startWHEP(cam, tile, p){
-    return new Promise(async (resolve, reject) => {
-      const video = p.video;
-      const msg = tile.querySelector("[data-msg]");
-      let settled = false;
-      const done = (ok, err) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        ok ? resolve() : reject(err);
-      };
-      const timer = setTimeout(() => done(false, new Error("timeout")), WHEP_TIMEOUT_MS);
-      try {
-        const pc = new RTCPeerConnection({ iceServers: [] });
-        p.pc = pc;
-        pc.addTransceiver("video", { direction: "recvonly" });
-        pc.addTransceiver("audio", { direction: "recvonly" });
-        pc.ontrack = (ev) => {
-          if (video.srcObject !== ev.streams[0]) video.srcObject = ev.streams[0];
-          // First track arriving = we're really live; resolve WHEP success.
-          done(true);
-        };
-        pc.oniceconnectionstatechange = () => {
-          if (["failed","disconnected","closed"].includes(pc.iceConnectionState)){
-            if (!settled) return done(false, new Error(pc.iceConnectionState));
-            p.state = "err"; if (msg) msg.textContent = "Bağlantı koptu";
-            refreshStatusDots(); maybeReconnect(cam, p.tile);
-          } else if (pc.iceConnectionState === "connected"){
-            p.state = "live"; if (msg) msg.textContent = "";
-            refreshStatusDots();
-          }
-        };
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        const url = `/go2rtc/api/webrtc?src=${encodeURIComponent(cam.stream || cam.id)}`;
-        const resp = await fetch(url, { method:"POST", headers:{"Content-Type":"application/sdp"}, body: offer.sdp });
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
-        const answerSdp = await resp.text();
-        await pc.setRemoteDescription({ type:"answer", sdp: answerSdp });
-        // Do NOT resolve here — wait for ontrack (real video). The timeout
-        // guard covers the "SDP fine but no track" case.
-      } catch (e) {
-        done(false, e);
-      }
-    });
-  }
-
-  // ---------- MSE = fragmented MP4 over HTTP (through our /go2rtc proxy) ----------
+  // ---------- Unified player: ONE WebSocket, WebRTC → MSE on server side ----------
   //
-  // Why HTTP fMP4 and not WebSocket MSE:
-  //   * The WebSocket endpoint (/api/ws) needs the browser to reach go2rtc
-  //     directly on port 1984. That fails when go2rtc is bound to loopback,
-  //     when a firewall blocks the port, or when go2rtc.host is a private
-  //     name the client can't resolve. Waitress can't proxy WebSocket.
-  //   * /api/stream.mp4 is plain HTTP fragmented MP4 — it flows through the
-  //     existing /go2rtc HTTP proxy in main.py, so the only host that needs
-  //     to reach go2rtc is the server. Browsers play it natively via
-  //     <video src="..."> — no MediaSource plumbing, no codec-advertisement
-  //     protocol dance, no addSourceBuffer edge cases.
-  //   * Codec compatibility is identical either way: the browser has to be
-  //     able to decode the same H.264/H.265/AAC bytes in both routes.
-  function _startMSE(cam, tile, p){
+  // Message protocol (mirrors go2rtc's own video-rtc):
+  //   client → server:
+  //     {type:"webrtc", value: offer.sdp}         request WebRTC
+  //     {type:"webrtc/candidate", value: cand}    trickle ICE candidate
+  //     {type:"mse",   value: "codec1,codec2..."} request MSE (fmp4)
+  //   server → client:
+  //     {type:"webrtc", value: answer.sdp}        WebRTC answer
+  //     {type:"webrtc/candidate", value: cand}    server ICE candidate
+  //     {type:"mse",   value: "video/mp4;codecs=\"...\""} MSE MIME to use
+  //     <ArrayBuffer>                              MSE binary chunks (init + moof/mdat)
+  //     {type:"error", value: "..."}              server-side error
+  //
+  // "auto" mode: send both webrtc offer AND (after 4s watchdog) an MSE
+  // request on the same WS if WebRTC didn't produce video RTP.
+  function _startUnified(cam, tile, p, prefer){
     return new Promise((resolve, reject) => {
       const video = p.video;
-      const msg = tile.querySelector("[data-msg]");
-      // Kill any lingering WebRTC state first
-      video.srcObject = null;
-      const url = `/go2rtc/api/stream.mp4?src=${encodeURIComponent(cam.stream || cam.id)}`;
-      console.log(`[${cam.id}] MSE via HTTP fMP4:`, url);
-      video.src = url;
-      video.load();
-      let settled = false;
-      const cleanup = () => {
-        video.removeEventListener("canplay", onCanPlay);
-        video.removeEventListener("loadeddata", onCanPlay);
-        video.removeEventListener("playing", onCanPlay);
-        video.removeEventListener("error", onError);
-      };
+      const wsUrl = _wsUrlFor(cam.stream || cam.id);
+      let ws;
+      try { ws = new WebSocket(wsUrl); }
+      catch (e) { return reject(new Error("WS open: " + e.message)); }
+      ws.binaryType = "arraybuffer";
+      p.ws = ws;
+
+      let pc = null;
+      let ms = null, sb = null;
+      const queue = [];
+      let mode = null;         // "webrtc" | "mse" — active transport
+      let settled = false;     // resolve/reject fired
+      let sawBytes = false;    // any RTP video byte received
+      let watchdog = null;
+
       const done = (ok, err) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
-        cleanup();
+        clearTimeout(overall);
+        clearTimeout(watchdog);
         ok ? resolve() : reject(err);
       };
-      const timer = setTimeout(() => done(false, new Error("timeout")), 12000);
-      const onCanPlay = () => {
-        p.state = "live";
-        if (msg) msg.textContent = "";
-        refreshStatusDots();
-        video.play().catch(e => console.log(`[${cam.id}] play() rejected:`, e.message));
-        done(true);
-      };
-      const onError = () => {
-        const err = video.error;
-        const codeName = err ? {
-          1: "aborted", 2: "network", 3: "decode", 4: "src not supported"
-        }[err.code] || `code ${err.code}` : "unknown";
-        const detail = err && err.message ? ` — ${err.message}` : "";
-        console.warn(`[${cam.id}] MSE fMP4 error: ${codeName}${detail}`);
-        done(false, new Error(codeName + detail));
-      };
-      video.addEventListener("canplay",   onCanPlay);
-      video.addEventListener("loadeddata",onCanPlay);
-      video.addEventListener("playing",   onCanPlay);
-      video.addEventListener("error",     onError);
+      const overall = setTimeout(() => done(false, new Error("bağlantı zaman aşımı")), 12000);
+      console.log(`[${cam.id}] unified player: ${wsUrl}  prefer=${prefer}`);
 
-      // Save the video element on p so stopPlayer can clear it
-      p.isMSE = true;
+      const teardownWebRTC = () => {
+        clearTimeout(watchdog); watchdog = null;
+        if (pc){ try { pc.close(); } catch {} pc = null; }
+        p.pc = null;
+        try { video.srcObject = null; } catch {}
+      };
+
+      const requestMSE = (why) => {
+        if (mode === "mse") return;
+        console.log(`[${cam.id}] → MSE (${why})`);
+        teardownWebRTC();
+        mode = "mse"; _tileMode(tile, "mse");
+        const codecs = _getSupportedMSECodecs();
+        if (!codecs){ return done(false, new Error("browser MSE codec desteği yok")); }
+        try { ws.send(JSON.stringify({type: "mse", value: codecs})); }
+        catch (e) { done(false, new Error("mse istek: " + e.message)); }
+      };
+
+      const requestWebRTC = () => {
+        mode = "webrtc"; _tileMode(tile, "webrtc");
+        pc = new RTCPeerConnection({iceServers: []});
+        p.pc = pc;
+        pc.addTransceiver("video", {direction: "recvonly"});
+        pc.addTransceiver("audio", {direction: "recvonly"});
+        pc.onicecandidate = (ev) => {
+          if (ev.candidate && ws.readyState === WebSocket.OPEN){
+            ws.send(JSON.stringify({type:"webrtc/candidate", value: ev.candidate.candidate}));
+          }
+        };
+        pc.ontrack = (ev) => {
+          if (video.srcObject !== ev.streams[0]) video.srcObject = ev.streams[0];
+        };
+        pc.oniceconnectionstatechange = () => {
+          const s = pc && pc.iceConnectionState;
+          console.log(`[${cam.id}] ICE:`, s);
+          if (["failed","disconnected","closed"].includes(s)){
+            if (settled){
+              p.state = "err";
+              maybeReconnect(cam, tile);
+              return;
+            }
+            if (prefer === "auto") return requestMSE(`ICE ${s}`);
+            return done(false, new Error(`ICE ${s}`));
+          }
+        };
+        pc.createOffer().then(offer =>
+          pc.setLocalDescription(offer).then(() => {
+            ws.send(JSON.stringify({type:"webrtc", value: offer.sdp}));
+          })
+        ).catch(e => {
+          if (prefer === "auto") requestMSE("offer failed: " + e.message);
+          else done(false, e);
+        });
+
+        // Watchdog: 4 s after webrtc offer, no video RTP bytes → MSE
+        if (prefer === "auto"){
+          watchdog = setTimeout(async () => {
+            if (mode !== "webrtc" || !pc) return;
+            let bytes = 0;
+            try {
+              const stats = await pc.getStats();
+              stats.forEach(r => {
+                if (r.type === "inbound-rtp" && (r.kind === "video" || r.mediaType === "video")){
+                  bytes = Math.max(bytes, r.bytesReceived || 0);
+                }
+              });
+            } catch {}
+            if (bytes === 0){
+              requestMSE("4s içinde video RTP gelmedi");
+            } else {
+              sawBytes = true;
+              // Install "frozen after live" watcher
+              _installFrozenWatcher(cam, tile, p, ws, () => requestMSE("akış dondu"));
+            }
+          }, 4000);
+        }
+      };
+
+      const flush = () => {
+        if (!sb || sb.updating) return;
+        while (queue.length && !sb.updating){
+          const chunk = queue.shift();
+          try { sb.appendBuffer(chunk); return; }
+          catch (e){
+            if (e.name === "QuotaExceededError" && video.buffered.length){
+              const s = video.buffered.start(0);
+              const c = video.currentTime;
+              if (c - s > 20){
+                try { sb.remove(s, c - 10); queue.unshift(chunk); return; }
+                catch {}
+              }
+            }
+            // Give up on this chunk
+          }
+        }
+      };
+
+      ws.addEventListener("open", () => {
+        console.log(`[${cam.id}] WS open`);
+        if (prefer === "mse") requestMSE("prefer=mse");
+        else requestWebRTC();
+      });
+
+      ws.addEventListener("message", (ev) => {
+        if (typeof ev.data === "string"){
+          let msg2;
+          try { msg2 = JSON.parse(ev.data); } catch { return; }
+          console.log(`[${cam.id}] ws ←`, msg2.type);
+          if (msg2.type === "webrtc"){
+            if (pc){
+              pc.setRemoteDescription({type: "answer", sdp: msg2.value})
+                .then(() => {
+                  // Resolve WHEN video really starts, not on SDP alone.
+                  // If a video/audio track shows up, ontrack fires; we
+                  // resolve on the first successful frame instead by
+                  // listening for canplay / playing.
+                  if (!settled){
+                    const onPlay = () => { video.removeEventListener("playing", onPlay); done(true); };
+                    video.addEventListener("playing", onPlay);
+                    // Fallback: resolve when we see the first RTP byte via watchdog
+                    setTimeout(() => { if (!settled && sb == null && pc) { /* let watchdog handle */ } }, 500);
+                    // Or resolve on ICE connected as a safety net
+                    const iceCheck = () => {
+                      if (settled) return;
+                      if (pc && pc.iceConnectionState === "connected"){ done(true); }
+                    };
+                    setTimeout(iceCheck, 1500);
+                  }
+                })
+                .catch(e => {
+                  if (prefer === "auto") requestMSE("setRemoteDescription: " + e.message);
+                  else done(false, e);
+                });
+            }
+          } else if (msg2.type === "webrtc/candidate"){
+            if (pc && msg2.value){
+              pc.addIceCandidate({candidate: msg2.value}).catch(() => {});
+            }
+          } else if (msg2.type === "mse"){
+            try {
+              ms = new MediaSource();
+              p.mediaSource = ms;
+              const objUrl = URL.createObjectURL(ms);
+              video.srcObject = null;
+              video.src = objUrl;
+              ms.addEventListener("sourceopen", () => {
+                URL.revokeObjectURL(objUrl);
+                try {
+                  sb = ms.addSourceBuffer(msg2.value);
+                  sb.mode = "segments";
+                  sb.addEventListener("updateend", flush);
+                  flush();     // drain anything that arrived while waiting
+                  video.play().catch(() => {});
+                  if (!settled) done(true);
+                } catch (e){ done(false, new Error("addSourceBuffer: " + e.message)); }
+              });
+            } catch (e){ done(false, new Error("MediaSource: " + e.message)); }
+          } else if (msg2.type === "error"){
+            if (prefer === "auto" && mode === "webrtc") requestMSE("server: " + msg2.value);
+            else done(false, new Error(msg2.value || "server error"));
+          }
+        } else if (ev.data instanceof ArrayBuffer){
+          // MSE binary. If SB isn't ready yet, buffer.
+          if (sb){ queue.push(ev.data); flush(); }
+          else { queue.push(ev.data); }
+        }
+      });
+
+      ws.addEventListener("error", () => {
+        if (!settled) done(false, new Error("WS hata"));
+      });
+      ws.addEventListener("close", (ev) => {
+        console.log(`[${cam.id}] WS close code=${ev.code}`);
+        if (!settled){
+          const reason = ev.code === 1006 ? "go2rtc'ye erişilemedi (port/firewall?)" : `WS kapandı (${ev.code})`;
+          done(false, new Error(reason));
+          return;
+        }
+        p.state = "err";
+        maybeReconnect(cam, tile);
+      });
     });
+  }
+
+  // Once we've seen bytes over WebRTC, watch for the stream to freeze
+  // (bytesReceived stops growing). If it does for STALL_MS in auto mode,
+  // switch to MSE on the fly by calling switchCb() which will send a
+  // {type:"mse"} on the same WS.
+  const FROZEN_STALL_MS = 3500;
+  function _installFrozenWatcher(cam, tile, p, ws, switchCb){
+    if (p._frozenWatcher){ clearInterval(p._frozenWatcher); }
+    let lastBytes = -1;
+    let stalledSince = 0;
+    p._frozenWatcher = setInterval(async () => {
+      if (state.players.get(cam.id) !== p || !p.pc){
+        clearInterval(p._frozenWatcher); p._frozenWatcher = null; return;
+      }
+      let bytes = 0;
+      try {
+        const stats = await p.pc.getStats();
+        stats.forEach(r => {
+          if (r.type === "inbound-rtp" && (r.kind === "video" || r.mediaType === "video")){
+            bytes = Math.max(bytes, r.bytesReceived || 0);
+          }
+        });
+      } catch {}
+      if (lastBytes === -1){ lastBytes = bytes; return; }
+      if (bytes !== lastBytes){ stalledSince = 0; lastBytes = bytes; return; }
+      if (!stalledSince){ stalledSince = Date.now(); return; }
+      if (Date.now() - stalledSince >= FROZEN_STALL_MS){
+        console.warn(`[${cam.id}] RTP frozen ≥${FROZEN_STALL_MS}ms`);
+        clearInterval(p._frozenWatcher); p._frozenWatcher = null;
+        switchCb();
+      }
+    }, 1000);
   }
 
   function maybeReconnect(cam, tile){
@@ -683,7 +831,11 @@
   function stopPlayer(id){
     const p = state.players.get(id); if (!p) return;
     try { p.pc && p.pc.close(); } catch {}
-    if (p._stallWatcher){ clearInterval(p._stallWatcher); p._stallWatcher = null; }
+    try { p.ws && p.ws.close(); } catch {}
+    if (p._frozenWatcher){ clearInterval(p._frozenWatcher); p._frozenWatcher = null; }
+    if (p.mediaSource && p.mediaSource.readyState === "open"){
+      try { p.mediaSource.endOfStream(); } catch {}
+    }
     if (p.video){
       try { p.video.pause(); } catch {}
       p.video.removeAttribute("src");
@@ -692,92 +844,6 @@
     }
     clearTimeout(p._t);
     state.players.delete(id);
-  }
-
-  // WebRTC health check.
-  //
-  // Two failure modes both trip the switch to MSE (auto mode only):
-  //   1. NEVER-LIVE — WHEP resolved on ontrack, but no video RTP packet
-  //      actually arrived within NEVER_LIVE_MS. Typical: negotiated codec
-  //      pair the browser can't decode, or a hairpin/NAT dropped the
-  //      first video keyframe. Detection: getStats bytesReceived stays 0.
-  //   2. FROZEN — was live at some point, then went STALL_MS with no new
-  //      bytes AND no video.currentTime advance. Typical: source lost
-  //      keyframes, decoder halted, RTCP feedback dropped.
-  //
-  // Fast reaction is the whole point: interval 1 s, detection budget 3-4 s.
-  const NEVER_LIVE_MS = 4000;
-  const STALL_MS      = 3000;
-  const WATCH_INT     = 1000;
-  function _startWebRTCStallWatcher(cam, tile, p){
-    if (p._stallWatcher){ clearInterval(p._stallWatcher); }
-    const startedAt = Date.now();
-    let baselineCT = null;
-    let baselineBytes = null;
-    let stalledSince = 0;
-    let sawBytes = false;
-    p._stallWatcher = setInterval(async () => {
-      if (state.players.get(cam.id) !== p || p.mode !== "webrtc"){
-        clearInterval(p._stallWatcher); p._stallWatcher = null; return;
-      }
-      const v = p.video;
-      if (!v) return;
-      let bytes = 0;
-      if (p.pc){
-        try {
-          const stats = await p.pc.getStats(null);
-          stats.forEach(r => {
-            if (r.type === "inbound-rtp" && (r.kind === "video" || r.mediaType === "video")){
-              bytes = Math.max(bytes, r.bytesReceived || 0);
-            }
-          });
-        } catch {}
-      }
-      const ct = v.currentTime;
-
-      // Rule 1: never-live
-      if (!sawBytes){
-        if (bytes > 0){ sawBytes = true; }
-        else if (Date.now() - startedAt >= NEVER_LIVE_MS){
-          console.warn(`[${cam.id}] WebRTC: no video RTP after ${NEVER_LIVE_MS}ms → MSE`);
-          return _fallbackToMSE(cam, tile, p, "WebRTC bağlandı ama görüntü gelmedi");
-        }
-      }
-
-      // Rule 2: frozen after being live. Establish baseline on first tick
-      // AFTER we saw at least one byte, so we don't count "still warming up"
-      // as a stall.
-      if (baselineCT == null){
-        if (sawBytes){ baselineCT = ct; baselineBytes = bytes; }
-        return;
-      }
-      // Video paused (visibility change etc.) — not a real stall.
-      if (v.paused){ stalledSince = 0; return; }
-      const progressed = (ct !== baselineCT) || (bytes !== baselineBytes);
-      if (progressed){
-        stalledSince = 0;
-        baselineCT = ct; baselineBytes = bytes;
-        return;
-      }
-      if (!stalledSince){ stalledSince = Date.now(); return; }
-      if (Date.now() - stalledSince >= STALL_MS){
-        console.warn(`[${cam.id}] WebRTC stalled ≥${STALL_MS}ms → MSE`);
-        return _fallbackToMSE(cam, tile, p, "WebRTC akışı dondu");
-      }
-    }, WATCH_INT);
-  }
-  function _fallbackToMSE(cam, tile, p, reasonToast){
-    if (p._stallWatcher){ clearInterval(p._stallWatcher); p._stallWatcher = null; }
-    if (reasonToast) toast(`${cam.name || cam.id}: ${reasonToast}, MSE'ye geçiliyor`, "");
-    stopPlayer(cam.id);
-    const camMse = Object.assign({}, cam, { stream_mode: "mse" });
-    // Guard: only restart if the tile is still in the DOM (a grid re-render
-    // could have removed it) and no other player has been created since.
-    setTimeout(() => {
-      if (!document.body.contains(tile)) return;
-      if (state.players.get(cam.id)) return;
-      startPlayer(camMse, tile);
-    }, 200);
   }
 
   // -------- Selection / solo --------
