@@ -368,6 +368,16 @@ class RecordingManager:
             log.warning("ffmpeg not available at %r — recording disabled for %s", ffmpeg, cam["id"])
             return None
         root = Path(rc["storage_path"]).expanduser().resolve()
+        # Refuse to spawn ffmpeg if the storage root is unusable — otherwise
+        # ffmpeg spins in a crash/restart loop, filling logs with EPERM /
+        # ENOENT. Health endpoint picks up the failure for the UI to show.
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            probe = root / ".rtcview_write_test"
+            probe.write_text("ok"); probe.unlink()
+        except Exception as e:
+            log.warning("storage %s unusable (%s) — skipping recorder for %s", root, e, cam["id"])
+            return None
         return CameraRecorder(
             cam=cam, root=root, ffmpeg_path=ffmpeg,
             segment_seconds=int(rc.get("segment_seconds", 300)),

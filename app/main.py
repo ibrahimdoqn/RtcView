@@ -314,10 +314,32 @@ def create_app(config_path: str) -> Flask:
 
     @app.get("/api/recording/status")
     def api_rec_status():
+        health = storage.health()
+        # Surface any recent ffmpeg complaints that smell disk-related. Bumps
+        # the health status if we're currently reporting "ok".
+        disk_hints = ("no space", "disk full", "permission denied",
+                      "read-only", "no such file or directory",
+                      "input/output error", "device or resource busy")
+        ffmpeg_disk_errors = []
+        try:
+            with recorder._lock:
+                recs = list(recorder._recs.values())
+            for r in recs:
+                for line in list(r._stderr_tail)[-40:]:
+                    ll = line.lower()
+                    if any(k in ll for k in disk_hints):
+                        ffmpeg_disk_errors.append({"cam_id": r.cam_id, "msg": line})
+                        break
+        except Exception:
+            pass
+        if ffmpeg_disk_errors and health["status"] == "ok":
+            health["status"] = "warning"
+        health["ffmpeg_disk_errors"] = ffmpeg_disk_errors
         return jsonify({
             "settings": store.get_recording(),
             "cameras": recorder.status(),
             "storage": storage.stats(),
+            "health": health,
             "ffmpeg_available": bool(_which(store.get_recording().get("ffmpeg_path") or "ffmpeg")),
         })
 

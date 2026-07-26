@@ -92,8 +92,12 @@
       });
       const el = $("#rec-status");
       if (el){
-        if (!s.settings.enabled){ el.textContent = "Kayıt kapalı"; el.className = "rec-status"; }
-        else if (!s.ffmpeg_available){ el.textContent = "ffmpeg yok"; el.className = "rec-status"; }
+        const h = s.health || {};
+        if (h.status === "error"){
+          el.textContent = "⚠ Depolama hatası"; el.className = "rec-status err";
+        } else if (!s.settings.enabled){ el.textContent = "Kayıt kapalı"; el.className = "rec-status"; }
+        else if (!s.ffmpeg_available){ el.textContent = "ffmpeg yok"; el.className = "rec-status err"; }
+        else if (h.status === "warning"){ el.textContent = `${active} aktif · ⚠ disk`; el.className = "rec-status warn"; }
         else { el.textContent = active ? `${active} kayıt aktif` : "Kayıt bekliyor"; el.className = "rec-status" + (active ? " on" : ""); }
       }
       applyRecUiState();
@@ -1038,7 +1042,27 @@
       const disk = st.disk || {};
       txt.textContent = `${fmtBytes(used)} / kota ${fmtBytes(cap)} · disk: ${fmtBytes(disk.free||0)} boş / ${fmtBytes(disk.total||0)} · ${st.segment_count||0} segment`
         + (s.ffmpeg_available ? "" : " · ⚠ ffmpeg bulunamadı");
+      _renderStorageHealth(s.health);
     } catch {}
+  }
+  function _renderStorageHealth(h){
+    const box = $("#s-rec-health");
+    const txt = $("#s-rec-health-text");
+    if (!box || !txt) return;
+    box.classList.remove("rec-health-ok","rec-health-warning","rec-health-error");
+    if (!h){ box.classList.add("rec-health-ok"); txt.textContent = "Durum bilinmiyor"; return; }
+    box.classList.add("rec-health-" + (h.status || "ok"));
+    const lines = [];
+    if (h.status === "ok"){
+      lines.push(`Depolama sağlıklı · ${h.writable ? "yazılabilir" : "SALT-OKUR"} · %${(100 - h.free_percent).toFixed(0)} dolu`);
+    } else {
+      (h.errors || []).forEach(e => lines.push("✕ " + e));
+      (h.warnings || []).forEach(w => lines.push("⚠ " + w));
+      if (h.ffmpeg_disk_errors && h.ffmpeg_disk_errors.length){
+        h.ffmpeg_disk_errors.forEach(x => lines.push(`⚠ ${x.cam_id}: ${x.msg.slice(0, 120)}`));
+      }
+    }
+    txt.textContent = lines.join("\n") || "Durum bilinmiyor";
   }
 
   $("#s-rec-path-test").addEventListener("click", async () => {
@@ -1703,23 +1727,43 @@
     loadDay();
   }
 
+  // Where should the playhead land when a day is loaded?
+  //   1. If TODAY has a segment covering "now − 15 min" → start there
+  //      (user comes in and sees the recent past on the timeline).
+  //   2. Otherwise fall back to "last segment's end − 15 min"
+  //      (or the start of the last segment if it's shorter than 15 min).
+  //   3. If there are no segments at all, park at noon (visual only).
+  function _pickInitialTime(pb){
+    if (!pb.segs.length) return pb.dayStart + 12*3600;
+    if (pb.date === todayLocal()){
+      const now = Date.now() / 1000;
+      const fifteen = now - 15*60;
+      const covering = pb.segs.find(s => s.started_at <= fifteen && fifteen <= s.ended_at);
+      if (covering) return fifteen;
+    }
+    const last = pb.segs[pb.segs.length - 1];
+    const target = last.ended_at - 15*60;
+    return Math.max(last.started_at, target);
+  }
+
   async function loadDay(){
     const pb = state.playback;
     const [t0, t1] = dayRangeUnix(pb.date);
     pb.dayStart = t0; pb.dayEnd = t1;
-    // Reset transient view state on every day switch
     if (!pb.pxPerSec) pb.pxPerSec = _defaultPxPerSec();
     $("#pb-status").textContent = "Yükleniyor…";
     try {
       const segs = await api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`);
       pb.segs = segs || [];
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
-      // Anchor the initial view at the first segment (or noon if empty)
+      const t = _pickInitialTime(pb);
+      pb.centerTime = t;
       if (pb.segs.length){
-        pb.centerTime = pb.segs[0].started_at;
-        loadSegment(pb.segs[0], 0);
+        const seg = pb.segs.find(s => s.started_at <= t && t <= s.ended_at)
+                 || pb.segs[pb.segs.length - 1];
+        const offset = Math.max(0, t - seg.started_at);
+        loadSegment(seg, offset);
       } else {
-        pb.centerTime = t0 + 12*3600;      // noon
         pb.active = null;
         const v = $("#pb-video"); v.pause(); v.removeAttribute("src"); v.load();
         updateActiveButtons();

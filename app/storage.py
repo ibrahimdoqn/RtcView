@@ -212,6 +212,64 @@ class Storage:
         cols = ["id","cam_id","path","taken_at","bytes"]
         return [dict(zip(cols, r)) for r in rows]
 
+    # ---------- Health ----------
+    def health(self) -> dict:
+        """Report the storage subsystem's live state.
+
+        Returned status is:
+          "ok"      — path exists, is writable, plenty of free space.
+          "warning" — path OK but disk is running low (< 10% free).
+          "error"   — path missing, unwritable, or disk < 1 GB free.
+        """
+        errors: list[str] = []
+        warnings: list[str] = []
+        root = self.root()
+        writable = False
+        exists = root.exists()
+        if not exists:
+            errors.append(f"Klasör yok: {root}")
+        else:
+            test = root / ".rtcview_write_test"
+            try:
+                test.write_text("ok")
+                test.unlink()
+                writable = True
+            except Exception as e:
+                errors.append(f"Klasöre yazılamıyor: {e}")
+        disk = {"total": 0, "free": 0, "used": 0}
+        free_pct = 100.0
+        try:
+            du = shutil.disk_usage(str(root))
+            disk = {"total": du.total, "free": du.free, "used": du.used}
+            free_pct = (du.free / du.total) * 100 if du.total else 0
+            if du.free < 1 * 1024**3:                     # < 1 GB free
+                errors.append(f"Disk neredeyse dolu: {du.free // (1024*1024)} MB serbest")
+            elif free_pct < 10:                            # < 10% free
+                warnings.append(f"Disk %{100 - free_pct:.0f} dolu ({du.free // (1024*1024)} MB serbest)")
+        except Exception as e:
+            errors.append(f"Disk okunamadı: {e}")
+        # DB itself
+        db_ok = False
+        try:
+            with self._lock:
+                self._db.execute("SELECT 1").fetchone()
+            db_ok = True
+        except Exception as e:
+            errors.append(f"DB erişim: {e}")
+
+        status = "error" if errors else ("warning" if warnings else "ok")
+        return {
+            "status": status,
+            "root": str(root),
+            "exists": exists,
+            "writable": writable,
+            "db_ok": db_ok,
+            "disk": disk,
+            "free_percent": round(free_pct, 1),
+            "errors": errors,
+            "warnings": warnings,
+        }
+
     # ---------- Stats ----------
     def stats(self) -> dict:
         with self._lock:

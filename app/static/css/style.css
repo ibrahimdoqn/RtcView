@@ -656,6 +656,8 @@ kbd{
 /* Sidebar mini rec status */
 .rec-status{color:var(--muted);font-size:.72rem;margin-left:.6rem;}
 .rec-status.on{color:#ff453a;font-weight:600;}
+.rec-status.warn{color:var(--warn);font-weight:600;}
+.rec-status.err{color:var(--danger);font-weight:700;}
 
 /* Camera-item recording indicator (little red dot on the row) */
 .cam-item .rec-mini{
@@ -695,6 +697,24 @@ kbd{
 .usage-bar .usage-fill.warn{background:linear-gradient(90deg,#ffd60a,#ff9500);}
 .usage-bar .usage-fill.crit{background:linear-gradient(90deg,#ff9500,#ff453a);}
 .usage-text{font-size:.75rem;color:var(--muted);}
+/* Storage health indicator (Settings → Kayıt & Depolama) */
+.rec-health{
+  display:flex;align-items:flex-start;gap:.5rem;
+  padding:.55rem .65rem;border-radius:9px;
+  background:var(--panel-2);border:1px solid var(--border-solid);
+  font-size:.78rem;line-height:1.4;
+}
+.rec-health-dot{
+  width:9px;height:9px;border-radius:50%;flex:0 0 auto;margin-top:.28rem;
+  background:var(--muted);
+}
+.rec-health-text{color:var(--text);white-space:pre-line;}
+.rec-health-ok       { border-color:rgba(48,209,88,.35); background:rgba(48,209,88,.06); }
+.rec-health-ok    .rec-health-dot { background:var(--ok);   box-shadow:0 0 6px rgba(48,209,88,.7); }
+.rec-health-warning  { border-color:rgba(255,214,10,.4);  background:rgba(255,214,10,.08); }
+.rec-health-warning .rec-health-dot { background:var(--warn); box-shadow:0 0 6px rgba(255,214,10,.65); }
+.rec-health-error    { border-color:rgba(255,69,58,.5);   background:rgba(255,69,58,.08); }
+.rec-health-error   .rec-health-dot { background:var(--danger); box-shadow:0 0 8px rgba(255,69,58,.7); }
 
 /* ========================================================================
    PLAYBACK overlay
