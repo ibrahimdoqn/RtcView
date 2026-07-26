@@ -512,24 +512,24 @@
   }
 
   // ---------- Device-scoped transport preference (localStorage) ----------
-  // Stream mode is chosen PER DEVICE, not per camera: WebRTC is the
-  // default because it's low-latency, but on a phone / browser where
-  // WebRTC just doesn't work reliably the user can flip this to "mse"
-  // and every camera on THAT device will use fMP4 straight away.
-  // Sunucudaki config değişmez, kayıt/PTZ/diğer cihazlar etkilenmez.
+  // Live transport is chosen PER DEVICE, not per camera. Two hard choices
+  // — no auto/fallback: whatever the user picks is what plays. RTC is the
+  // default for low latency; if a browser doesn't handle it well the user
+  // switches this device to MSE (fragmented MP4 over HTTP). Sunucudaki
+  // config, kayıt, PTZ ve diğer cihazlar etkilenmez.
   const DEVICE_TRANSPORT_KEY = "rtcview.transport";
   function getDeviceTransport(){
     try {
       const v = localStorage.getItem(DEVICE_TRANSPORT_KEY);
-      return (v === "mse") ? "mse" : "auto";
-    } catch { return "auto"; }
+      return (v === "mse") ? "mse" : "rtc";
+    } catch { return "rtc"; }
   }
   function setDeviceTransport(v){
-    try { localStorage.setItem(DEVICE_TRANSPORT_KEY, v === "mse" ? "mse" : "auto"); }
+    try { localStorage.setItem(DEVICE_TRANSPORT_KEY, v === "mse" ? "mse" : "rtc"); }
     catch {}
   }
 
-  async function startPlayer(cam, tile, forceTransport){
+  async function startPlayer(cam, tile){
     const video = tile.querySelector("video");
     const msg   = tile.querySelector("[data-msg]");
     stopPlayer(cam.id);
@@ -537,38 +537,29 @@
     state.players.set(cam.id, p);
     if (msg) msg.textContent = "Bağlanıyor…";
     _wireSizeToVideo(p, cam, tile);
-    // forceTransport is set by the auto-fallback watcher after WHEP stalls;
-    // otherwise honour this device's stored preference.
-    const prefer = forceTransport || getDeviceTransport();  // "auto" or "mse"
+    const prefer = getDeviceTransport();  // "rtc" or "mse"
     // Both transports go through our Flask /go2rtc HTTP proxy so the
-    // browser never needs a direct connection to go2rtc — same
-    // reachability requirement as any other API call.
+    // browser never needs a direct connection to go2rtc.
     if (prefer === "mse"){
-      return _startMSE(cam, tile, p).then(() => _tileMode(tile, "mse")).catch(e => {
+      _startMSE(cam, tile, p).then(() => _tileMode(tile, "mse")).catch(e => {
         p.state = "err"; if (msg) msg.textContent = "MSE: " + e.message;
         refreshStatusDots(); maybeReconnect(cam, tile);
       });
+      return;
     }
-    // "auto" — try WHEP first, watcher falls back to MSE if RTC stalls
+    // "rtc" — WHEP only, no automatic MSE fallback
     try {
       await _startWHEP(cam, tile, p);
       _tileMode(tile, "webrtc");
       p.state = "live"; if (msg) msg.textContent = "";
       refreshStatusDots();
-      _installByteWatcher(cam, tile, p);
     } catch (e){
       console.warn(`[${cam.id}] WHEP failed (${e.message})`);
       try { p.pc && p.pc.close(); } catch {}
       p.pc = null;
-      if (msg) msg.textContent = "MSE'ye geçiliyor…";
-      try {
-        await _startMSE(cam, tile, p);
-        _tileMode(tile, "mse");
-      } catch (e2){
-        p.state = "err";
-        if (msg) msg.textContent = "Bağlanamadı (RTC & MSE)";
-        refreshStatusDots(); maybeReconnect(cam, tile);
-      }
+      p.state = "err";
+      if (msg) msg.textContent = "WebRTC: " + e.message;
+      refreshStatusDots(); maybeReconnect(cam, tile);
     }
   }
 
@@ -655,58 +646,6 @@
     });
   }
 
-  // ---------- Byte-progress watcher for auto-mode WebRTC ----------
-  //
-  // Two rules; either trips the switch to MSE:
-  //   never-live: bytesReceived stays 0 for NEVER_LIVE_MS after WHEP → MSE
-  //   frozen    : bytesReceived stopped growing for STALL_MS → MSE
-  //
-  const NEVER_LIVE_MS = 3500;
-  const STALL_MS      = 3000;
-  function _installByteWatcher(cam, tile, p){
-    if (p._byteWatcher){ clearInterval(p._byteWatcher); }
-    const startedAt = Date.now();
-    let sawBytes = false;
-    let lastBytes = 0;
-    let stalledSince = 0;
-    const switchToMSE = (reason) => {
-      clearInterval(p._byteWatcher); p._byteWatcher = null;
-      console.warn(`[${cam.id}] → MSE:`, reason);
-      toast(`${cam.name || cam.id}: ${reason}`, "");
-      stopPlayer(cam.id);
-      setTimeout(() => {
-        if (!document.body.contains(tile)) return;
-        if (state.players.get(cam.id)) return;
-        startPlayer(cam, tile, "mse");
-      }, 200);
-    };
-    p._byteWatcher = setInterval(async () => {
-      if (state.players.get(cam.id) !== p || !p.pc){
-        clearInterval(p._byteWatcher); p._byteWatcher = null; return;
-      }
-      let bytes = 0;
-      try {
-        const stats = await p.pc.getStats();
-        stats.forEach(r => {
-          if (r.type === "inbound-rtp" && (r.kind === "video" || r.mediaType === "video")){
-            bytes = Math.max(bytes, r.bytesReceived || 0);
-          }
-        });
-      } catch {}
-      if (!sawBytes){
-        if (bytes > 0){ sawBytes = true; lastBytes = bytes; return; }
-        if (Date.now() - startedAt >= NEVER_LIVE_MS){
-          return switchToMSE("WebRTC bağlandı, görüntü gelmedi");
-        }
-        return;
-      }
-      if (bytes !== lastBytes){ stalledSince = 0; lastBytes = bytes; return; }
-      if (!stalledSince){ stalledSince = Date.now(); return; }
-      if (Date.now() - stalledSince >= STALL_MS){
-        switchToMSE("WebRTC akışı dondu");
-      }
-    }, 1000);
-  }
 
 
   function maybeReconnect(cam, tile){
@@ -721,11 +660,6 @@
   function stopPlayer(id){
     const p = state.players.get(id); if (!p) return;
     try { p.pc && p.pc.close(); } catch {}
-    try { p.ws && p.ws.close(); } catch {}
-    if (p._frozenWatcher){ clearInterval(p._frozenWatcher); p._frozenWatcher = null; }
-    if (p.mediaSource && p.mediaSource.readyState === "open"){
-      try { p.mediaSource.endOfStream(); } catch {}
-    }
     if (p.video){
       try { p.video.pause(); } catch {}
       p.video.removeAttribute("src");

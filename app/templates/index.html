@@ -194,10 +194,10 @@
         </label>
         <label>Bu cihazda canlı yayın modu
           <select id="s-device-transport">
-            <option value="auto">Otomatik (WebRTC, olmazsa MSE)</option>
-            <option value="mse">Sadece MSE (bu cihazda RTC sorunluysa)</option>
+            <option value="rtc">WebRTC (düşük gecikme)</option>
+            <option value="mse">MSE (fragmented MP4)</option>
           </select>
-          <small>Sadece bu cihaz için geçerlidir — sunucudaki config değişmez.</small>
+          <small>Sadece bu cihaz için geçerlidir. Seçilen mod çalışmıyorsa diğerini deneyin.</small>
         </label>
         <fieldset>
           <legend>go2rtc bağlantısı</legend>
