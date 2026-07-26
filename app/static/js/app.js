@@ -602,107 +602,68 @@
     });
   }
 
-  // ---------- MSE (fragmented MP4 over WebSocket to go2rtc directly) ----------
-  // Flask/waitress doesn't proxy WebSocket, so the browser talks straight
-  // to go2rtc. If go2rtc.host is loopback (127.0.0.1 / localhost / 0.0.0.0
-  // it's not reachable from a remote client — fall back to the page's own
-  // hostname (works when RtcView + go2rtc share a machine).
-  function _wsUrlFor(streamName){
-    const gc = state.go2rtc || {};
-    let host = gc.host || "127.0.0.1";
-    if (host === "127.0.0.1" || host === "localhost" || host === "0.0.0.0"){
-      host = location.hostname;
-    }
-    const port = gc.api_port || 1984;
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${host}:${port}/api/ws?src=${encodeURIComponent(streamName)}`;
-  }
-
+  // ---------- MSE = fragmented MP4 over HTTP (through our /go2rtc proxy) ----------
+  //
+  // Why HTTP fMP4 and not WebSocket MSE:
+  //   * The WebSocket endpoint (/api/ws) needs the browser to reach go2rtc
+  //     directly on port 1984. That fails when go2rtc is bound to loopback,
+  //     when a firewall blocks the port, or when go2rtc.host is a private
+  //     name the client can't resolve. Waitress can't proxy WebSocket.
+  //   * /api/stream.mp4 is plain HTTP fragmented MP4 — it flows through the
+  //     existing /go2rtc HTTP proxy in main.py, so the only host that needs
+  //     to reach go2rtc is the server. Browsers play it natively via
+  //     <video src="..."> — no MediaSource plumbing, no codec-advertisement
+  //     protocol dance, no addSourceBuffer edge cases.
+  //   * Codec compatibility is identical either way: the browser has to be
+  //     able to decode the same H.264/H.265/AAC bytes in both routes.
   function _startMSE(cam, tile, p){
     return new Promise((resolve, reject) => {
       const video = p.video;
       const msg = tile.querySelector("[data-msg]");
-      const ms = new MediaSource();
-      p.mediaSource = ms;
-      const objUrl = URL.createObjectURL(ms);
+      // Kill any lingering WebRTC state first
       video.srcObject = null;
-      video.src = objUrl;
-      let sb = null;
-      const queue = [];
+      const url = `/go2rtc/api/stream.mp4?src=${encodeURIComponent(cam.stream || cam.id)}`;
+      console.log(`[${cam.id}] MSE via HTTP fMP4:`, url);
+      video.src = url;
+      video.load();
       let settled = false;
+      const cleanup = () => {
+        video.removeEventListener("canplay", onCanPlay);
+        video.removeEventListener("loadeddata", onCanPlay);
+        video.removeEventListener("playing", onCanPlay);
+        video.removeEventListener("error", onError);
+      };
       const done = (ok, err) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        cleanup();
         ok ? resolve() : reject(err);
       };
-      const timer = setTimeout(() => done(false, new Error("timeout")), 10000);
-
-      const flush = () => {
-        if (!sb || sb.updating || !queue.length) return;
-        const chunk = queue.shift();
-        try { sb.appendBuffer(chunk); }
-        catch (e) {
-          if (e.name === "QuotaExceededError" && video.buffered.length){
-            const startB = video.buffered.start(0);
-            const cur = video.currentTime;
-            if (cur - startB > 20){
-              try { sb.remove(startB, cur - 10); queue.unshift(chunk); }
-              catch { /* give up this chunk */ }
-            }
-          }
-        }
+      const timer = setTimeout(() => done(false, new Error("timeout")), 12000);
+      const onCanPlay = () => {
+        p.state = "live";
+        if (msg) msg.textContent = "";
+        refreshStatusDots();
+        video.play().catch(e => console.log(`[${cam.id}] play() rejected:`, e.message));
+        done(true);
       };
+      const onError = () => {
+        const err = video.error;
+        const codeName = err ? {
+          1: "aborted", 2: "network", 3: "decode", 4: "src not supported"
+        }[err.code] || `code ${err.code}` : "unknown";
+        const detail = err && err.message ? ` — ${err.message}` : "";
+        console.warn(`[${cam.id}] MSE fMP4 error: ${codeName}${detail}`);
+        done(false, new Error(codeName + detail));
+      };
+      video.addEventListener("canplay",   onCanPlay);
+      video.addEventListener("loadeddata",onCanPlay);
+      video.addEventListener("playing",   onCanPlay);
+      video.addEventListener("error",     onError);
 
-      ms.addEventListener("sourceopen", () => {
-        URL.revokeObjectURL(objUrl);
-        let ws;
-        try {
-          ws = new WebSocket(_wsUrlFor(cam.stream || cam.id));
-        } catch (e) { return done(false, e); }
-        ws.binaryType = "arraybuffer";
-        p.ws = ws;
-        ws.addEventListener("open", () => {
-          // Ask go2rtc for MSE mode. The "value" advertises codecs we can
-          // decode; sending "mse" alone works, go2rtc replies with the
-          // actual codec string for the source.
-          ws.send(JSON.stringify({ type: "mse", value: "avc1.640028,mp4a.40.2,hvc1.1.6.L153.B0,opus" }));
-        });
-        ws.addEventListener("message", (ev) => {
-          if (typeof ev.data === "string"){
-            let msg2;
-            try { msg2 = JSON.parse(ev.data); } catch { return; }
-            if (msg2.type === "mse"){
-              try {
-                sb = ms.addSourceBuffer(msg2.value);
-                sb.mode = "segments";
-                sb.addEventListener("updateend", flush);
-              } catch (e) {
-                return done(false, e);
-              }
-              p.state = "live";
-              if (msg) msg.textContent = "";
-              refreshStatusDots();
-              video.play().catch(()=>{});
-              done(true);
-            } else if (msg2.type === "error"){
-              done(false, new Error(msg2.value || "server error"));
-            }
-          } else if (ev.data instanceof ArrayBuffer){
-            queue.push(ev.data);
-            flush();
-          }
-        });
-        ws.addEventListener("error", () => done(false, new Error("ws error")));
-        ws.addEventListener("close", () => {
-          if (!settled) return done(false, new Error("ws closed"));
-          // Live drop → reconnect
-          p.state = "err";
-          if (msg) msg.textContent = "Bağlantı koptu";
-          refreshStatusDots();
-          maybeReconnect(cam, tile);
-        });
-      });
+      // Save the video element on p so stopPlayer can clear it
+      p.isMSE = true;
     });
   }
 
@@ -718,10 +679,6 @@
   function stopPlayer(id){
     const p = state.players.get(id); if (!p) return;
     try { p.pc && p.pc.close(); } catch {}
-    try { p.ws && p.ws.close(); } catch {}
-    if (p.mediaSource && p.mediaSource.readyState === "open"){
-      try { p.mediaSource.endOfStream(); } catch {}
-    }
     if (p.video){
       try { p.video.pause(); } catch {}
       p.video.removeAttribute("src");

@@ -486,11 +486,14 @@ def create_app(config_path: str) -> Flask:
         if not r: return jsonify({"error": "not found"}), 404
         return _serve_range(r[0], as_attachment=False)
 
-    # ---------- go2rtc proxy (WHEP + API) ----------
+    # ---------- go2rtc proxy (WHEP + fMP4 stream + API) ----------
     @app.route("/go2rtc/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
     def go2rtc_proxy(subpath):
         gc = store.get_go2rtc()
         upstream = f"http://{gc['host']}:{gc['api_port']}/{subpath}"
+        # Live streams (fMP4, HLS, MJPEG) are long-poll style. Use a short
+        # connect timeout and NO read timeout so a live upstream can stay
+        # open forever without the proxy tearing it down.
         try:
             r = requests.request(
                 request.method,
@@ -498,7 +501,7 @@ def create_app(config_path: str) -> Flask:
                 params=request.args,
                 data=request.get_data(),
                 headers={k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")},
-                timeout=10,
+                timeout=(5, None),
                 stream=True,
             )
         except Exception as e:
