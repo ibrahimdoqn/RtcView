@@ -478,7 +478,7 @@
   //     everything MP4 can carry.
   // We try WHEP with a short timeout; on any failure fall back to MSE so
   // no camera silently disappears.
-  const WHEP_TIMEOUT_MS = 6000;
+  const WHEP_TIMEOUT_MS = 4000;
 
   function _wireSizeToVideo(p, cam, tile){
     const video = p.video;
@@ -694,56 +694,90 @@
     state.players.delete(id);
   }
 
-  // WebRTC health check: a stream can hand-shake successfully, deliver the
-  // first few frames, then freeze silently (typical when the RTP audio
-  // codec is incompatible or an intermediate router drops RTCP). We poll
-  // video.currentTime + inbound-rtp bytesReceived; if neither has moved
-  // for STALL_MS, we tear the PC down and re-start the camera in MSE
-  // mode (only in "auto" — an explicit "webrtc" pick is respected).
-  const STALL_MS = 6000;
+  // WebRTC health check.
+  //
+  // Two failure modes both trip the switch to MSE (auto mode only):
+  //   1. NEVER-LIVE — WHEP resolved on ontrack, but no video RTP packet
+  //      actually arrived within NEVER_LIVE_MS. Typical: negotiated codec
+  //      pair the browser can't decode, or a hairpin/NAT dropped the
+  //      first video keyframe. Detection: getStats bytesReceived stays 0.
+  //   2. FROZEN — was live at some point, then went STALL_MS with no new
+  //      bytes AND no video.currentTime advance. Typical: source lost
+  //      keyframes, decoder halted, RTCP feedback dropped.
+  //
+  // Fast reaction is the whole point: interval 1 s, detection budget 3-4 s.
+  const NEVER_LIVE_MS = 4000;
+  const STALL_MS      = 3000;
+  const WATCH_INT     = 1000;
   function _startWebRTCStallWatcher(cam, tile, p){
     if (p._stallWatcher){ clearInterval(p._stallWatcher); }
-    let lastCT = -1;
-    let lastBytes = -1;
+    const startedAt = Date.now();
+    let baselineCT = null;
+    let baselineBytes = null;
     let stalledSince = 0;
-    let firstTick = true;
+    let sawBytes = false;
     p._stallWatcher = setInterval(async () => {
-      // If the player was replaced (grid re-render, mode switch), bail out.
       if (state.players.get(cam.id) !== p || p.mode !== "webrtc"){
         clearInterval(p._stallWatcher); p._stallWatcher = null; return;
       }
       const v = p.video;
-      if (!v || v.paused) { stalledSince = 0; return; }
-      let progressed = false;
-      if (v.currentTime !== lastCT){ progressed = true; lastCT = v.currentTime; }
+      if (!v) return;
+      let bytes = 0;
       if (p.pc){
         try {
           const stats = await p.pc.getStats(null);
-          let bytes = 0;
           stats.forEach(r => {
             if (r.type === "inbound-rtp" && (r.kind === "video" || r.mediaType === "video")){
               bytes = Math.max(bytes, r.bytesReceived || 0);
             }
           });
-          if (bytes !== lastBytes){ progressed = true; lastBytes = bytes; }
         } catch {}
       }
-      if (firstTick){ firstTick = false; return; }
+      const ct = v.currentTime;
+
+      // Rule 1: never-live
+      if (!sawBytes){
+        if (bytes > 0){ sawBytes = true; }
+        else if (Date.now() - startedAt >= NEVER_LIVE_MS){
+          console.warn(`[${cam.id}] WebRTC: no video RTP after ${NEVER_LIVE_MS}ms → MSE`);
+          return _fallbackToMSE(cam, tile, p, "WebRTC bağlandı ama görüntü gelmedi");
+        }
+      }
+
+      // Rule 2: frozen after being live. Establish baseline on first tick
+      // AFTER we saw at least one byte, so we don't count "still warming up"
+      // as a stall.
+      if (baselineCT == null){
+        if (sawBytes){ baselineCT = ct; baselineBytes = bytes; }
+        return;
+      }
+      // Video paused (visibility change etc.) — not a real stall.
+      if (v.paused){ stalledSince = 0; return; }
+      const progressed = (ct !== baselineCT) || (bytes !== baselineBytes);
       if (progressed){
         stalledSince = 0;
+        baselineCT = ct; baselineBytes = bytes;
         return;
       }
       if (!stalledSince){ stalledSince = Date.now(); return; }
       if (Date.now() - stalledSince >= STALL_MS){
-        console.warn(`[${cam.id}] WebRTC stalled ≥${STALL_MS/1000}s — switching to MSE`);
-        toast(`${cam.name || cam.id}: WebRTC dondu, MSE'ye geçiliyor`, "");
-        clearInterval(p._stallWatcher); p._stallWatcher = null;
-        stopPlayer(cam.id);
-        // Restart this camera in MSE mode, preserving user's config
-        const camMse = Object.assign({}, cam, { stream_mode: "mse" });
-        setTimeout(() => startPlayer(camMse, tile), 250);
+        console.warn(`[${cam.id}] WebRTC stalled ≥${STALL_MS}ms → MSE`);
+        return _fallbackToMSE(cam, tile, p, "WebRTC akışı dondu");
       }
-    }, 2000);
+    }, WATCH_INT);
+  }
+  function _fallbackToMSE(cam, tile, p, reasonToast){
+    if (p._stallWatcher){ clearInterval(p._stallWatcher); p._stallWatcher = null; }
+    if (reasonToast) toast(`${cam.name || cam.id}: ${reasonToast}, MSE'ye geçiliyor`, "");
+    stopPlayer(cam.id);
+    const camMse = Object.assign({}, cam, { stream_mode: "mse" });
+    // Guard: only restart if the tile is still in the DOM (a grid re-render
+    // could have removed it) and no other player has been created since.
+    setTimeout(() => {
+      if (!document.body.contains(tile)) return;
+      if (state.players.get(cam.id)) return;
+      startPlayer(camMse, tile);
+    }, 200);
   }
 
   // -------- Selection / solo --------
