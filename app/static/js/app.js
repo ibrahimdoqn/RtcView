@@ -532,6 +532,10 @@
     try {
       await _startWHEP(cam, tile, p);
       _tileMode(tile, "webrtc");
+      p.mode = "webrtc";
+      // In auto mode, watch for a "connected but frozen" stream and
+      // fall back to MSE if the video stops advancing for a while.
+      if (mode === "auto") _startWebRTCStallWatcher(cam, tile, p);
     } catch (e) {
       // Clean up half-open PC before falling back
       try { p.pc && p.pc.close(); } catch {}
@@ -679,6 +683,7 @@
   function stopPlayer(id){
     const p = state.players.get(id); if (!p) return;
     try { p.pc && p.pc.close(); } catch {}
+    if (p._stallWatcher){ clearInterval(p._stallWatcher); p._stallWatcher = null; }
     if (p.video){
       try { p.video.pause(); } catch {}
       p.video.removeAttribute("src");
@@ -687,6 +692,58 @@
     }
     clearTimeout(p._t);
     state.players.delete(id);
+  }
+
+  // WebRTC health check: a stream can hand-shake successfully, deliver the
+  // first few frames, then freeze silently (typical when the RTP audio
+  // codec is incompatible or an intermediate router drops RTCP). We poll
+  // video.currentTime + inbound-rtp bytesReceived; if neither has moved
+  // for STALL_MS, we tear the PC down and re-start the camera in MSE
+  // mode (only in "auto" — an explicit "webrtc" pick is respected).
+  const STALL_MS = 6000;
+  function _startWebRTCStallWatcher(cam, tile, p){
+    if (p._stallWatcher){ clearInterval(p._stallWatcher); }
+    let lastCT = -1;
+    let lastBytes = -1;
+    let stalledSince = 0;
+    let firstTick = true;
+    p._stallWatcher = setInterval(async () => {
+      // If the player was replaced (grid re-render, mode switch), bail out.
+      if (state.players.get(cam.id) !== p || p.mode !== "webrtc"){
+        clearInterval(p._stallWatcher); p._stallWatcher = null; return;
+      }
+      const v = p.video;
+      if (!v || v.paused) { stalledSince = 0; return; }
+      let progressed = false;
+      if (v.currentTime !== lastCT){ progressed = true; lastCT = v.currentTime; }
+      if (p.pc){
+        try {
+          const stats = await p.pc.getStats(null);
+          let bytes = 0;
+          stats.forEach(r => {
+            if (r.type === "inbound-rtp" && (r.kind === "video" || r.mediaType === "video")){
+              bytes = Math.max(bytes, r.bytesReceived || 0);
+            }
+          });
+          if (bytes !== lastBytes){ progressed = true; lastBytes = bytes; }
+        } catch {}
+      }
+      if (firstTick){ firstTick = false; return; }
+      if (progressed){
+        stalledSince = 0;
+        return;
+      }
+      if (!stalledSince){ stalledSince = Date.now(); return; }
+      if (Date.now() - stalledSince >= STALL_MS){
+        console.warn(`[${cam.id}] WebRTC stalled ≥${STALL_MS/1000}s — switching to MSE`);
+        toast(`${cam.name || cam.id}: WebRTC dondu, MSE'ye geçiliyor`, "");
+        clearInterval(p._stallWatcher); p._stallWatcher = null;
+        stopPlayer(cam.id);
+        // Restart this camera in MSE mode, preserving user's config
+        const camMse = Object.assign({}, cam, { stream_mode: "mse" });
+        setTimeout(() => startPlayer(camMse, tile), 250);
+      }
+    }, 2000);
   }
 
   // -------- Selection / solo --------
@@ -1172,8 +1229,27 @@
   $("#s-log-level").addEventListener("change", refreshLogs);
   $("#s-log-copy").addEventListener("click", async () => {
     const txt = $("#s-log-view").textContent || "";
-    try { await navigator.clipboard.writeText(txt); toast("Kopyalandı", "ok"); }
-    catch { toast("Kopyalanamadı", "err"); }
+    // navigator.clipboard is only available in secure contexts (https or
+    // localhost). On a plain LAN http:// origin we fall back to the old
+    // hidden-textarea + execCommand("copy") trick.
+    let ok = false;
+    if (navigator.clipboard && window.isSecureContext){
+      try { await navigator.clipboard.writeText(txt); ok = true; } catch {}
+    }
+    if (!ok){
+      const ta = document.createElement("textarea");
+      ta.value = txt;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;";
+      document.body.appendChild(ta);
+      const sel = document.getSelection();
+      const prev = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+      ta.select(); ta.setSelectionRange(0, ta.value.length);
+      try { ok = document.execCommand("copy"); } catch {}
+      ta.remove();
+      if (prev){ sel.removeAllRanges(); sel.addRange(prev); }
+    }
+    toast(ok ? "Kopyalandı" : "Kopyalanamadı", ok ? "ok" : "err");
   });
   const logDetails = $("#s-log-view").closest("details");
   if (logDetails){
@@ -1975,6 +2051,8 @@
     if (k === "2"){ v.playbackRate = 1;   $("#pb-speed").value = "1";   return true; }
     if (k === "3"){ v.playbackRate = 2;   $("#pb-speed").value = "2";   return true; }
     if (k === "4"){ v.playbackRate = 4;   $("#pb-speed").value = "4";   return true; }
+    if (k === "5"){ v.playbackRate = 8;   $("#pb-speed").value = "8";   return true; }
+    if (k === "6"){ v.playbackRate = 16;  $("#pb-speed").value = "16";  return true; }
     if (k === "+" || k === "="){ state.playback.pxPerSec = _clampPxPerSec(state.playback.pxPerSec * 1.4); renderTimeline(); return true; }
     if (k === "-" || k === "_"){ state.playback.pxPerSec = _clampPxPerSec(state.playback.pxPerSec / 1.4); renderTimeline(); return true; }
     if (k === "0"){ state.playback.pxPerSec = _defaultPxPerSec(); renderTimeline(); return true; }

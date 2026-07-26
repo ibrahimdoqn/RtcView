@@ -339,7 +339,7 @@ def create_app(config_path: str) -> Flask:
 
     @app.get("/api/system/logs")
     def api_system_logs():
-        try: lines = max(20, min(1000, int(request.args.get("lines", 200))))
+        try: lines = max(5, min(2000, int(request.args.get("lines", 200))))
         except ValueError: lines = 200
         level = (request.args.get("level") or "").lower()
         # journalctl priority: 0=emerg .. 7=debug; 4=warning, 3=err
