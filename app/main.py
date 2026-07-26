@@ -160,14 +160,10 @@ def create_app(config_path: str) -> Flask:
         stream = (body.get("stream") or "").strip()
         if not name or not stream:
             return jsonify({"error": "name and stream are required"}), 400
-        stream_mode = (body.get("stream_mode") or "auto").lower()
-        if stream_mode not in ("auto", "webrtc", "mse"):
-            stream_mode = "auto"
         cam = {
             "id": body.get("id") or "cam_" + uuid.uuid4().hex[:8],
             "name": name,
             "stream": stream,
-            "stream_mode": stream_mode,
             "ptz_enabled": bool(body.get("ptz_enabled", False)),
             "onvif_host": body.get("onvif_host", ""),
             "onvif_port": int(body.get("onvif_port", 80) or 80),
@@ -185,9 +181,10 @@ def create_app(config_path: str) -> Flask:
     @app.put("/api/cameras/<camera_id>")
     def api_update_camera(camera_id):
         body = request.get_json(force=True) or {}
-        if "stream_mode" in body:
-            sm = str(body.get("stream_mode") or "auto").lower()
-            body["stream_mode"] = sm if sm in ("auto", "webrtc", "mse") else "auto"
+        # Legacy field cleanup: older configs stored stream_mode per camera;
+        # transport is now a device-scoped localStorage preference, so drop
+        # any incoming stream_mode value.
+        body.pop("stream_mode", None)
         ok = store.update_camera(camera_id, body)
         if not ok:
             return jsonify({"error": "not found"}), 404

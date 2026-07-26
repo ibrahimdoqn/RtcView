@@ -133,14 +133,6 @@
           </div>
           <small>go2rtc.yaml içindeki stream adı.</small>
         </label>
-        <label>Yayın modu
-          <select name="stream_mode">
-            <option value="auto">Otomatik (önce WebRTC, olmazsa MSE)</option>
-            <option value="webrtc">Sadece WebRTC (düşük gecikme)</option>
-            <option value="mse">Sadece MSE (H.265/PCM için)</option>
-          </select>
-          <small>go2rtc'de "MSE" yazan kameralar için "Sadece MSE" seçin.</small>
-        </label>
         <fieldset>
           <legend>PTZ (ONVIF) – isteğe bağlı</legend>
           <label class="row"><input type="checkbox" name="ptz_enabled" /> PTZ etkin</label>
@@ -199,6 +191,13 @@
         <label class="row"><input id="s-auto-reconnect" type="checkbox" /> Otomatik yeniden bağlan</label>
         <label>Yeniden bağlanma gecikmesi (ms)
           <input id="s-reconnect-delay" type="number" min="500" step="500" />
+        </label>
+        <label>Bu cihazda canlı yayın modu
+          <select id="s-device-transport">
+            <option value="auto">Otomatik (WebRTC, olmazsa MSE)</option>
+            <option value="mse">Sadece MSE (bu cihazda RTC sorunluysa)</option>
+          </select>
+          <small>Sadece bu cihaz için geçerlidir — sunucudaki config değişmez.</small>
         </label>
         <fieldset>
           <legend>go2rtc bağlantısı</legend>

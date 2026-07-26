@@ -511,7 +511,25 @@
     tile.dataset.mode = mode || "";
   }
 
-  async function startPlayer(cam, tile){
+  // ---------- Device-scoped transport preference (localStorage) ----------
+  // Stream mode is chosen PER DEVICE, not per camera: WebRTC is the
+  // default because it's low-latency, but on a phone / browser where
+  // WebRTC just doesn't work reliably the user can flip this to "mse"
+  // and every camera on THAT device will use fMP4 straight away.
+  // Sunucudaki config değişmez, kayıt/PTZ/diğer cihazlar etkilenmez.
+  const DEVICE_TRANSPORT_KEY = "rtcview.transport";
+  function getDeviceTransport(){
+    try {
+      const v = localStorage.getItem(DEVICE_TRANSPORT_KEY);
+      return (v === "mse") ? "mse" : "auto";
+    } catch { return "auto"; }
+  }
+  function setDeviceTransport(v){
+    try { localStorage.setItem(DEVICE_TRANSPORT_KEY, v === "mse" ? "mse" : "auto"); }
+    catch {}
+  }
+
+  async function startPlayer(cam, tile, forceTransport){
     const video = tile.querySelector("video");
     const msg   = tile.querySelector("[data-msg]");
     stopPlayer(cam.id);
@@ -519,32 +537,29 @@
     state.players.set(cam.id, p);
     if (msg) msg.textContent = "Bağlanıyor…";
     _wireSizeToVideo(p, cam, tile);
-    const prefer = (cam.stream_mode || "auto").toLowerCase();
+    // forceTransport is set by the auto-fallback watcher after WHEP stalls;
+    // otherwise honour this device's stored preference.
+    const prefer = forceTransport || getDeviceTransport();  // "auto" or "mse"
     // Both transports go through our Flask /go2rtc HTTP proxy so the
     // browser never needs a direct connection to go2rtc — same
     // reachability requirement as any other API call.
     if (prefer === "mse"){
-      return _startMSE(cam, tile, p).catch(e => {
+      return _startMSE(cam, tile, p).then(() => _tileMode(tile, "mse")).catch(e => {
         p.state = "err"; if (msg) msg.textContent = "MSE: " + e.message;
         refreshStatusDots(); maybeReconnect(cam, tile);
       });
     }
-    // "auto" or "webrtc" — try WHEP first
+    // "auto" — try WHEP first, watcher falls back to MSE if RTC stalls
     try {
       await _startWHEP(cam, tile, p);
       _tileMode(tile, "webrtc");
       p.state = "live"; if (msg) msg.textContent = "";
       refreshStatusDots();
-      if (prefer === "auto") _installByteWatcher(cam, tile, p);
+      _installByteWatcher(cam, tile, p);
     } catch (e){
       console.warn(`[${cam.id}] WHEP failed (${e.message})`);
       try { p.pc && p.pc.close(); } catch {}
       p.pc = null;
-      if (prefer === "webrtc"){
-        p.state = "err"; if (msg) msg.textContent = "WebRTC: " + e.message;
-        refreshStatusDots(); maybeReconnect(cam, tile); return;
-      }
-      // Auto mode → try MSE
       if (msg) msg.textContent = "MSE'ye geçiliyor…";
       try {
         await _startMSE(cam, tile, p);
@@ -659,11 +674,10 @@
       console.warn(`[${cam.id}] → MSE:`, reason);
       toast(`${cam.name || cam.id}: ${reason}`, "");
       stopPlayer(cam.id);
-      const camMse = Object.assign({}, cam, { stream_mode: "mse" });
       setTimeout(() => {
         if (!document.body.contains(tile)) return;
         if (state.players.get(cam.id)) return;
-        startPlayer(camMse, tile);
+        startPlayer(cam, tile, "mse");
       }, 200);
     };
     p._byteWatcher = setInterval(async () => {
@@ -990,14 +1004,12 @@
       form.record_mode.value = cam.record_mode || "off";
       form.record_audio.checked = !!cam.record_audio;
       form.retention_days_override.value = cam.retention_days_override || 0;
-      if (form.stream_mode) form.stream_mode.value = cam.stream_mode || "auto";
       renderScheduleRows(cam.record_schedule || []);
       loadStreamOptions(cam.stream || "");
     } else {
       $("#modal-title").textContent = "Kamera Ekle";
       delBtn.classList.add("hidden");
       form.record_mode.value = "off";
-      if (form.stream_mode) form.stream_mode.value = "auto";
       renderScheduleRows([]);
       loadStreamOptions("");
     }
@@ -1054,6 +1066,7 @@
     $("#s-show-badges").checked = state.settings.show_status_badges !== false;
     $("#s-auto-reconnect").checked = state.settings.auto_reconnect !== false;
     $("#s-reconnect-delay").value = state.settings.reconnect_delay_ms || 3000;
+    $("#s-device-transport").value = getDeviceTransport();
     try {
       const g = await api.get("/api/go2rtc/settings");
       $("#s-g2-host").value = g.host || "127.0.0.1";
@@ -1245,6 +1258,11 @@
       reconnect_delay_ms: parseInt($("#s-reconnect-delay").value),
     };
     try {
+      // Device-scoped transport (not sent to server — local per browser)
+      const prevTransport = getDeviceTransport();
+      const newTransport = $("#s-device-transport").value === "mse" ? "mse" : "auto";
+      if (newTransport !== prevTransport) setDeviceTransport(newTransport);
+
       state.settings = await api.post("/api/settings", body);
       await api.post("/api/go2rtc/settings", {
         host: ($("#s-g2-host").value || "127.0.0.1").trim(),
@@ -1260,9 +1278,9 @@
       };
       state.recording = await api.post("/api/recording/settings", recBody);
       applySettings();
-      renderGrid();
+      renderGrid();                     // pulls in new transport on restart
       sModal.classList.add("hidden");
-      toast("Ayarlar kaydedildi", "ok");
+      toast(newTransport !== prevTransport ? "Yayın modu değiştirildi" : "Ayarlar kaydedildi", "ok");
       updateStatus();
       updateRecStatus();
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
