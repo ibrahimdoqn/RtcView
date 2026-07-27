@@ -239,7 +239,10 @@ class MotionManager:
 
     def _try_transports(self, cid, cam, stop, state):
         """Try PullPoint first; on 'device doesn't support pullpoint',
-        fall back to BaseNotification push (Tapo path)."""
+        fall back to BaseNotification push (Tapo path). Logs the
+        fallback decision ONCE per camera lifetime — the outer retry
+        loop reruns this method on every backoff, so leaving the log
+        at INFO produced one line every 5 s until the camera answers."""
         onvif = self._connect(cam)
         events = onvif.create_events_service()
         try:
@@ -248,7 +251,8 @@ class MotionManager:
         except Exception as e:
             msg = str(e).lower()
             if "pullpoint" in msg or "does not support" in msg or "not support" in msg:
-                log.info("[%s] pullpoint unsupported, falling back to base-notification", cid)
+                if state.transport != "basenotify":
+                    log.info("[%s] pullpoint unsupported, falling back to base-notification", cid)
                 state.last_error = None
             else:
                 raise
@@ -321,10 +325,18 @@ class MotionManager:
         webhook = self._webhook_url(cid)
         if not webhook:
             raise RuntimeError("could not determine local webhook URL")
-        req = events.create_type("Subscribe")
+        # WS-BaseNotification's Subscribe operation lives in a different
+        # WSDL than the ONVIF events service (the Events service only
+        # exposes CreatePullPointSubscription). onvif-zeep binds the
+        # BaseNotification WSDL under create_notification_service().
+        try:
+            notification = onvif.create_notification_service()
+        except Exception as e:
+            raise RuntimeError(f"create_notification_service failed: {e}")
+        req = notification.create_type("Subscribe")
         req.ConsumerReference = {"Address": webhook}
         req.InitialTerminationTime = SUBSCRIBE_TERM
-        events.Subscribe(req)
+        notification.Subscribe(req)
         state.transport = "basenotify"
         state.subscribed = True
         state.last_error = None
@@ -337,10 +349,8 @@ class MotionManager:
         while not stop.is_set() and not self._global_stop.is_set():
             stop.wait(RESUB_SEC)
             if stop.is_set() or self._global_stop.is_set(): return
-            # Re-subscribe: cheapest way to extend without holding a
-            # per-camera subscription-manager URL. Camera GCs the old.
             try:
-                events.Subscribe(req)
+                notification.Subscribe(req)
             except Exception as e:
                 log.debug("[%s] resubscribe failed: %s", cid, e)
                 return
