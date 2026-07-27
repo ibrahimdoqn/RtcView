@@ -192,8 +192,6 @@ class CameraRecorder:
                 line = raw.decode("utf-8", "replace").rstrip()
                 if not line: continue
                 self._stderr_tail.append(line)
-                if len(self._stderr_tail) > 200:
-                    self._stderr_tail.pop(0)
         except Exception:
             pass
 

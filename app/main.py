@@ -706,6 +706,12 @@ def _read_system_stats(recorder):
     mem = _read_meminfo()
     load = _read_loadavg()
 
+    # _CPU_SAMPLES is keyed by PID; ffmpeg restarts leak entries forever
+    # if we never prune. Drop entries whose /proc/<pid> is gone.
+    if _CPU_SAMPLES:
+        for _pid in [p for p in _CPU_SAMPLES if not os.path.exists(f"/proc/{p}")]:
+            _CPU_SAMPLES.pop(_pid, None)
+
     process = {
         "pid": my_pid,
         "cpu_percent": my_cpu,
