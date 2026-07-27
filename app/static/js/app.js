@@ -967,7 +967,9 @@
       form.record_mode.value = cam.record_mode || "off";
       form.record_audio.checked = !!cam.record_audio;
       form.retention_days_override.value = cam.retention_days_override || 0;
-      form.motion_detect_enabled.checked = !!cam.motion_detect_enabled;
+      // Guarded so a stale HTML cache without the checkbox doesn't
+      // throw and abort the rest of openEdit before the modal shows.
+      if (form.motion_detect_enabled) form.motion_detect_enabled.checked = !!cam.motion_detect_enabled;
       renderScheduleRows(cam.record_schedule || []);
       loadStreamOptions(cam.stream || "");
       _startMotionStatusPoll(cam.id);
@@ -975,7 +977,7 @@
       $("#modal-title").textContent = "Kamera Ekle";
       delBtn.classList.add("hidden");
       form.record_mode.value = "off";
-      form.motion_detect_enabled.checked = false;
+      if (form.motion_detect_enabled) form.motion_detect_enabled.checked = false;
       renderScheduleRows([]);
       loadStreamOptions("");
       _stopMotionStatusPoll();
@@ -995,6 +997,14 @@
   function _startMotionStatusPoll(camId){
     _stopMotionStatusPoll();
     _motionPollCamId = camId;
+    // Show an immediate loading state so the user never sees the raw
+    // HTML placeholder while the first fetch is in flight.
+    const box = $("#motion-status"), txt = $("#motion-status-text");
+    if (box && txt){
+      box.classList.remove("motion-status-active","motion-status-error","motion-status-warn");
+      box.classList.add("motion-status-idle");
+      txt.textContent = "Durum sorgulanıyor…";
+    }
     const tick = async () => {
       if (!_motionPollCamId || modal.classList.contains("hidden")){
         _stopMotionStatusPoll(); return;
@@ -1046,7 +1056,7 @@
     const body = Object.fromEntries(fd.entries());
     body.ptz_enabled = form.ptz_enabled.checked;
     body.record_audio = form.record_audio.checked;
-    body.motion_detect_enabled = form.motion_detect_enabled.checked;
+    body.motion_detect_enabled = !!(form.motion_detect_enabled && form.motion_detect_enabled.checked);
     body.onvif_port = parseInt(body.onvif_port || 80);
     body.retention_days_override = parseInt(body.retention_days_override || 0);
     body.record_schedule = readScheduleRows();
