@@ -155,10 +155,10 @@ if [ ! -f "$CONFIG_FILE" ]; then
   "recording": {
     "enabled": true,
     "storage_path": "${REC_PATH}",
-    "storage_paths": ["${REC_PATH}"],
+    "storage_paths": [{"path": "${REC_PATH}", "max_gb": 0}],
     "segment_seconds": 300,
     "retention_days": 14,
-    "max_gb": 100,
+    "max_gb": 0,
     "purge_interval_seconds": 60,
     "ffmpeg_path": "ffmpeg"
   },
@@ -173,15 +173,24 @@ p, port, host, gport, grtsp, recpath = sys.argv[1], int(sys.argv[2]), sys.argv[3
 with open(p) as f: d = json.load(f)
 d.setdefault("app", {})["port"] = port
 d.setdefault("go2rtc", {}).update({"host": host, "api_port": gport, "rtsp_port": grtsp})
-d.setdefault("recording", {}).setdefault("enabled", True)
-d["recording"]["storage_path"] = recpath
-if not d["recording"].get("storage_paths"):
-    d["recording"]["storage_paths"] = [recpath]
-d["recording"].setdefault("segment_seconds", 300)
-d["recording"].setdefault("retention_days", 14)
-d["recording"].setdefault("max_gb", 100)
-d["recording"].setdefault("purge_interval_seconds", 60)
-d["recording"].setdefault("ffmpeg_path", "ffmpeg")
+rec = d.setdefault("recording", {})
+rec.setdefault("enabled", True)
+rec["storage_path"] = recpath
+# Normalize storage_paths into the {path, max_gb} object schema.
+default_quota = int(rec.get("max_gb", 0) or 0)
+paths = rec.get("storage_paths") or [recpath]
+migrated = []
+for e in paths:
+    if isinstance(e, str):
+        migrated.append({"path": e, "max_gb": default_quota})
+    elif isinstance(e, dict) and e.get("path"):
+        migrated.append({"path": str(e["path"]), "max_gb": int(e.get("max_gb", default_quota) or 0)})
+rec["storage_paths"] = migrated or [{"path": recpath, "max_gb": 0}]
+rec.setdefault("segment_seconds", 300)
+rec.setdefault("retention_days", 14)
+rec.setdefault("max_gb", 0)
+rec.setdefault("purge_interval_seconds", 60)
+rec.setdefault("ffmpeg_path", "ffmpeg")
 with open(p, "w") as f: json.dump(d, f, indent=2)
 PY
 fi

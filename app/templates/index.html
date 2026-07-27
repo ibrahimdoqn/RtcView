@@ -220,11 +220,8 @@
             <label>Segment (sn) <input id="s-rec-segment" type="number" min="30" max="3600" /></label>
             <label>Retention (gün) <input id="s-rec-retention" type="number" min="0" /></label>
           </div>
-          <label>Kota — disk başına (GB) <input id="s-rec-maxgb" type="number" min="0" placeholder="0 = kotasız" /></label>
-          <div id="s-rec-usage" class="usage-bar" aria-hidden="true">
-            <div class="usage-fill"></div>
-          </div>
-          <div id="s-rec-usage-text" class="usage-text">—</div>
+          <div id="s-rec-usage-summary" class="usage-text">—</div>
+          <div id="s-rec-disk-bars" class="disk-bars"></div>
           <div id="s-rec-health" class="rec-health rec-health-ok">
             <span class="rec-health-dot"></span>
             <span id="s-rec-health-text" class="rec-health-text">Depolama durumu bilinmiyor</span>

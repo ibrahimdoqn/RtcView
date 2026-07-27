@@ -305,16 +305,32 @@ def create_app(config_path: str) -> Flask:
         if "enabled" in clean: clean["enabled"] = bool(clean["enabled"])
         # Storage-list change is atomic + recorder-safe: stop cleanly, swap,
         # start again. Current segment is finalised via the graceful stop.
-        current_roots = [str(p) for p in storage.roots()]
+        # storage_paths can be either strings or {path, max_gb} objects.
+        current_entries = storage.roots_with_quota()
+        current_key = [(e["path"], e["max_gb"]) for e in current_entries]
         moving_roots = False
+        wanted_normalized = None
         if new_paths is not None:
-            wanted = [str(Path(p).expanduser().resolve()) for p in new_paths if p]
-            moving_roots = wanted != current_roots
+            wanted_normalized = []
+            for np in new_paths:
+                if isinstance(np, dict):
+                    p = str(np.get("path") or "").strip()
+                    try: q = max(0, int(np.get("max_gb", 0) or 0))
+                    except (TypeError, ValueError): q = 0
+                else:
+                    p = str(np or "").strip(); q = 0
+                if not p: continue
+                wanted_normalized.append({
+                    "path": str(Path(p).expanduser().resolve()),
+                    "max_gb": q,
+                })
+            wanted_key = [(e["path"], e["max_gb"]) for e in wanted_normalized]
+            moving_roots = wanted_key != current_key
         if moving_roots:
             recorder.stop()
         if clean: store.update_recording(clean)
-        if new_paths is not None:
-            ok, msg = storage.set_roots([str(x) for x in new_paths])
+        if wanted_normalized is not None:
+            ok, msg = storage.set_roots(wanted_normalized)
             if not ok:
                 if moving_roots: recorder.start()
                 return jsonify({"error": msg}), 400

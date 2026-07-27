@@ -21,14 +21,17 @@ DEFAULT_CONFIG = {
     },
     "recording": {
         "enabled": True,
-        # New: list of storage roots. New segments go to whichever root
-        # has the most free space at start time; playback + purge span
-        # all roots. Legacy scalar `storage_path` is migrated in
-        # ConfigStore._merge_defaults if `storage_paths` is empty.
-        "storage_paths": ["/opt/rtcview/recordings"],
+        # List of storage roots, each with ITS OWN quota. New segments go
+        # to whichever writable root has the most free space at start
+        # time (skipping any that have hit their own quota); playback +
+        # purge span every root. Each entry: {"path": str, "max_gb": int}
+        # where max_gb=0 means unlimited for that specific disk.
+        "storage_paths": [{"path": "/opt/rtcview/recordings", "max_gb": 0}],
         "segment_seconds": 300,
         "retention_days": 14,
-        "max_gb": 100,
+        # Legacy global quota — kept for backward compat only. Used as
+        # the default for freshly added roots that don't set max_gb.
+        "max_gb": 0,
         "purge_interval_seconds": 60,
         "ffmpeg_path": "ffmpeg",
     },
@@ -88,13 +91,29 @@ class ConfigStore:
             elif isinstance(v, dict):
                 for sk, sv in v.items():
                     self._data[k].setdefault(sk, sv)
-        # Migrate legacy scalar storage_path into storage_paths list, but
-        # keep the old key so a downgrade doesn't lose the setting.
+        # storage_paths schema evolution:
+        #  1) legacy scalar recording.storage_path (very old)
+        #  2) list of strings  ["/mnt/a", "/mnt/b"]
+        #  3) list of objects  [{"path": "/mnt/a", "max_gb": 500}]  ← current
+        # Migrate 1→2 and 2→3 in place. The legacy global recording.max_gb
+        # is used as the default per-disk quota when upgrading from #2.
         rec = self._data.get("recording", {})
         legacy = rec.get("storage_path")
         paths = rec.get("storage_paths") or []
         if legacy and not paths:
             rec["storage_paths"] = [legacy]
+            paths = rec["storage_paths"]
+        default_quota = int(rec.get("max_gb", 0) or 0)
+        migrated = []
+        for entry in paths:
+            if isinstance(entry, str):
+                migrated.append({"path": entry, "max_gb": default_quota})
+            elif isinstance(entry, dict) and entry.get("path"):
+                migrated.append({
+                    "path": str(entry["path"]),
+                    "max_gb": int(entry.get("max_gb", default_quota) or 0),
+                })
+        rec["storage_paths"] = migrated or [{"path": "/opt/rtcview/recordings", "max_gb": 0}]
         for cam in self._data.get("cameras", []):
             for k, v in CAMERA_RECORDING_DEFAULTS.items():
                 cam.setdefault(k, json.loads(json.dumps(v)))

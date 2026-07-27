@@ -68,17 +68,30 @@ class Storage:
     def roots(self) -> list[Path]:
         """All configured storage roots, in preference order. Missing
         entries and blanks are dropped; loopback tildes expanded."""
+        return [Path(r["path"]) for r in self.roots_with_quota()]
+
+    def roots_with_quota(self) -> list[dict]:
+        """Same order as roots(), each element = {"path": str (resolved),
+        "max_gb": int, "max_bytes": int}. max_gb=0 means unlimited for
+        that specific disk."""
         rc = self._rec_cfg()
         raw = list(rc.get("storage_paths") or [])
         if not raw and rc.get("storage_path"):
             raw = [rc["storage_path"]]
-        out = []
-        seen = set()
+        out: list[dict] = []
+        seen: set = set()
         for r in raw:
             if not r: continue
-            p = Path(str(r)).expanduser().resolve()
+            if isinstance(r, dict):
+                path = r.get("path")
+                max_gb = int(r.get("max_gb", 0) or 0)
+            else:
+                path = r; max_gb = 0
+            if not path: continue
+            p = Path(str(path)).expanduser().resolve()
             if p in seen: continue
-            seen.add(p); out.append(p)
+            seen.add(p)
+            out.append({"path": str(p), "max_gb": max_gb, "max_bytes": max_gb * (1024**3)})
         return out
 
     def primary_root(self) -> Path:
@@ -95,28 +108,45 @@ class Storage:
     def pick_write_root(self) -> Path:
         """Choose a root for a new recording session.
 
-        Strategy: whichever CONFIGURED, USABLE root has the most free
-        bytes right now. That naturally spreads load, and also fails
-        over — a root that has become unwritable is skipped, and a root
-        that has become full loses priority to a healthier peer.
+        Skip roots that have hit their OWN per-disk quota — a full-quota
+        root would just be purged again on the next tick. Among the
+        remaining writable roots, prefer the one with the most free bytes
+        so load spreads naturally.
         """
-        best = None; best_free = -1
-        for r in self.roots():
+        # Cheap per-root usage lookup (only queries roots that have
+        # segments; keys we don't hit stay at 0).
+        try:
+            with self._lock:
+                usage_rows = self._db.execute(
+                    "SELECT path, bytes FROM segments"
+                ).fetchall()
+        except Exception:
+            usage_rows = []
+        best = None; best_free = -1; fallback = None
+        for entry in self.roots_with_quota():
+            r = Path(entry["path"])
             try:
                 r.mkdir(parents=True, exist_ok=True)
-                # Cheap writability probe (fs write cache; not fsync)
                 probe = r / ".rtcview_write_test"
                 probe.write_text("ok"); probe.unlink()
                 du = shutil.disk_usage(str(r))
-                if du.free > best_free:
-                    best_free = du.free; best = r
             except Exception:
                 continue
-        if best is None:
-            # Nothing writable — return primary anyway; the recorder
-            # will fail cleanly and the health endpoint will surface it.
-            return self.primary_root()
-        return best
+            fallback = r
+            # Enforce per-disk quota.
+            if entry["max_bytes"] > 0:
+                key = entry["path"] + os.sep
+                used = sum(int(b or 0) for p, b in usage_rows if p.startswith(key))
+                if used >= entry["max_bytes"]:
+                    continue
+            if du.free > best_free:
+                best_free = du.free; best = r
+        if best is not None: return best
+        # All quotas exhausted → fall back to the writable one so a
+        # temporary overshoot still lands somewhere; purge_once will
+        # trim it on the next tick.
+        if fallback is not None: return fallback
+        return self.primary_root()
 
     def _ensure_roots(self):
         try:
@@ -145,15 +175,25 @@ class Storage:
             self._db_path = db_path
             log.info("Storage index open: %s (primary root)", db_path)
 
-    def set_roots(self, new_paths: list[str]) -> tuple[bool, str]:
-        """Replace the entire storage_paths list. Every entry must be
-        creatable + writable. Returns (ok, message)."""
+    def set_roots(self, new_paths) -> tuple[bool, str]:
+        """Replace the entire storage_paths list.
+
+        Accepts either the new schema (list of {"path", "max_gb"}) or
+        the legacy string list (each becomes {"path": s, "max_gb": 0}).
+        Every entry's path must be creatable + writable.
+        """
         if not new_paths:
             return False, "En az bir kayıt klasörü olmalı"
-        clean: list[str] = []
+        clean: list[dict] = []
         seen: set = set()
         for np in new_paths:
-            s = str(np or "").strip()
+            if isinstance(np, dict):
+                s = str(np.get("path") or "").strip()
+                try: quota = max(0, int(np.get("max_gb", 0) or 0))
+                except (TypeError, ValueError): quota = 0
+            else:
+                s = str(np or "").strip()
+                quota = 0
             if not s: continue
             p = Path(s).expanduser()
             try:
@@ -167,18 +207,24 @@ class Storage:
                 return False, f"Klasöre yazılamıyor: {p} ({e})"
             rp = str(p.resolve())
             if rp in seen: continue
-            seen.add(rp); clean.append(rp)
+            seen.add(rp)
+            clean.append({"path": rp, "max_gb": quota})
         if not clean:
             return False, "Geçerli klasör bulunamadı"
-        self.config_store.update_recording({"storage_paths": clean, "storage_path": clean[0]})
+        # Keep the legacy scalar in sync with the new primary so a
+        # downgrade doesn't silently forget the recording path.
+        self.config_store.update_recording({
+            "storage_paths": clean,
+            "storage_path": clean[0]["path"],
+        })
         self._ensure_roots()
         self._invalidate_caches()
-        return True, ", ".join(clean)
+        return True, ", ".join(f"{c['path']}={c['max_gb']}GB" if c['max_gb'] else c['path'] for c in clean)
 
     def set_root(self, new_path: str) -> tuple[bool, str]:
         """Legacy single-path API used by older /api/recording/settings
         callers. Just wraps set_roots with a single-element list."""
-        return self.set_roots([new_path])
+        return self.set_roots([{"path": new_path, "max_gb": 0}])
 
     def _invalidate_caches(self):
         self._stats_cache = None
@@ -320,7 +366,16 @@ class Storage:
         warnings: list[str] = []
         per_root = []
         overall = "ok"
-        for r in self.roots():
+        # Per-root recording usage for quota display.
+        try:
+            with self._lock:
+                usage_rows = self._db.execute(
+                    "SELECT path, bytes FROM segments"
+                ).fetchall()
+        except Exception:
+            usage_rows = []
+        for entry in self.roots_with_quota():
+            r = Path(entry["path"])
             r_errs = []; r_warns = []
             exists = r.exists()
             writable = False
@@ -345,10 +400,20 @@ class Storage:
                         r_warns.append(f"%{100 - free_pct:.0f} dolu")
                 except Exception as e:
                     r_errs.append(f"Disk okunamadı: {e}")
+            key = entry["path"] + os.sep
+            used_by_rec = sum(int(b or 0) for p, b in usage_rows if p.startswith(key))
+            if entry["max_bytes"] > 0:
+                q_pct = round((used_by_rec / entry["max_bytes"]) * 100, 1)
+                if q_pct >= 100 and overall != "error":
+                    r_warns.append(f"Kota dolu ({entry['max_gb']} GB)")
+                elif q_pct >= 90:
+                    r_warns.append(f"Kota %{q_pct:.0f}")
             rst = "error" if r_errs else ("warning" if r_warns else "ok")
             per_root.append({
                 "path": str(r), "status": rst, "exists": exists, "writable": writable,
                 "disk": disk, "free_percent": round(free_pct, 1),
+                "bytes_used": used_by_rec,
+                "max_gb": entry["max_gb"], "max_bytes": entry["max_bytes"],
                 "errors": r_errs, "warnings": r_warns,
             })
             for e in r_errs: errors.append(f"{r}: {e}")
@@ -406,11 +471,24 @@ class Storage:
                 " FROM segments GROUP BY cam_id"
             ).fetchall()
 
+        # Per-root usage from the segment index (root prefix match).
+        roots_q = self.roots_with_quota()
+        with self._lock:
+            root_use_rows = self._db.execute(
+                "SELECT path, bytes FROM segments"
+            ).fetchall()
+        per_root_used: dict[str, int] = {r["path"]: 0 for r in roots_q}
+        for p, b in root_use_rows:
+            for r in roots_q:
+                if p.startswith(r["path"] + os.sep):
+                    per_root_used[r["path"]] += int(b or 0)
+                    break
+
         # disk usage per configured root, cached individually (5 s)
         roots_stats = []
         agg = {"total": 0, "free": 0, "used": 0}
-        for r in self.roots():
-            key = str(r)
+        for r in roots_q:
+            key = r["path"]
             dc = self._disk_cache.get(key)
             if dc and (now_ts - dc[0]) < 5:
                 d = dc[1]
@@ -421,15 +499,24 @@ class Storage:
                 except Exception:
                     d = {"total": 0, "free": 0, "used": 0}
                 self._disk_cache[key] = (now_ts, d)
-            roots_stats.append({"path": key, "disk": d})
+            roots_stats.append({
+                "path": key,
+                "disk": d,
+                "bytes_used": per_root_used.get(key, 0),
+                "max_gb": r["max_gb"],
+                "max_bytes": r["max_bytes"],
+            })
             for k in ("total", "free", "used"): agg[k] += d[k]
         rc = self._rec_cfg()
+        # Legacy "max_bytes" retained for older UI callers = sum of
+        # per-disk quotas (0 if all unlimited).
+        total_max = sum(r["max_bytes"] for r in roots_q)
         result = {
             "root": str(self.primary_root()),           # legacy scalar
-            "roots": roots_stats,                        # per-root disk stats
+            "roots": roots_stats,                        # per-root, with quota+usage
             "bytes_used": int(total_bytes),
             "segment_count": int(total_count),
-            "max_bytes": int(rc.get("max_gb", 100)) * (1024**3),
+            "max_bytes": total_max,                      # legacy aggregate
             "retention_days": int(rc.get("retention_days", 14)),
             "disk": agg,                                 # aggregate across roots
             "per_camera": [
@@ -481,30 +568,32 @@ class Storage:
                 if self.delete_segment(sid):
                     removed += 1; freed += int(b or 0)
 
-        # Per-disk quota: max_gb applies to EACH configured storage root
-        # independently, not to the sum across roots. This means adding a
-        # second 500 GB disk with max_gb=100 gets you 100+100 GB of
-        # recordings, not still 100 total. Segments whose path doesn't
-        # match any configured root (e.g. legacy files from an old path)
-        # fall into an "other" bucket that still shares the same cap.
-        max_bytes = int(rc.get("max_gb", 100)) * (1024**3)
-        if max_bytes > 0:
-            root_strs = [str(r) + os.sep for r in self.roots()]
+        # Per-disk quota: EACH configured storage root carries its own
+        # max_gb, taken from its storage_paths entry. max_bytes=0 for a
+        # root means unlimited for that disk. Segments whose path
+        # doesn't match any current root land in an "other" bucket that
+        # is left alone here (they'd be picked up by rescan or delete).
+        roots_q = self.roots_with_quota()
+        capped = [r for r in roots_q if r["max_bytes"] > 0]
+        if capped:
             with self._lock:
                 rows = self._db.execute(
                     "SELECT id, path, bytes FROM segments WHERE locked = 0 ORDER BY started_at ASC"
                 ).fetchall()
-            # Group + sum per root (oldest-first order preserved for delete).
             by_root: dict[str, list[tuple[int, str, int]]] = {}
             totals: dict[str, int] = {}
             for sid, p, b in rows:
-                key = next((rs for rs in root_strs if p.startswith(rs)), "__other__")
+                key = next(
+                    (r["path"] for r in capped if p.startswith(r["path"] + os.sep)),
+                    None,
+                )
+                if key is None: continue
                 by_root.setdefault(key, []).append((sid, p, int(b or 0)))
                 totals[key] = totals.get(key, 0) + int(b or 0)
-            for key, seglist in by_root.items():
-                over = totals[key] - max_bytes
+            for r in capped:
+                over = totals.get(r["path"], 0) - r["max_bytes"]
                 if over <= 0: continue
-                for sid, p, b in seglist:
+                for sid, p, b in by_root.get(r["path"], []):
                     if over <= 0: break
                     if self.delete_segment(sid):
                         over -= b; freed += b; removed += 1

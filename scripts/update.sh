@@ -96,13 +96,28 @@ d.setdefault("go2rtc", {}).setdefault("rtsp_port", 8554)
 rec = d.setdefault("recording", {})
 rec.setdefault("enabled", True)
 rec.setdefault("storage_path", os.path.join(install_dir, "recordings"))
-# Multi-storage: migrate the legacy scalar into the new list if the list
-# is missing. Keep the scalar so a downgrade wouldn't lose the setting.
+# Multi-storage schema evolution:
+#   old scalar recording.storage_path  →  ["path"]
+#   list of strings                    →  [{"path": ..., "max_gb": <legacy max_gb>}]
+# The legacy global recording.max_gb becomes the per-disk default for
+# the very first migration, then future edits are per-disk from the UI.
 if not rec.get("storage_paths"):
     rec["storage_paths"] = [rec["storage_path"]]
+default_quota = int(rec.get("max_gb", 0) or 0)
+migrated = []
+for entry in rec["storage_paths"]:
+    if isinstance(entry, str):
+        migrated.append({"path": entry, "max_gb": default_quota})
+    elif isinstance(entry, dict) and entry.get("path"):
+        migrated.append({
+            "path": str(entry["path"]),
+            "max_gb": int(entry.get("max_gb", default_quota) or 0),
+        })
+rec["storage_paths"] = migrated or [{"path": rec["storage_path"], "max_gb": 0}]
 rec.setdefault("segment_seconds", 300)
 rec.setdefault("retention_days", 14)
-rec.setdefault("max_gb", 100)
+# Legacy scalar retained for backward compat; UI no longer edits it.
+rec.setdefault("max_gb", 0)
 rec.setdefault("purge_interval_seconds", 60)
 rec.setdefault("ffmpeg_path", "ffmpeg")
 for cam in d.get("cameras", []):
@@ -110,8 +125,8 @@ for cam in d.get("cameras", []):
     cam.setdefault("record_schedule", [])
     cam.setdefault("record_audio", False)
     cam.setdefault("retention_days_override", 0)
-for _p in rec["storage_paths"]:
-    os.makedirs(_p, exist_ok=True)
+for _entry in rec["storage_paths"]:
+    os.makedirs(_entry["path"], exist_ok=True)
 with open(cfg_path, "w") as f: json.dump(d, f, indent=2)
 print("recording.storage_paths =", rec["storage_paths"])
 PY
