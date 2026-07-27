@@ -33,6 +33,24 @@ fi
 info "Servis durduruluyor..."
 systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
 
+# Bazı ffmpeg alt süreçleri systemd cgroup dışına düşebiliyor (nadir de
+# olsa oluyor) — yetim kalanları temizle. rtcview kullanıcısına ait olan
+# ve INSTALL_DIR/REC_PATH ile bağlantılı ffmpeg'leri hedef alıyoruz;
+# başka ffmpeg süreçlerine dokunmuyoruz.
+if id -u "$SERVICE_USER" >/dev/null 2>&1; then
+  ORPHANS=$(pgrep -u "$SERVICE_USER" -f 'ffmpeg .*(-f segment|/mnt/|/opt/rtcview|kayitlar|recordings)' 2>/dev/null || true)
+  if [ -n "$ORPHANS" ]; then
+    warn "Yetim ffmpeg süreçleri bulundu — sonlandırılıyor: $ORPHANS"
+    kill $ORPHANS 2>/dev/null || true
+    sleep 2
+    STILL=$(pgrep -u "$SERVICE_USER" -f 'ffmpeg .*(-f segment|/mnt/|/opt/rtcview|kayitlar|recordings)' 2>/dev/null || true)
+    if [ -n "$STILL" ]; then
+      warn "İnatçı süreçler SIGKILL ile durduruluyor: $STILL"
+      kill -9 $STILL 2>/dev/null || true
+    fi
+  fi
+fi
+
 # ------------- sync source (config klasörü DOKUNULMAZ) -------------
 info "Uygulama dosyaları güncelleniyor..."
 tar -C "$SRC_DIR" \
@@ -130,6 +148,18 @@ EOF
     fi
   fi
 fi
+
+# systemctl stop komutunun ffmpeg dahil TÜM alt süreçleri kesin olarak
+# öldürmesini garanti et: control-group ile SIGTERM, 20 sn sonra SIGKILL.
+info "Sistemd kill politikası pekiştiriliyor (control-group + TimeoutStopSec=20)..."
+mkdir -p /etc/systemd/system/${SERVICE_NAME}.service.d
+cat > /etc/systemd/system/${SERVICE_NAME}.service.d/kill.conf <<'EOF'
+[Service]
+KillMode=control-group
+KillSignal=SIGTERM
+SendSIGKILL=yes
+TimeoutStopSec=20
+EOF
 systemctl daemon-reload || true
 
 # Helper CLI (idempotent)

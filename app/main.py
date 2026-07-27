@@ -542,7 +542,18 @@ def create_app(config_path: str) -> Flask:
             return jsonify({"error": f"go2rtc unavailable: {e}"}), 502
         excluded = {"content-encoding", "content-length", "transfer-encoding", "connection"}
         headers = [(k, v) for k, v in r.headers.items() if k.lower() not in excluded]
-        return Response(r.iter_content(chunk_size=8192), status=r.status_code, headers=headers)
+        # Bir MSE oynatması iptal edildiğinde iter_content generator'ı GC'ye
+        # bırakılırsa upstream soketi de sarkıyor — istemci bağlantı kestikçe
+        # RAM/soket birikiyor. try/finally + close() ile her koşulda kapat.
+        def _pump():
+            try:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        yield chunk
+            finally:
+                try: r.close()
+                except Exception: pass
+        return Response(stream_with_context(_pump()), status=r.status_code, headers=headers)
 
     return app
 
