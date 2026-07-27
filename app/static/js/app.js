@@ -1041,15 +1041,19 @@
       txt.textContent = "ONVIF'e bağlanılıyor…";
       return;
     }
+    const tag = s.transport === "tapo" ? " · Tapo API"
+              : s.transport === "basenotify" ? " · webhook"
+              : s.transport === "pullpoint"  ? " · ONVIF"
+              : "";
     if (s.currently_active){
       box.classList.add("motion-status-active");
-      txt.textContent = "Hareket algılandı ✓";
+      txt.textContent = "Hareket algılandı ✓" + tag;
     } else {
       box.classList.add("motion-status-idle");
       const last = s.last_event_at
         ? ` · son ${Math.max(0, Math.round((Date.now()/1000) - s.last_event_at))} sn önce`
         : " · henüz olay yok";
-      txt.textContent = "Boş" + last;
+      txt.textContent = "Boş" + tag + last;
     }
   }
 

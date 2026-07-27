@@ -43,6 +43,16 @@ except Exception as _e:
     ONVIF_AVAILABLE = False
     ONVIF_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
+TAPO_IMPORT_ERROR = None
+try:
+    from pytapo import Tapo
+    TAPO_AVAILABLE = True
+except Exception as _e:
+    TAPO_AVAILABLE = False
+    TAPO_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+
+TAPO_POLL_SEC = 3.0              # how often to ask the camera for events
+
 _MOTION_TOPIC_HINTS = (
     "motion", "cellmotion", "motionalarm", "motiondetect",
 )
@@ -176,6 +186,8 @@ class MotionManager:
             "last_error":  st.last_error,
             "onvif_available": ONVIF_AVAILABLE,
             "onvif_import_error": ONVIF_IMPORT_ERROR,
+            "tapo_available":  TAPO_AVAILABLE,
+            "tapo_import_error": TAPO_IMPORT_ERROR,
             "currently_active": currently_active,
             "latest_interval": latest,
         }
@@ -238,26 +250,53 @@ class MotionManager:
         state.subscribed = False
 
     def _try_transports(self, cid, cam, stop, state):
-        """Try PullPoint first; on 'device doesn't support pullpoint',
-        fall back to BaseNotification push (Tapo path). Logs the
-        fallback decision ONCE per camera lifetime — the outer retry
-        loop reruns this method on every backoff, so leaving the log
-        at INFO produced one line every 5 s until the camera answers."""
-        onvif = self._connect(cam)
-        events = onvif.create_events_service()
+        """Cascade of transports, most-standard first:
+          1. ONVIF PullPoint  — works on most vendors
+          2. ONVIF BaseNotification — some cameras that reject #1
+          3. pytapo polling — Tapo hardware doesn't support ONVIF events
+        Only one succeeds per invocation. The outer retry loop reruns
+        this method on backoff, so the log decisions are debounced
+        against state.transport to avoid per-retry spam."""
+        errors: list[str] = []
+
+        # 1. ONVIF PullPoint
+        onvif = None; events = None
         try:
+            onvif = self._connect(cam)
+            events = onvif.create_events_service()
             self._run_pullpoint(cid, onvif, events, stop, state)
             return
         except Exception as e:
+            errors.append(f"pullpoint: {e}")
             msg = str(e).lower()
-            if "pullpoint" in msg or "does not support" in msg or "not support" in msg:
-                if state.transport != "basenotify":
-                    log.info("[%s] pullpoint unsupported, falling back to base-notification", cid)
-                state.last_error = None
-            else:
+            fallback_ok = ("pullpoint" in msg or "does not support" in msg
+                           or "not support" in msg or "action not implemented" in msg)
+            if not fallback_ok and onvif is not None:
                 raise
-        # Base-notification fallback.
-        self._run_basenotify(cid, onvif, events, stop, state)
+
+        # 2. ONVIF BaseNotification
+        if onvif is not None and events is not None:
+            try:
+                if state.transport != "basenotify":
+                    log.info("[%s] trying ONVIF base-notification fallback", cid)
+                self._run_basenotify(cid, onvif, events, stop, state)
+                return
+            except Exception as e:
+                errors.append(f"basenotify: {e}")
+
+        # 3. pytapo (Tapo-specific)
+        if TAPO_AVAILABLE:
+            try:
+                if state.transport != "tapo":
+                    log.info("[%s] falling back to Tapo API polling", cid)
+                self._run_tapo(cid, cam, stop, state)
+                return
+            except Exception as e:
+                errors.append(f"tapo: {e}")
+        else:
+            errors.append(f"tapo: pytapo not installed ({TAPO_IMPORT_ERROR})")
+
+        raise RuntimeError(" · ".join(errors))
 
     def _connect(self, cam):
         host = cam.get("onvif_host") or cam.get("host")
@@ -354,6 +393,77 @@ class MotionManager:
             except Exception as e:
                 log.debug("[%s] resubscribe failed: %s", cid, e)
                 return
+
+    # ---------- transport: pytapo polling ----------
+    def _run_tapo(self, cid, cam, stop, state):
+        """Poll Tapo's HTTPS API for motion events. Tapo hardware
+        doesn't expose ONVIF WS-Notification / PullPoint, but exposes
+        an authenticated JSON endpoint via port 443. pytapo wraps it.
+
+        Credentials: reuse the ONVIF user/password on the camera —
+        Tapo's 'third-party access' (Tapo app → Advanced Settings →
+        Camera Account) is what both ONVIF and pytapo authenticate
+        against, and it's the same login for both.
+
+        Poll every TAPO_POLL_SEC. For each new motion event returned
+        in getEvents(), forward through the same record_or_extend_
+        motion path so timeline overlays and the timeout-extend
+        model behave identically to the ONVIF transports.
+        """
+        host = cam.get("onvif_host") or cam.get("host")
+        user = cam.get("onvif_user") or "admin"
+        pw   = cam.get("onvif_pass") or ""
+        if not host:
+            raise RuntimeError("no host configured for Tapo API")
+        if not pw:
+            raise RuntimeError("no camera password configured for Tapo API")
+        try:
+            tapo = Tapo(host, user, pw)
+        except Exception as e:
+            raise RuntimeError(f"Tapo login failed: {e}")
+
+        state.transport = "tapo"
+        state.subscribed = True
+        state.last_error = None
+        log.info("[%s] motion subscription (Tapo polling every %.1fs)", cid, TAPO_POLL_SEC)
+
+        # Track the latest event we've already seen so a fresh poll
+        # doesn't re-register the same motion. Start from ~5s ago so
+        # a motion happening right at subscribe time isn't lost.
+        last_seen_start = time.time() - 5
+
+        while not stop.is_set() and not self._global_stop.is_set():
+            stop.wait(TAPO_POLL_SEC)
+            if stop.is_set() or self._global_stop.is_set(): return
+            try:
+                # pytapo's getEvents takes (startTime, endTime) as unix ts;
+                # the response shape varies by camera model. Handle both
+                # {'events': [...]} and a plain list defensively.
+                now = time.time()
+                raw = tapo.getEvents(startTime=int(last_seen_start), endTime=int(now))
+                events_list = raw.get("events", []) if isinstance(raw, dict) else (raw or [])
+                new_last = last_seen_start
+                for ev in events_list:
+                    ev_type = str(ev.get("type", "")).lower()
+                    if "motion" not in ev_type: continue
+                    ts = float(ev.get("startTime") or ev.get("start_time") or now)
+                    if ts <= last_seen_start: continue
+                    state.last_event_at = ts
+                    try:
+                        _mid, opened = self.storage.record_or_extend_motion(
+                            cid, ts, MOTION_TIMEOUT_SEC,
+                        )
+                        if opened:
+                            log.info("[%s] motion started (Tapo)", cid)
+                    except Exception as e:
+                        log.warning("[%s] record_motion failed: %s", cid, e)
+                    if ts > new_last: new_last = ts
+                last_seen_start = new_last
+            except Exception as e:
+                # Don't tear down the loop for a single poll blip — Tapo
+                # HTTPS can flake for a moment during firmware activity.
+                state.last_error = f"poll: {e}"
+                log.debug("[%s] Tapo poll: %s", cid, e)
 
     def _webhook_url(self, cid: str) -> Optional[str]:
         ip = _get_local_ip()

@@ -175,8 +175,9 @@
             <span id="motion-status-text" class="motion-status-text">Durum sorgulanıyor…</span>
           </div>
           <small style="color:var(--muted)">
-            Kamera ONVIF portu ve kullanıcı adı/şifresi doldurulu olmalı.
-            Bazı Tapo modelleri "hareket bitti" bilgisi göndermez —
+            Kamera IP'si, kullanıcı adı ve şifresi doldurulu olmalı.
+            Sırayla denenir: ONVIF PullPoint → ONVIF BaseNotification → Tapo API.
+            Bazı kameralar "hareket bitti" bilgisi göndermez —
             15 sn boyunca yeni hareket olayı gelmezse otomatik kapatılır.
           </small>
         </fieldset>
