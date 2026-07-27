@@ -543,6 +543,22 @@ def create_app(config_path: str) -> Flask:
             return jsonify({"error": "not found"}), 404
         return jsonify(motion.status(camera_id))
 
+    # ONVIF WS-Notification webhook. Cameras that don't support
+    # PullPoint (Tapo) POST SOAP envelopes to this URL after a
+    # Subscribe with ConsumerReference. The MotionManager builds the
+    # URL from the LAN IP + app port and hands it to Subscribe.
+    @app.post("/onvif/motion/<camera_id>")
+    def onvif_motion_webhook(camera_id):
+        if not _CAM_ID_RE.match(camera_id or ""):
+            return "bad id", 400
+        try:
+            motion.notify_from_webhook(camera_id, request.get_data() or b"")
+        except Exception as e:
+            log.warning("motion webhook %s: %s", camera_id, e)
+        # ONVIF spec expects an empty 200 SOAP-ish ack; camera doesn't
+        # care about the body but does care about the status code.
+        return ("", 200, {"Content-Type": "application/soap+xml"})
+
     @app.get("/api/snapshots")
     def api_snapshots_list():
         cam = request.args.get("cam")
