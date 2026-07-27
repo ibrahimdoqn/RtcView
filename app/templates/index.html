@@ -164,23 +164,6 @@
           </label>
         </fieldset>
 
-        <fieldset>
-          <legend>Hareket Algılama (ONVIF)</legend>
-          <label class="row">
-            <input type="checkbox" name="motion_detect_enabled" />
-            Etkinleştir — zaman çubuğunda hareketli anlar turuncu görünür
-          </label>
-          <div id="motion-status" class="motion-status motion-status-idle">
-            <span class="motion-status-dot"></span>
-            <span id="motion-status-text" class="motion-status-text">Durum sorgulanıyor…</span>
-          </div>
-          <small style="color:var(--muted)">
-            Kamera IP'si, kullanıcı adı ve şifresi doldurulu olmalı.
-            Sırayla denenir: ONVIF PullPoint → ONVIF BaseNotification → Tapo API.
-            Bazı kameralar "hareket bitti" bilgisi göndermez —
-            15 sn boyunca yeni hareket olayı gelmezse otomatik kapatılır.
-          </small>
-        </fieldset>
         <div class="modal-actions">
           <button type="button" class="btn ghost" data-close>İptal</button>
           <button type="button" id="btn-delete" class="btn danger hidden">Sil</button>

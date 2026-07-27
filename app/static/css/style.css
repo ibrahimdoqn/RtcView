@@ -716,34 +716,6 @@ kbd{
 .rec-health-error    { border-color:rgba(255,69,58,.5);   background:rgba(255,69,58,.08); }
 .rec-health-error   .rec-health-dot { background:var(--danger); box-shadow:0 0 8px rgba(255,69,58,.7); }
 
-/* Motion detection status pill (inside camera edit modal) */
-.motion-status{
-  display:flex;align-items:center;gap:.5rem;
-  padding:.4rem .6rem;border-radius:8px;border:1px solid var(--border);
-  font-size:.78rem;margin-top:.4rem;
-}
-.motion-status-dot{
-  width:8px;height:8px;border-radius:50%;flex:0 0 auto;
-  background:var(--muted);
-}
-.motion-status-text{color:var(--text);}
-.motion-status-idle  { border-color:rgba(255,255,255,.10); background:rgba(255,255,255,.02); }
-.motion-status-idle    .motion-status-dot { background:var(--muted); }
-.motion-status-active{
-  border-color:rgba(255,149,0,.55); background:rgba(255,149,0,.10);
-}
-.motion-status-active  .motion-status-dot {
-  background:#ff9500; box-shadow:0 0 8px rgba(255,149,0,.85);
-  animation: motion-pulse 1s ease-in-out infinite;
-}
-.motion-status-warn  { border-color:rgba(255,214,10,.4); background:rgba(255,214,10,.06); }
-.motion-status-warn    .motion-status-dot { background:var(--warn); }
-.motion-status-error { border-color:rgba(255,69,58,.5); background:rgba(255,69,58,.08); }
-.motion-status-error   .motion-status-dot { background:var(--danger); }
-@keyframes motion-pulse{
-  0%,100%{transform:scale(1);opacity:1;}
-  50%{transform:scale(1.4);opacity:.6;}
-}
 
 /* Multi-storage path list */
 .rec-paths{display:flex;flex-direction:column;gap:.35rem;margin-top:.25rem;}
@@ -957,16 +929,6 @@ kbd{
 }
 .pb-seg.manual{
   background:linear-gradient(180deg,rgba(255,69,58,.85),rgba(255,69,58,.65));
-}
-/* Motion detection overlay — thin orange band sitting on top of the
-   segment bars so it stays visible even when a segment is active/green. */
-.pb-motion{
-  position:absolute;top:38px;height:4px;
-  background:linear-gradient(180deg,#ff9500,#ff6a00);
-  border-radius:2px;
-  box-shadow:0 0 4px rgba(255,149,0,.55);
-  pointer-events:auto;
-  z-index:3;
 }
 /* Fixed centre playhead: a thin vertical line that spans the timeline */
 .pb-playhead{

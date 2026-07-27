@@ -85,19 +85,6 @@ else
   info "ONVIF/PTZ desteği: aktif"
 fi
 
-# ------------- verify pytapo (Tapo motion detection) -------------
-if ! "$INSTALL_DIR/venv/bin/python" -c "from pytapo import Tapo" 2>/dev/null; then
-  warn "pytapo import edilemiyor — Tapo kameralarda hareket algılama çalışmayabilir."
-  "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pytapo 2>&1 | tail -3 || true
-  if "$INSTALL_DIR/venv/bin/python" -c "from pytapo import Tapo" 2>/dev/null; then
-    info "pytapo (Tapo API) artık aktif."
-  else
-    warn "pytapo hâlâ kurulamadı. Tapo dışı ONVIF kameralar etkilenmez."
-  fi
-else
-  info "pytapo (Tapo API): aktif"
-fi
-
 # ------------- config migration: add missing recording block -------------
 if [ -f "$CONFIG_FILE" ]; then
   info "Config'e eksik varsayılanlar ekleniyor (recording, rtsp_port)..."
@@ -138,7 +125,6 @@ for cam in d.get("cameras", []):
     cam.setdefault("record_schedule", [])
     cam.setdefault("record_audio", False)
     cam.setdefault("retention_days_override", 0)
-    cam.setdefault("motion_detect_enabled", False)
 for _entry in rec["storage_paths"]:
     os.makedirs(_entry["path"], exist_ok=True)
 with open(cfg_path, "w") as f: json.dump(d, f, indent=2)

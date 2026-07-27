@@ -4,6 +4,3 @@ requests==2.32.3
 onvif-zeep==0.2.12
 zeep==4.2.1
 waitress==3.0.0
-# Tapo cameras don't support ONVIF PullPoint; pytapo talks to the
-# camera's own HTTPS API on port 443 to poll motion events.
-pytapo==3.3.42
