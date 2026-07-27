@@ -106,15 +106,26 @@ class Storage:
         return self.primary_root() / "_snapshots"
 
     def pick_write_root(self) -> Path:
-        """Choose a root for a new recording session.
+        """Weighted proportional round-robin over the storage roots.
 
-        Skip roots that have hit their OWN per-disk quota — a full-quota
-        root would just be purged again on the next tick. Among the
-        remaining writable roots, prefer the one with the most free bytes
-        so load spreads naturally.
+        Each root has a *budget* — its per-disk quota when one is set,
+        otherwise its raw disk capacity. A root is "behind schedule"
+        when its recorded-bytes / budget ratio is lower than another
+        root's; the most-behind writable root wins the next session,
+        so long-term write shares match the budget ratio.
+
+        Concrete: with a 512 GB and a 64 GB disk and no quotas, weights
+        are ~500e9 and ~58e9 (whatever the filesystem reports — no need
+        to round nominal sizes). After the algorithm settles, ~8.6
+        sessions land on the big disk for every 1 on the small one.
+        Purging an old segment drops that disk's `used`, immediately
+        making it a candidate again — the balance is self-correcting.
+
+        Roots that are unwritable, unmounted, or over their own quota
+        are skipped. If every root is out of budget the picker falls
+        back to any writable root so recording doesn't stall — the
+        purger will trim on the next tick.
         """
-        # Cheap per-root usage lookup (only queries roots that have
-        # segments; keys we don't hit stay at 0).
         try:
             with self._lock:
                 usage_rows = self._db.execute(
@@ -122,7 +133,9 @@ class Storage:
                 ).fetchall()
         except Exception:
             usage_rows = []
-        best = None; best_free = -1; fallback = None
+
+        candidates: list[tuple[float, int, Path]] = []
+        fallback = None
         for entry in self.roots_with_quota():
             r = Path(entry["path"])
             try:
@@ -133,18 +146,24 @@ class Storage:
             except Exception:
                 continue
             fallback = r
-            # Enforce per-disk quota.
-            if entry["max_bytes"] > 0:
-                key = entry["path"] + os.sep
-                used = sum(int(b or 0) for p, b in usage_rows if p.startswith(key))
-                if used >= entry["max_bytes"]:
-                    continue
-            if du.free > best_free:
-                best_free = du.free; best = r
-        if best is not None: return best
-        # All quotas exhausted → fall back to the writable one so a
-        # temporary overshoot still lands somewhere; purge_once will
-        # trim it on the next tick.
+            prefix = entry["path"] + os.sep
+            used = sum(int(b or 0) for p, b in usage_rows if p.startswith(prefix))
+            # Skip disks that have already hit their own quota.
+            if entry["max_bytes"] > 0 and used >= entry["max_bytes"]:
+                continue
+            # Weight: quota if set (user's declared budget), else the
+            # disk's actual reported total. Zero weight would divide by
+            # zero — treat as "no signal" and defer to tie-break.
+            weight = entry["max_bytes"] if entry["max_bytes"] > 0 else du.total
+            score = (used / weight) if weight > 0 else 0.0
+            # Tie-break by absolute free bytes so a genuinely emptier
+            # peer wins when scores are identical (cold-start case).
+            candidates.append((score, du.free, r))
+        if candidates:
+            candidates.sort(key=lambda x: (x[0], -x[1]))
+            return candidates[0][2]
+        # Every root exhausted → still return a writable one so the
+        # current segment lands somewhere; the purger will catch up.
         if fallback is not None: return fallback
         return self.primary_root()
 
