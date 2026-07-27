@@ -72,8 +72,8 @@ if [ -f "$CONFIG_FILE" ]; then
   info "Config'e eksik varsayılanlar ekleniyor (recording, rtsp_port)..."
   "$INSTALL_DIR/venv/bin/python" - "$CONFIG_FILE" "$INSTALL_DIR" <<'PY'
 import json, os, sys
-p, install_dir = sys.argv[1], sys.argv[2]
-with open(p) as f: d = json.load(f)
+cfg_path, install_dir = sys.argv[1], sys.argv[2]
+with open(cfg_path) as f: d = json.load(f)
 d.setdefault("go2rtc", {}).setdefault("rtsp_port", 8554)
 rec = d.setdefault("recording", {})
 rec.setdefault("enabled", True)
@@ -92,10 +92,10 @@ for cam in d.get("cameras", []):
     cam.setdefault("record_schedule", [])
     cam.setdefault("record_audio", False)
     cam.setdefault("retention_days_override", 0)
-for p in rec["storage_paths"]:
-    os.makedirs(p, exist_ok=True)
-with open(p, "w") as f: json.dump(d, f, indent=2)
-print("recording.storage_path =", rec["storage_path"])
+for _p in rec["storage_paths"]:
+    os.makedirs(_p, exist_ok=True)
+with open(cfg_path, "w") as f: json.dump(d, f, indent=2)
+print("recording.storage_paths =", rec["storage_paths"])
 PY
 fi
 
