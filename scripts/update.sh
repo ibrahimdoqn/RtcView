@@ -125,6 +125,7 @@ for cam in d.get("cameras", []):
     cam.setdefault("record_schedule", [])
     cam.setdefault("record_audio", False)
     cam.setdefault("retention_days_override", 0)
+    cam.setdefault("motion_detect_enabled", False)
 for _entry in rec["storage_paths"]:
     os.makedirs(_entry["path"], exist_ok=True)
 with open(cfg_path, "w") as f: json.dump(d, f, indent=2)

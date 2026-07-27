@@ -46,6 +46,10 @@ CAMERA_RECORDING_DEFAULTS = {
     "record_schedule": [],         # list of {"days":[0..6], "start":"HH:MM", "end":"HH:MM"}
     "record_audio": False,
     "retention_days_override": 0,  # 0 = use global
+    # ONVIF motion detection subscription — opt-in per camera. When
+    # enabled, motion.MotionManager opens a PullPoint against the
+    # camera and paints matching intervals onto the playback timeline.
+    "motion_detect_enabled": False,
 }
 
 _lock = threading.Lock()

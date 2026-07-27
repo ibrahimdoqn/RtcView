@@ -879,7 +879,10 @@
   const delBtn = $("#btn-delete");
 
   $("#btn-add-camera").addEventListener("click", () => { closeSidebar(); openEdit(null); });
-  $$("[data-close]").forEach(b => b.addEventListener("click", () => modal.classList.add("hidden")));
+  $$("[data-close]").forEach(b => b.addEventListener("click", () => {
+    modal.classList.add("hidden");
+    _stopMotionStatusPoll();
+  }));
   // Backdrop-click closes the modal, but a text selection that starts
   // inside an input and ends on the backdrop was incorrectly registered
   // as a backdrop-click. Only close when BOTH mousedown and mouseup
@@ -964,17 +967,75 @@
       form.record_mode.value = cam.record_mode || "off";
       form.record_audio.checked = !!cam.record_audio;
       form.retention_days_override.value = cam.retention_days_override || 0;
+      form.motion_detect_enabled.checked = !!cam.motion_detect_enabled;
       renderScheduleRows(cam.record_schedule || []);
       loadStreamOptions(cam.stream || "");
+      _startMotionStatusPoll(cam.id);
     } else {
       $("#modal-title").textContent = "Kamera Ekle";
       delBtn.classList.add("hidden");
       form.record_mode.value = "off";
+      form.motion_detect_enabled.checked = false;
       renderScheduleRows([]);
       loadStreamOptions("");
+      _stopMotionStatusPoll();
+      _renderMotionStatus(null);
     }
     $("#rec-schedule-editor").classList.toggle("hidden", form.record_mode.value !== "schedule");
     modal.classList.remove("hidden");
+  }
+
+  // Motion status polling — active only while the camera edit modal is open.
+  let _motionPollTimer = null;
+  let _motionPollCamId = null;
+  function _stopMotionStatusPoll(){
+    if (_motionPollTimer){ clearInterval(_motionPollTimer); _motionPollTimer = null; }
+    _motionPollCamId = null;
+  }
+  function _startMotionStatusPoll(camId){
+    _stopMotionStatusPoll();
+    _motionPollCamId = camId;
+    const tick = async () => {
+      if (!_motionPollCamId || modal.classList.contains("hidden")){
+        _stopMotionStatusPoll(); return;
+      }
+      try {
+        const s = await api.get(`/api/cameras/${_motionPollCamId}/motion/status`);
+        _renderMotionStatus(s);
+      } catch { _renderMotionStatus({ error: "Sorgulama hatası" }); }
+    };
+    tick();
+    _motionPollTimer = setInterval(tick, 2000);
+  }
+  function _renderMotionStatus(s){
+    const box = $("#motion-status");
+    const txt = $("#motion-status-text");
+    if (!box || !txt) return;
+    box.classList.remove("motion-status-idle","motion-status-active",
+                         "motion-status-error","motion-status-warn");
+    if (!s){ box.classList.add("motion-status-idle"); txt.textContent = "Kaydedince başlar"; return; }
+    if (s.error){ box.classList.add("motion-status-error"); txt.textContent = s.error; return; }
+    if (!s.enabled){ box.classList.add("motion-status-idle"); txt.textContent = "Kapalı"; return; }
+    if (s.last_error){
+      box.classList.add("motion-status-error");
+      txt.textContent = "ONVIF hatası: " + s.last_error;
+      return;
+    }
+    if (!s.subscribed){
+      box.classList.add("motion-status-warn");
+      txt.textContent = "ONVIF'e bağlanılıyor…";
+      return;
+    }
+    if (s.currently_active){
+      box.classList.add("motion-status-active");
+      txt.textContent = "Hareket algılandı ✓";
+    } else {
+      box.classList.add("motion-status-idle");
+      const last = s.last_event_at
+        ? ` · son ${Math.max(0, Math.round((Date.now()/1000) - s.last_event_at))} sn önce`
+        : " · henüz olay yok";
+      txt.textContent = "Boş" + last;
+    }
   }
 
   $("#btn-refresh-streams").addEventListener("click", () => loadStreamOptions(form.stream.value));
@@ -985,6 +1046,7 @@
     const body = Object.fromEntries(fd.entries());
     body.ptz_enabled = form.ptz_enabled.checked;
     body.record_audio = form.record_audio.checked;
+    body.motion_detect_enabled = form.motion_detect_enabled.checked;
     body.onvif_port = parseInt(body.onvif_port || 80);
     body.retention_days_override = parseInt(body.retention_days_override || 0);
     body.record_schedule = readScheduleRows();
@@ -1467,7 +1529,7 @@
 
   function initPlayback(){
     state.playback = {
-      camId: null, date: null, segs: [], active: null,
+      camId: null, date: null, segs: [], motion: [], active: null,
       // New timeline model: fixed centre playhead, sliding track.
       // centerTime = the wall-clock instant currently under the playhead.
       // pxPerSec  = zoom (how many pixels represent one second).
@@ -1582,8 +1644,12 @@
     const [t0, t1] = dayRangeUnix(pb.date);
     pb.dayStart = t0; pb.dayEnd = t1;
     try {
-      const segs = await api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`);
+      const [segs, motion] = await Promise.all([
+        api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`),
+        api.get(`/api/motion?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`).catch(() => []),
+      ]);
       pb.segs = segs || [];
+      pb.motion = motion || [];
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
       renderTimeline();
     } catch { /* keep quiet */ }
@@ -1899,8 +1965,12 @@
     if (!pb.pxPerSec) pb.pxPerSec = _defaultPxPerSec();
     $("#pb-status").textContent = "Yükleniyor…";
     try {
-      const segs = await api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`);
+      const [segs, motion] = await Promise.all([
+        api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`),
+        api.get(`/api/motion?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`).catch(() => []),
+      ]);
       pb.segs = segs || [];
+      pb.motion = motion || [];
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
       const t = _pickInitialTime(pb);
       pb.centerTime = t;
@@ -1989,6 +2059,23 @@
       }
       frag.appendChild(el);
     }
+
+    // ----- motion overlays (thin orange bar at top of timeline) -----
+    (pb.motion || []).forEach(m => {
+      const m0 = Math.max(m.started_at, viewStart);
+      const m1 = Math.min(m.ended_at,   viewEnd);
+      if (m1 <= m0) return;
+      const x = (m0 - viewStart) * pb.pxPerSec;
+      const w = Math.max(2, (m1 - m0) * pb.pxPerSec);
+      const el = document.createElement("div");
+      el.className = "pb-motion";
+      el.style.left = x + "px";
+      el.style.width = w + "px";
+      const t0 = new Date(m.started_at * 1000);
+      const dur = m.ended_at - m.started_at;
+      el.title = `Hareket · ${pad2(t0.getHours())}:${pad2(t0.getMinutes())}:${pad2(t0.getSeconds())} · ${fmtDuration(dur)}`;
+      frag.appendChild(el);
+    });
 
     // ----- segment bars (only visible slices, clipped) -----
     pb.segs.forEach(s => {

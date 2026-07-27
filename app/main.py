@@ -18,6 +18,7 @@ from flask_cors import CORS
 
 from app.config import ConfigStore
 from app.go2rtc_client import Go2RtcClient
+from app.motion import MotionManager
 from app.ptz import ptz_controller, ONVIF_AVAILABLE
 from app.recorder import RecordingManager, MANUAL_DEFAULT_SECONDS
 from app.storage import Storage
@@ -47,16 +48,21 @@ def create_app(config_path: str) -> Flask:
     go2rtc = Go2RtcClient(store)
     storage = Storage(store)
     recorder = RecordingManager(store, storage)
+    motion = MotionManager(store, storage)
 
     app.config["STORE"] = store
     app.config["GO2RTC"] = go2rtc
     app.config["STORAGE"] = storage
     app.config["RECORDER"] = recorder
+    app.config["MOTION"] = motion
 
     storage.start()
     recorder.start()
+    motion.start()
 
     def _shutdown():
+        try: motion.stop()
+        except Exception: pass
         try: recorder.stop()
         except Exception: pass
         try: storage.stop()
@@ -183,6 +189,7 @@ def create_app(config_path: str) -> Flask:
         }
         store.add_camera(cam)
         recorder.reload_camera(cam["id"])
+        motion.reload_all()
         return jsonify(cam), 201
 
     @app.put("/api/cameras/<camera_id>")
@@ -197,6 +204,7 @@ def create_app(config_path: str) -> Flask:
             return jsonify({"error": "not found"}), 404
         ptz_controller.invalidate(camera_id)
         recorder.reload_camera(camera_id)
+        motion.reload_all()
         return jsonify({"ok": True})
 
     @app.delete("/api/cameras/<camera_id>")
@@ -206,6 +214,7 @@ def create_app(config_path: str) -> Flask:
             return jsonify({"error": "not found"}), 404
         ptz_controller.invalidate(camera_id)
         recorder.reload_camera(camera_id)
+        motion.reload_all()
         return jsonify({"ok": True})
 
     @app.post("/api/cameras/reorder")
@@ -513,6 +522,26 @@ def create_app(config_path: str) -> Flask:
         if request.args.get("return") == "image":
             return Response(r.content, mimetype="image/jpeg")
         return jsonify(payload)
+
+    # ---------- Motion detection ----------
+    @app.get("/api/motion")
+    def api_motion_list():
+        cam = request.args.get("cam")
+        try:
+            t_from = float(request.args.get("from", 0))
+            t_to   = float(request.args.get("to",   time.time() + 3600))
+        except ValueError:
+            return jsonify({"error": "bad from/to"}), 400
+        rows = storage.list_motion(cam, t_from, t_to)
+        return jsonify(rows)
+
+    @app.get("/api/cameras/<camera_id>/motion/status")
+    def api_motion_status(camera_id):
+        if not _CAM_ID_RE.match(camera_id or ""):
+            return jsonify({"error": "invalid camera id"}), 400
+        if not _find_camera(camera_id):
+            return jsonify({"error": "not found"}), 404
+        return jsonify(motion.status(camera_id))
 
     @app.get("/api/snapshots")
     def api_snapshots_list():

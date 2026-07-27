@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS snapshots (
     bytes      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_snap_cam_time ON snapshots(cam_id, taken_at);
+
+CREATE TABLE IF NOT EXISTS motion_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    cam_id     TEXT    NOT NULL,
+    started_at REAL    NOT NULL,
+    ended_at   REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_motion_cam_time ON motion_events(cam_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_motion_open     ON motion_events(cam_id, ended_at);
 """
 
 
@@ -363,6 +372,78 @@ class Storage:
         cols = ["id","cam_id","path","taken_at","bytes"]
         return [dict(zip(cols, r)) for r in rows]
 
+    # ---------- Motion events ----------
+    def record_or_extend_motion(self, cam_id: str, at: float,
+                                timeout_sec: float) -> tuple[int, bool]:
+        """Record a motion trigger.
+
+        If this camera has a still-open interval (ends_at > at), just
+        push its ends_at further into the future. Otherwise open a new
+        one starting at `at`, ending at `at + timeout_sec`. Handles
+        the Tapo case where cameras only emit "motion started" pings
+        while movement continues, never a "motion ended".
+
+        Returns (interval_id, opened_new). opened_new is True only
+        when a brand-new interval was created (useful for logging).
+        """
+        end_at = at + timeout_sec
+        with self._lock:
+            r = self._db.execute(
+                "SELECT id, ended_at FROM motion_events"
+                " WHERE cam_id = ? AND ended_at >= ?"
+                " ORDER BY started_at DESC LIMIT 1",
+                (cam_id, at),
+            ).fetchone()
+            if r:
+                mid, cur_end = r[0], r[1]
+                if end_at > cur_end:
+                    self._db.execute(
+                        "UPDATE motion_events SET ended_at = ? WHERE id = ?",
+                        (end_at, mid),
+                    )
+                return int(mid), False
+            cur = self._db.execute(
+                "INSERT INTO motion_events (cam_id, started_at, ended_at)"
+                " VALUES (?, ?, ?)",
+                (cam_id, at, end_at),
+            )
+            return int(cur.lastrowid), True
+
+    def list_motion(self, cam_id: Optional[str], t_from: float,
+                    t_to: float) -> list[dict]:
+        """Intervals that overlap [t_from, t_to]. Sorted by started_at."""
+        q = ("SELECT id, cam_id, started_at, ended_at FROM motion_events"
+             " WHERE ended_at >= ? AND started_at <= ?")
+        args: list = [t_from, t_to]
+        if cam_id:
+            q += " AND cam_id = ?"; args.append(cam_id)
+        q += " ORDER BY started_at ASC"
+        with self._lock:
+            rows = self._db.execute(q, args).fetchall()
+        cols = ["id", "cam_id", "started_at", "ended_at"]
+        return [dict(zip(cols, r)) for r in rows]
+
+    def latest_motion(self, cam_id: str) -> Optional[dict]:
+        """Return the newest motion interval for a camera, or None.
+        Used by the status endpoint so the UI can show 'aktif' when
+        ends_at is still in the future."""
+        with self._lock:
+            r = self._db.execute(
+                "SELECT id, cam_id, started_at, ended_at FROM motion_events"
+                " WHERE cam_id = ? ORDER BY started_at DESC LIMIT 1",
+                (cam_id,),
+            ).fetchone()
+        if not r: return None
+        return {"id": r[0], "cam_id": r[1], "started_at": r[2], "ended_at": r[3]}
+
+    def purge_motion(self, older_than_ts: float) -> int:
+        """Delete motion rows whose ended_at is older than the cutoff."""
+        with self._lock:
+            cur = self._db.execute(
+                "DELETE FROM motion_events WHERE ended_at < ?", (older_than_ts,)
+            )
+            return cur.rowcount or 0
+
     # ---------- Health ----------
     def health(self) -> dict:
         """Report the storage subsystem's live state across ALL roots.
@@ -659,6 +740,13 @@ class Storage:
                         removed += 1; freed += int(b or 0)
                 if _any_has_room():
                     break
+
+        # Motion event retention: mirror the recording retention window
+        # (motion is only meaningful when the matching segments exist).
+        if retention > 0:
+            m_cutoff = time.time() - retention * 86400
+            try: self.purge_motion(m_cutoff)
+            except Exception as e: log.debug("motion purge failed: %s", e)
 
         # Snapshot retention: keep only 3× retention days for snapshots (they're small)
         snap_retention = max(retention * 3, 30)

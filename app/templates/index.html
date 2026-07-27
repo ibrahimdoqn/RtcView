@@ -163,6 +163,23 @@
             <input type="number" name="retention_days_override" min="0" value="0" />
           </label>
         </fieldset>
+
+        <fieldset>
+          <legend>Hareket Algılama (ONVIF)</legend>
+          <label class="row">
+            <input type="checkbox" name="motion_detect_enabled" />
+            Etkinleştir — zaman çubuğunda hareketli anlar turuncu görünür
+          </label>
+          <div id="motion-status" class="motion-status motion-status-idle">
+            <span class="motion-status-dot"></span>
+            <span id="motion-status-text" class="motion-status-text">Ayar kaydedilmedi</span>
+          </div>
+          <small style="color:var(--muted)">
+            Kamera ONVIF portu ve kullanıcı adı/şifresi doldurulu olmalı.
+            Bazı Tapo modelleri "hareket bitti" bilgisi göndermez —
+            15 sn boyunca yeni hareket olayı gelmezse otomatik kapatılır.
+          </small>
+        </fieldset>
         <div class="modal-actions">
           <button type="button" class="btn ghost" data-close>İptal</button>
           <button type="button" id="btn-delete" class="btn danger hidden">Sil</button>
