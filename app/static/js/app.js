@@ -46,6 +46,23 @@
     const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = Math.floor(s%60);
     return h ? `${h}:${pad2(m)}:${pad2(sec)}` : `${m}:${pad2(sec)}`;
   };
+  // Bind a backdrop-click-to-close handler that ignores drag selections
+  // starting inside the modal content. A plain click listener treats
+  // "mousedown in input → drag to backdrop → release" as a backdrop click
+  // and closes the modal mid-selection — annoying every time the user
+  // tries to overwrite a number field.
+  function _bindBackdropClose(modalEl){
+    let downOnBackdrop = false;
+    modalEl.addEventListener("mousedown", (e) => {
+      downOnBackdrop = (e.target === modalEl);
+    });
+    modalEl.addEventListener("mouseup", (e) => {
+      if (downOnBackdrop && e.target === modalEl) {
+        modalEl.classList.add("hidden");
+      }
+      downOnBackdrop = false;
+    });
+  }
 
   // -------- Init --------
   async function init(){
@@ -863,7 +880,11 @@
 
   $("#btn-add-camera").addEventListener("click", () => { closeSidebar(); openEdit(null); });
   $$("[data-close]").forEach(b => b.addEventListener("click", () => modal.classList.add("hidden")));
-  modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
+  // Backdrop-click closes the modal, but a text selection that starts
+  // inside an input and ends on the backdrop was incorrectly registered
+  // as a backdrop-click. Only close when BOTH mousedown and mouseup
+  // landed on the backdrop itself.
+  _bindBackdropClose(modal);
 
   async function loadStreamOptions(selected){
     const sel = $("#stream-select");
@@ -1033,7 +1054,7 @@
     sModal.classList.remove("hidden");
   });
   $$("[data-close-settings]").forEach(b => b.addEventListener("click", () => sModal.classList.add("hidden")));
-  sModal.addEventListener("click", (e) => { if (e.target === sModal) sModal.classList.add("hidden"); });
+  _bindBackdropClose(sModal);
 
   async function refreshUsageBar(){
     try {
@@ -1061,12 +1082,6 @@
         }
       }
       _renderStorageHealth(s.health);
-      // Update per-row free-space labels without rebuilding the rows
-      $$("#s-rec-paths .rec-path-row").forEach(row => {
-        const val = row.querySelector(".rp-path").value.trim();
-        const cell = row.querySelector(".rp-free");
-        if (cell) cell.textContent = _rowFreeText(val, st);
-      });
     } catch {}
   }
   // Renders one per-disk fill bar: disk-total bar with recording usage
@@ -1160,7 +1175,6 @@
         <span class="rp-badge" title="${idx === 0 ? 'Birincil (DB burada)' : 'Ek yol'}">${badge}</span>
         <input type="text" class="rp-path" value="${escapeHtml(p)}" placeholder="/mnt/nas/rtcview veya /media/usb/rtcview" />
         <input type="number" class="rp-quota" min="0" step="1" value="${quota}" title="Bu disk için kota (GB) — 0 = kotasız" placeholder="Kota GB" />
-        <span class="rp-free">${escapeHtml(_rowFreeText(p, storageStatus))}</span>
         <span class="rp-actions">
           <button type="button" class="rp-btn rp-test" title="Yolu doğrula">✓</button>
           <button type="button" class="rp-btn rp-del"  title="Yolu sil">✕</button>

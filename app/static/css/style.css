@@ -719,16 +719,19 @@ kbd{
 /* Multi-storage path list */
 .rec-paths{display:flex;flex-direction:column;gap:.35rem;margin-top:.25rem;}
 .rec-path-row{
-  display:grid;grid-template-columns:auto 1fr 88px auto auto;gap:.35rem;align-items:center;
+  display:grid;grid-template-columns:auto 1fr 88px auto;gap:.35rem;align-items:center;
   background:var(--panel-2);border:1px solid var(--border-solid);
   border-radius:9px;padding:.4rem .5rem;
 }
 .rec-path-row .rp-quota{
-  text-align:right;padding:.25rem .35rem;font-family:ui-monospace,monospace;
+  text-align:center;padding:.25rem .35rem;font-family:ui-monospace,monospace;
   font-size:.78rem;background:rgba(255,255,255,.03);
   border:1px solid var(--border);border-radius:6px;color:var(--text);
   width:88px;
+  -moz-appearance:textfield;
 }
+.rec-path-row .rp-quota::-webkit-outer-spin-button,
+.rec-path-row .rp-quota::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
 .rec-path-row .rp-quota:focus{background:rgba(255,255,255,.06);}
 .rec-path-row .rp-badge{
   width:20px;height:20px;border-radius:50%;font-size:.62rem;font-weight:700;
