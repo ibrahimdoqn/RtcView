@@ -62,8 +62,9 @@
       registerSW();
       wireKeyboard();
     } catch (e) { toast("Yapılandırma yüklenemedi: " + e.message, "err"); }
-    setInterval(updateStatus, 5000);
-    setInterval(updateRecStatus, 2000);
+    // Reduced polling — see optimisation plan Stage 1
+    setInterval(updateStatus, 10000);
+    setInterval(updateRecStatus, 4000);
   }
 
   function applySettings(){
@@ -1015,7 +1016,10 @@
       const r = await api.get("/api/recording/settings");
       state.recording = r;
       $("#s-rec-enabled").checked = r.enabled !== false;
-      $("#s-rec-path").value = r.storage_path || "";
+      const paths = (r.storage_paths && r.storage_paths.length)
+                     ? r.storage_paths
+                     : (r.storage_path ? [r.storage_path] : [""]);
+      _renderRecPaths(paths);
       $("#s-rec-segment").value = r.segment_seconds || 300;
       $("#s-rec-retention").value = r.retention_days || 14;
       $("#s-rec-maxgb").value = r.max_gb || 100;
@@ -1040,9 +1044,16 @@
       if (pct >= 90) bar.classList.add("crit");
       else if (pct >= 75) bar.classList.add("warn");
       const disk = st.disk || {};
-      txt.textContent = `${fmtBytes(used)} / kota ${fmtBytes(cap)} · disk: ${fmtBytes(disk.free||0)} boş / ${fmtBytes(disk.total||0)} · ${st.segment_count||0} segment`
+      const rootCount = (st.roots || []).length;
+      txt.textContent = `${fmtBytes(used)} / kota ${fmtBytes(cap)} · ${rootCount} yol: ${fmtBytes(disk.free||0)} boş / ${fmtBytes(disk.total||0)} · ${st.segment_count||0} segment`
         + (s.ffmpeg_available ? "" : " · ⚠ ffmpeg bulunamadı");
       _renderStorageHealth(s.health);
+      // Update per-row free-space labels without rebuilding the rows
+      $$("#s-rec-paths .rec-path-row").forEach(row => {
+        const val = row.querySelector(".rp-path").value.trim();
+        const cell = row.querySelector(".rp-free");
+        if (cell) cell.textContent = _rowFreeText(val, st);
+      });
     } catch {}
   }
   function _renderStorageHealth(h){
@@ -1065,14 +1076,61 @@
     txt.textContent = lines.join("\n") || "Durum bilinmiyor";
   }
 
-  $("#s-rec-path-test").addEventListener("click", async () => {
-    const p = $("#s-rec-path").value.trim();
-    if (!p) return;
-    try {
-      await api.post("/api/recording/settings", { storage_path: p });
-      toast("Yol geçerli ve yazılabilir", "ok");
-      refreshUsageBar();
-    } catch (e) { toast("Yol reddedildi: " + e.message, "err"); }
+  // ---------- Multi-storage path list ----------
+  function _rowFreeText(path, storageStatus){
+    // storageStatus.roots = [{ path, disk: {total, free, used} }]
+    const roots = (storageStatus && storageStatus.roots) || [];
+    const match = roots.find(r => r.path === path);
+    if (!match || !match.disk || !match.disk.total) return "";
+    return `${fmtBytes(match.disk.free)} boş / ${fmtBytes(match.disk.total)}`;
+  }
+  function _renderRecPaths(paths, storageStatus){
+    const wrap = $("#s-rec-paths"); wrap.innerHTML = "";
+    if (!paths.length) paths = [""];
+    paths.forEach((p, idx) => {
+      const row = document.createElement("div");
+      row.className = "rec-path-row" + (idx === 0 ? " primary" : "");
+      const badge = idx === 0 ? "1°" : String(idx + 1);
+      row.innerHTML = `
+        <span class="rp-badge" title="${idx === 0 ? 'Birincil (DB burada)' : 'Ek yol'}">${badge}</span>
+        <input type="text" class="rp-path" value="${escapeHtml(p)}" placeholder="/mnt/nas/rtcview veya /media/usb/rtcview" />
+        <span class="rp-free">${escapeHtml(_rowFreeText(p, storageStatus))}</span>
+        <span class="rp-actions">
+          <button type="button" class="rp-btn rp-test" title="Yolu doğrula">✓</button>
+          <button type="button" class="rp-btn rp-del"  title="Yolu sil">✕</button>
+        </span>`;
+      row.querySelector(".rp-test").addEventListener("click", async () => {
+        const val = row.querySelector(".rp-path").value.trim();
+        if (!val){ toast("Boş yol", "err"); return; }
+        try {
+          const others = _readRecPaths().filter((_,i) => i !== idx);
+          await api.post("/api/recording/settings", { storage_paths: [val, ...others] });
+          const btn = row.querySelector(".rp-test");
+          btn.classList.add("rp-test-ok"); btn.textContent = "✓";
+          setTimeout(() => { btn.classList.remove("rp-test-ok"); }, 1200);
+          toast("Yol geçerli", "ok");
+          refreshUsageBar();
+        } catch (e) {
+          const btn = row.querySelector(".rp-test");
+          btn.classList.add("rp-test-err"); btn.textContent = "!";
+          setTimeout(() => { btn.classList.remove("rp-test-err"); btn.textContent = "✓"; }, 2500);
+          toast("Yol reddedildi: " + e.message, "err");
+        }
+      });
+      row.querySelector(".rp-del").addEventListener("click", () => {
+        const cur = _readRecPaths();
+        if (cur.length <= 1){ toast("En az bir yol olmalı", "err"); return; }
+        cur.splice(idx, 1);
+        _renderRecPaths(cur, storageStatus);
+      });
+      wrap.appendChild(row);
+    });
+  }
+  function _readRecPaths(){
+    return $$("#s-rec-paths .rp-path").map(i => i.value.trim()).filter(Boolean);
+  }
+  $("#s-rec-path-add").addEventListener("click", () => {
+    _renderRecPaths([..._readRecPaths(), ""]);
   });
   $("#s-rec-rescan").addEventListener("click", async () => {
     try {
@@ -1227,9 +1285,11 @@
         api_port: parseInt($("#s-g2-port").value || 1984),
         rtsp_port: parseInt($("#s-g2-rtsp").value || 8554),
       });
+      const paths = _readRecPaths();
+      if (!paths.length){ toast("En az bir kayıt klasörü ekleyin", "err"); return; }
       const recBody = {
         enabled: $("#s-rec-enabled").checked,
-        storage_path: $("#s-rec-path").value.trim(),
+        storage_paths: paths,
         segment_seconds: parseInt($("#s-rec-segment").value || 300),
         retention_days: parseInt($("#s-rec-retention").value || 14),
         max_gb: parseInt($("#s-rec-maxgb").value || 100),
@@ -1277,7 +1337,7 @@
     // While the panel is open, refresh the day's segment list so newly
     // closed segments appear on the timeline without a manual rescan.
     if (pb._refreshTimer) clearInterval(pb._refreshTimer);
-    pb._refreshTimer = setInterval(refreshDaySilent, 10000);
+    pb._refreshTimer = setInterval(refreshDaySilent, 20000);
   }
   function closePlayback(){
     if (state.playback){
@@ -1970,18 +2030,48 @@
     if (next) loadSegment(next, 0);
   }
 
+  let _tlLastRender = 0;
   function onTimeUpdate(){
     const pb = state.playback;
     const v = $("#pb-video");
     if (!pb || !pb.active) return;
-    // Playing → the playhead should track the video; the track slides
-    // under it. Suspend this while the user is dragging so we don't
-    // fight their input.
+    // Suspend rendering while the user is dragging so we don't fight
+    // their input. Throttle to ~3 fps otherwise — the browser fires
+    // timeupdate about 4×/s and each renderTimeline rebuilds ticks +
+    // segments in the DOM, which was measurable CPU on rk3399.
     if (!pb.scrubbing){
       pb.centerTime = pb.active.started_at + (v.currentTime || 0);
-      renderTimeline();
+      const now = performance.now();
+      if (now - _tlLastRender >= 330){
+        _tlLastRender = now;
+        renderTimeline();
+      } else {
+        // Cheap path: just move the time badge; skip full DOM rebuild
+        updateTimeBadge();
+      }
     }
     updateTimeLabel();
+    // Playback prefetch: as we get close to the end of the active
+    // segment, warm up the browser cache for the next one so switching
+    // feels seamless.
+    _maybePrefetchNextSegment();
+  }
+  function _maybePrefetchNextSegment(){
+    const pb = state.playback;
+    if (!pb || !pb.active) return;
+    const v = $("#pb-video");
+    const dur = bestDuration(pb.active, v);
+    if (dur <= 0) return;
+    const remain = dur - (v.currentTime || 0);
+    if (remain > 5) { pb._prefetched = null; return; }        // too early
+    const idx = pb.segs.findIndex(s => s.id === pb.active.id);
+    const next = pb.segs[idx + 1]; if (!next) return;
+    if (pb._prefetched === next.id) return;                    // already
+    pb._prefetched = next.id;
+    // Fire-and-forget: fetch first 128 KB so mp4 header is in cache
+    try {
+      fetch(next.url, {headers: {"Range": "bytes=0-131071"}}).catch(() => {});
+    } catch {}
   }
   function updateTimeLabel(){
     // Desktop-only textual "current / total" readout in the toolbar

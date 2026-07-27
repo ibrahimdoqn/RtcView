@@ -210,12 +210,11 @@
         <fieldset>
           <legend>Kayıt &amp; Depolama</legend>
           <label class="row"><input id="s-rec-enabled" type="checkbox" /> Kayıt sistemi aktif</label>
-          <label>Kayıt klasörü (istediğiniz mount / dizin)
-            <div class="row" style="gap:.35rem;">
-              <input id="s-rec-path" placeholder="/opt/rtcview/recordings" style="flex:1;" />
-              <button type="button" id="s-rec-path-test" class="btn ghost small" title="Yolu doğrula">✓</button>
-            </div>
-            <small>Örn. <code>/mnt/nas/rtcview</code> veya <code>/media/usb/rtcview</code>. Yol yazılabilir olmalı.</small>
+          <label>Kayıt klasörleri (birden fazla ekleyebilirsiniz)
+            <div id="s-rec-paths" class="rec-paths"></div>
+            <button type="button" id="s-rec-path-add" class="btn ghost small">+ Klasör ekle</button>
+            <small>Her yeni segment en boş yola yazılır. Playback + retention tüm yollara yayılır.
+              Bir yol düşerse diğerleri kullanılmaya devam eder.</small>
           </label>
           <div class="grid2">
             <label>Segment (sn) <input id="s-rec-segment" type="number" min="30" max="3600" /></label>

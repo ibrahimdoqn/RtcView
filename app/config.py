@@ -21,7 +21,11 @@ DEFAULT_CONFIG = {
     },
     "recording": {
         "enabled": True,
-        "storage_path": "/opt/rtcview/recordings",
+        # New: list of storage roots. New segments go to whichever root
+        # has the most free space at start time; playback + purge span
+        # all roots. Legacy scalar `storage_path` is migrated in
+        # ConfigStore._merge_defaults if `storage_paths` is empty.
+        "storage_paths": ["/opt/rtcview/recordings"],
         "segment_seconds": 300,
         "retention_days": 14,
         "max_gb": 100,
@@ -84,6 +88,13 @@ class ConfigStore:
             elif isinstance(v, dict):
                 for sk, sv in v.items():
                     self._data[k].setdefault(sk, sv)
+        # Migrate legacy scalar storage_path into storage_paths list, but
+        # keep the old key so a downgrade doesn't lose the setting.
+        rec = self._data.get("recording", {})
+        legacy = rec.get("storage_path")
+        paths = rec.get("storage_paths") or []
+        if legacy and not paths:
+            rec["storage_paths"] = [legacy]
         for cam in self._data.get("cameras", []):
             for k, v in CAMERA_RECORDING_DEFAULTS.items():
                 cam.setdefault(k, json.loads(json.dumps(v)))

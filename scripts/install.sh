@@ -155,6 +155,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
   "recording": {
     "enabled": true,
     "storage_path": "${REC_PATH}",
+    "storage_paths": ["${REC_PATH}"],
     "segment_seconds": 300,
     "retention_days": 14,
     "max_gb": 100,
@@ -174,6 +175,8 @@ d.setdefault("app", {})["port"] = port
 d.setdefault("go2rtc", {}).update({"host": host, "api_port": gport, "rtsp_port": grtsp})
 d.setdefault("recording", {}).setdefault("enabled", True)
 d["recording"]["storage_path"] = recpath
+if not d["recording"].get("storage_paths"):
+    d["recording"]["storage_paths"] = [recpath]
 d["recording"].setdefault("segment_seconds", 300)
 d["recording"].setdefault("retention_days", 14)
 d["recording"].setdefault("max_gb", 100)

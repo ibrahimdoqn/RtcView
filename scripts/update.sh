@@ -78,6 +78,10 @@ d.setdefault("go2rtc", {}).setdefault("rtsp_port", 8554)
 rec = d.setdefault("recording", {})
 rec.setdefault("enabled", True)
 rec.setdefault("storage_path", os.path.join(install_dir, "recordings"))
+# Multi-storage: migrate the legacy scalar into the new list if the list
+# is missing. Keep the scalar so a downgrade wouldn't lose the setting.
+if not rec.get("storage_paths"):
+    rec["storage_paths"] = [rec["storage_path"]]
 rec.setdefault("segment_seconds", 300)
 rec.setdefault("retention_days", 14)
 rec.setdefault("max_gb", 100)
@@ -88,7 +92,8 @@ for cam in d.get("cameras", []):
     cam.setdefault("record_schedule", [])
     cam.setdefault("record_audio", False)
     cam.setdefault("retention_days_override", 0)
-os.makedirs(rec["storage_path"], exist_ok=True)
+for p in rec["storage_paths"]:
+    os.makedirs(p, exist_ok=True)
 with open(p, "w") as f: json.dump(d, f, indent=2)
 print("recording.storage_path =", rec["storage_path"])
 PY

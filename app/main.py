@@ -64,14 +64,21 @@ def create_app(config_path: str) -> Flask:
     atexit.register(_shutdown)
 
     # ---------- Pages ----------
+    _asset_ver_cache = [0.0, "0"]      # [computed_at, value]
     def _asset_version():
+        # Refreshing this on every page hit meant a full rglob over
+        # static/ per request. 60 s cache is more than plenty.
+        now = time.time()
+        if now - _asset_ver_cache[0] < 60:
+            return _asset_ver_cache[1]
         try:
             base = Path(app.static_folder)
             latest = max(
                 (p.stat().st_mtime for p in base.rglob("*") if p.is_file()),
                 default=0,
             )
-            return str(int(latest))
+            _asset_ver_cache[0] = now; _asset_ver_cache[1] = str(int(latest))
+            return _asset_ver_cache[1]
         except Exception:
             return "0"
 
@@ -276,12 +283,15 @@ def create_app(config_path: str) -> Flask:
     @app.post("/api/recording/settings")
     def api_rec_settings_set():
         body = request.get_json(force=True) or {}
-        allowed = {"enabled", "storage_path", "segment_seconds",
+        allowed = {"enabled", "storage_path", "storage_paths", "segment_seconds",
                    "retention_days", "max_gb", "purge_interval_seconds", "ffmpeg_path"}
         clean = {k: v for k, v in body.items() if k in allowed}
-        new_path = clean.pop("storage_path", None)
-        # Validate everything BEFORE mutating anything — an invalid field
-        # must not leave the recording config half-updated.
+        # Accept both new list and legacy scalar; normalize to a list.
+        new_paths = clean.pop("storage_paths", None)
+        new_path  = clean.pop("storage_path", None)
+        if new_paths is None and new_path is not None:
+            new_paths = [new_path]
+        # Validate simple integer / bool fields BEFORE mutating anything.
         if "segment_seconds" in clean:
             try:
                 s = int(clean["segment_seconds"])
@@ -293,20 +303,22 @@ def create_app(config_path: str) -> Flask:
                 try: clean[key] = int(clean[key])
                 except Exception: return jsonify({"error": f"invalid {key}"}), 400
         if "enabled" in clean: clean["enabled"] = bool(clean["enabled"])
-        # If the storage root is moving, stop the recorders BEFORE the switch
-        # so the currently-writing segment doesn't get orphaned between the
-        # old path (still on disk) and the new index (points elsewhere).
-        moving_root = new_path is not None and str(Path(new_path).expanduser().resolve()) != \
-            str(Path(store.get_recording().get("storage_path", "")).expanduser().resolve())
-        if moving_root:
+        # Storage-list change is atomic + recorder-safe: stop cleanly, swap,
+        # start again. Current segment is finalised via the graceful stop.
+        current_roots = [str(p) for p in storage.roots()]
+        moving_roots = False
+        if new_paths is not None:
+            wanted = [str(Path(p).expanduser().resolve()) for p in new_paths if p]
+            moving_roots = wanted != current_roots
+        if moving_roots:
             recorder.stop()
         if clean: store.update_recording(clean)
-        if new_path is not None:
-            ok, msg = storage.set_root(str(new_path))
+        if new_paths is not None:
+            ok, msg = storage.set_roots([str(x) for x in new_paths])
             if not ok:
-                if moving_root: recorder.start()
+                if moving_roots: recorder.start()
                 return jsonify({"error": msg}), 400
-        if moving_root:
+        if moving_roots:
             recorder.start()
         else:
             recorder.reload_all()
@@ -506,13 +518,16 @@ def create_app(config_path: str) -> Flask:
         return _serve_range(r[0], as_attachment=False)
 
     # ---------- go2rtc proxy (WHEP + fMP4 stream + API) ----------
+    # Live streaming endpoints stay open indefinitely; JSON API endpoints
+    # should time out fast so a stalled go2rtc doesn't hang worker threads.
+    _STREAMING_ENDPOINTS = ("stream.mp4", "stream.m3u8", "stream.mjpeg", "ws")
+
     @app.route("/go2rtc/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
     def go2rtc_proxy(subpath):
         gc = store.get_go2rtc()
         upstream = f"http://{gc['host']}:{gc['api_port']}/{subpath}"
-        # Live streams (fMP4, HLS, MJPEG) are long-poll style. Use a short
-        # connect timeout and NO read timeout so a live upstream can stay
-        # open forever without the proxy tearing it down.
+        is_stream = any(subpath.endswith(e) or ("/" + e) in subpath for e in _STREAMING_ENDPOINTS)
+        timeout = (5, None) if is_stream else (5, 10)
         try:
             r = requests.request(
                 request.method,
@@ -520,7 +535,7 @@ def create_app(config_path: str) -> Flask:
                 params=request.args,
                 data=request.get_data(),
                 headers={k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")},
-                timeout=(5, None),
+                timeout=timeout,
                 stream=True,
             )
         except Exception as e:
@@ -768,7 +783,9 @@ def main():
         app.run(host=host, port=port, debug=True, use_reloader=False)
     else:
         from waitress import serve
-        serve(app, host=host, port=port, threads=16)
+        # 10 threads is plenty for a LAN camera dashboard on rk3399; 16
+        # was context-switch heavy for a 6-core SoC.
+        serve(app, host=host, port=port, threads=10)
 
 
 if __name__ == "__main__":

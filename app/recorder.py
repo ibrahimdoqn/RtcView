@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -53,6 +54,16 @@ def _parse_fname_ts(path: Path) -> Optional[float]:
         return None
 
 
+def _is_root_usable(r: Path) -> bool:
+    try:
+        r.mkdir(parents=True, exist_ok=True)
+        probe = r / ".rtcview_write_test"
+        probe.write_text("ok"); probe.unlink()
+        return True
+    except Exception:
+        return False
+
+
 def _schedule_active(schedule: list, now: Optional[datetime] = None) -> bool:
     """Return True if a schedule window covers ``now``.
 
@@ -82,11 +93,10 @@ def _schedule_active(schedule: list, now: Optional[datetime] = None) -> bool:
 class CameraRecorder:
     """State + subprocess for a single camera."""
 
-    def __init__(self, cam: dict, root: Path, ffmpeg_path: str, segment_seconds: int,
+    def __init__(self, cam: dict, ffmpeg_path: str, segment_seconds: int,
                  rtsp_url: str, storage, container: str = "mp4"):
         self.cam = cam
         self.cam_id = cam["id"]
-        self.root = root
         self.ffmpeg_path = ffmpeg_path
         self.segment_seconds = max(30, int(segment_seconds))
         self.rtsp_url = rtsp_url
@@ -97,15 +107,16 @@ class CameraRecorder:
         self.day_dir: Optional[Path] = None
         self.pattern: Optional[str] = None
         self.ext: str = "mp4"
+        # Chosen fresh at each start() call from storage.pick_write_root().
+        # Multi-root aware: different sessions of the same camera may end
+        # up on different disks depending on free-space at spawn time.
+        self.root: Optional[Path] = None
         self.manual_until: float = 0.0  # unix ts; > now means manual override on
         self.trigger: str = "schedule"
-        # Session tracks the files this recorder instance has spawned. A file
-        # is registered as closed the first time we see a NEWER sibling in
-        # this session (or on final flush). Filenames are strftime-templated
-        # so the exact wall-clock start time comes from the name itself —
-        # no polling drift.
-        self._session_files: list[Path] = []
-        self._stderr_tail: list[str] = []
+        # Bounded deque is thread-safe for append/pop-left; the stderr
+        # drainer thread and the status endpoint no longer race on a plain
+        # list.
+        self._stderr_tail: deque[str] = deque(maxlen=200)
         self._stderr_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
@@ -115,6 +126,10 @@ class CameraRecorder:
     def start(self, trigger: str):
         with self._lock:
             if self.is_running(): return
+            # Pick the freshest, most-free storage root at spawn time.
+            # A previous session may have used a different root — we
+            # honour whatever has room now.
+            self.root = self.storage.pick_write_root()
             self.day_dir = _cam_dir(self.root, self.cam_id)
             self.day_dir.mkdir(parents=True, exist_ok=True)
             self.ext = "mp4" if self.container == "mp4" else "mkv"
@@ -126,6 +141,9 @@ class CameraRecorder:
             cmd = [
                 self.ffmpeg_path,
                 "-hide_banner", "-loglevel", "warning", "-nostdin",
+                # Shorter probe: RTSP is a known-good source, we don't need
+                # ffmpeg's default 5 s codec-sniffing before starting.
+                "-analyzeduration", "500000", "-probesize", "500000",
                 "-fflags", "+genpts",
                 "-rtsp_transport", "tcp",
                 "-i", self.rtsp_url,
@@ -161,8 +179,7 @@ class CameraRecorder:
                 return
             self.started_at = time.time()
             self.trigger = trigger
-            self._session_files = []
-            self._stderr_tail = []
+            self._stderr_tail.clear()
             self._stderr_thread = threading.Thread(
                 target=self._drain_stderr, daemon=True, name=f"rec-err-{self.cam_id}")
             self._stderr_thread.start()
@@ -185,16 +202,23 @@ class CameraRecorder:
             p = self.proc
             if p and p.poll() is None:
                 log.info("[%s] ffmpeg stop", self.cam_id)
+                # Graceful shutdown so ffmpeg has a chance to finalise the
+                # currently-open MP4 (write the moov atom, close file).
+                # Escalate through SIGTERM → SIGINT → SIGKILL.
                 try: p.terminate()
                 except Exception: pass
-                try: p.wait(timeout=5)
+                try:
+                    p.wait(timeout=4)
                 except Exception:
-                    try: p.kill()
-                    except Exception: pass
+                    try:
+                        import signal
+                        p.send_signal(signal.SIGINT)
+                        p.wait(timeout=2)
+                    except Exception:
+                        try: p.kill(); p.wait(timeout=1)
+                        except Exception: pass
             self.proc = None
             self.started_at = None
-            # Trailing file: the segment currently being written may or may not
-            # be indexed by the watcher; try one final scan below.
         self._scan_and_register(final=True)
 
     def _scan_and_register(self, final: bool = False):
@@ -225,8 +249,6 @@ class CameraRecorder:
             files.append((p, ts))
         if not files:
             return
-        # keep session_files in sync so tests / status reflect what we saw
-        self._session_files = [f for f, _ in files]
 
         get_by_path = getattr(self.storage, "get_segment_by_path", None)
         for i, (f, started) in enumerate(files):
@@ -269,6 +291,7 @@ class RecordingManager:
         self._stop = threading.Event()
         self._sup_thread: Optional[threading.Thread] = None
         self._watch_thread: Optional[threading.Thread] = None
+        self._reload_timer: Optional[threading.Timer] = None
         # Patch a convenience lookup onto storage without touching its module.
         if not hasattr(storage, "get_segment_by_path"):
             def _by_path(p, _s=storage):
@@ -307,8 +330,20 @@ class RecordingManager:
             except Exception: pass
 
     def reload_all(self):
+        """Debounced full reload. Called from several settings endpoints
+        that can fire in quick succession — the debounce collapses those
+        into one recorder restart cycle instead of thrashing ffmpeg."""
+        with self._lock:
+            if self._reload_timer:
+                self._reload_timer.cancel()
+            self._reload_timer = threading.Timer(0.4, self._do_reload_all)
+            self._reload_timer.daemon = True
+            self._reload_timer.start()
+
+    def _do_reload_all(self):
         with self._lock:
             ids = list(self._recs.keys())
+            self._reload_timer = None
         for cid in ids:
             self.reload_camera(cid)
 
@@ -367,19 +402,14 @@ class RecordingManager:
         if not shutil.which(ffmpeg) and not os.path.isfile(ffmpeg):
             log.warning("ffmpeg not available at %r — recording disabled for %s", ffmpeg, cam["id"])
             return None
-        root = Path(rc["storage_path"]).expanduser().resolve()
-        # Refuse to spawn ffmpeg if the storage root is unusable — otherwise
-        # ffmpeg spins in a crash/restart loop, filling logs with EPERM /
-        # ENOENT. Health endpoint picks up the failure for the UI to show.
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-            probe = root / ".rtcview_write_test"
-            probe.write_text("ok"); probe.unlink()
-        except Exception as e:
-            log.warning("storage %s unusable (%s) — skipping recorder for %s", root, e, cam["id"])
+        # Multi-root: at least ONE configured root must be usable. The
+        # recorder itself picks a specific root at start() time from
+        # storage.pick_write_root() so a full/failed root is skipped.
+        if not any(_is_root_usable(r) for r in self.storage.roots()):
+            log.warning("no usable storage root — skipping recorder for %s", cam["id"])
             return None
         return CameraRecorder(
-            cam=cam, root=root, ffmpeg_path=ffmpeg,
+            cam=cam, ffmpeg_path=ffmpeg,
             segment_seconds=int(rc.get("segment_seconds", 300)),
             rtsp_url=self._rtsp_url(cam), storage=self.storage,
         )
