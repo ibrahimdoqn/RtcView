@@ -367,15 +367,22 @@ class Storage:
 
         primary = self.primary_root()
         prim = next((x for x in per_root if x["path"] == str(primary)), None)
+        # Top-level disk = SUM across all configured roots so multi-disk
+        # setups report combined free/total (matches what stats() does).
+        agg = {"total": 0, "free": 0, "used": 0}
+        for pr in per_root:
+            for k in ("total", "free", "used"):
+                agg[k] += pr["disk"].get(k, 0)
+        agg_free_pct = round((agg["free"] / agg["total"]) * 100, 1) if agg["total"] else 0
         result = {
             "status": overall,
             "root": str(primary),               # legacy field for UI compat
-            "roots": per_root,                  # NEW: per-root breakdown
+            "roots": per_root,                  # per-root breakdown
             "exists": bool(prim and prim["exists"]),
             "writable": bool(prim and prim["writable"]),
             "db_ok": db_ok,
-            "disk": prim["disk"] if prim else {"total": 0, "free": 0, "used": 0},
-            "free_percent": prim["free_percent"] if prim else 0,
+            "disk": agg,                        # aggregate across all roots
+            "free_percent": agg_free_pct,       # aggregate percentage
             "errors": errors,
             "warnings": warnings,
         }
@@ -474,19 +481,33 @@ class Storage:
                 if self.delete_segment(sid):
                     removed += 1; freed += int(b or 0)
 
+        # Per-disk quota: max_gb applies to EACH configured storage root
+        # independently, not to the sum across roots. This means adding a
+        # second 500 GB disk with max_gb=100 gets you 100+100 GB of
+        # recordings, not still 100 total. Segments whose path doesn't
+        # match any configured root (e.g. legacy files from an old path)
+        # fall into an "other" bucket that still shares the same cap.
         max_bytes = int(rc.get("max_gb", 100)) * (1024**3)
         if max_bytes > 0:
+            root_strs = [str(r) + os.sep for r in self.roots()]
             with self._lock:
-                total = self._db.execute("SELECT COALESCE(SUM(bytes),0) FROM segments").fetchone()[0] or 0
-            if total > max_bytes:
-                with self._lock:
-                    rows = self._db.execute(
-                        "SELECT id, path, bytes FROM segments WHERE locked = 0 ORDER BY started_at ASC"
-                    ).fetchall()
-                for sid, p, b in rows:
-                    if total <= max_bytes: break
+                rows = self._db.execute(
+                    "SELECT id, path, bytes FROM segments WHERE locked = 0 ORDER BY started_at ASC"
+                ).fetchall()
+            # Group + sum per root (oldest-first order preserved for delete).
+            by_root: dict[str, list[tuple[int, str, int]]] = {}
+            totals: dict[str, int] = {}
+            for sid, p, b in rows:
+                key = next((rs for rs in root_strs if p.startswith(rs)), "__other__")
+                by_root.setdefault(key, []).append((sid, p, int(b or 0)))
+                totals[key] = totals.get(key, 0) + int(b or 0)
+            for key, seglist in by_root.items():
+                over = totals[key] - max_bytes
+                if over <= 0: continue
+                for sid, p, b in seglist:
+                    if over <= 0: break
                     if self.delete_segment(sid):
-                        total -= int(b or 0); freed += int(b or 0); removed += 1
+                        over -= b; freed += b; removed += 1
 
         # Snapshot retention: keep only 3× retention days for snapshots (they're small)
         snap_retention = max(retention * 3, 30)

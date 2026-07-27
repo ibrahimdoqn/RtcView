@@ -1037,16 +1037,37 @@
       const txt = $("#s-rec-usage-text");
       const st = s.storage || {};
       const used = st.bytes_used || 0;
-      const cap = st.max_bytes || 1;
-      const pct = Math.max(0, Math.min(100, (used / cap) * 100));
+      const cap = st.max_bytes || 0;
+      const disk = st.disk || {};
+      const rootCount = (st.roots || []).length;
+      // Kotasız (max_bytes=0) → çubuk iki diskin TOPLAM doluluğunu
+      // gösterir. Kotalı ise disk BAŞINA kota uygulandığından çubuğu
+      // en dolu diske göre gösteriyoruz — bu, purge'un hangi diski önce
+      // sıkıştıracağının doğru görsel karşılığı.
+      let pct = 0, label = "";
+      if (cap > 0) {
+        let worstUsed = 0;
+        (st.roots || []).forEach(r => {
+          // Approximate per-root usage: total_used * (root_size / total_size)
+          // isn't accurate; but the aggregate bar for per-disk quota is
+          // "worst filled disk vs its own cap".
+          const rd = r.disk || {};
+          const u = rd.used || 0;
+          if (u > worstUsed) worstUsed = u;
+        });
+        pct = Math.max(0, Math.min(100, (worstUsed / cap) * 100));
+        label = `${fmtBytes(used)} toplam · disk başına kota ${fmtBytes(cap)} · ${rootCount} yol: ${fmtBytes(disk.free||0)} boş / ${fmtBytes(disk.total||0)} · ${st.segment_count||0} segment`;
+      } else {
+        const total = disk.total || 1;
+        const dUsed = disk.used || 0;
+        pct = Math.max(0, Math.min(100, (dUsed / total) * 100));
+        label = `${fmtBytes(used)} kayıt · kotasız · ${rootCount} yol: ${fmtBytes(disk.free||0)} boş / ${fmtBytes(disk.total||0)} (%${pct.toFixed(0)} dolu) · ${st.segment_count||0} segment`;
+      }
       bar.style.width = pct.toFixed(1) + "%";
       bar.classList.remove("warn","crit");
       if (pct >= 90) bar.classList.add("crit");
       else if (pct >= 75) bar.classList.add("warn");
-      const disk = st.disk || {};
-      const rootCount = (st.roots || []).length;
-      txt.textContent = `${fmtBytes(used)} / kota ${fmtBytes(cap)} · ${rootCount} yol: ${fmtBytes(disk.free||0)} boş / ${fmtBytes(disk.total||0)} · ${st.segment_count||0} segment`
-        + (s.ffmpeg_available ? "" : " · ⚠ ffmpeg bulunamadı");
+      txt.textContent = label + (s.ffmpeg_available ? "" : " · ⚠ ffmpeg bulunamadı");
       _renderStorageHealth(s.health);
       // Update per-row free-space labels without rebuilding the rows
       $$("#s-rec-paths .rec-path-row").forEach(row => {
