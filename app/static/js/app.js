@@ -51,7 +51,7 @@
   // "mousedown in input → drag to backdrop → release" as a backdrop click
   // and closes the modal mid-selection — annoying every time the user
   // tries to overwrite a number field.
-  function _bindBackdropClose(modalEl){
+  function _bindBackdropClose(modalEl, onClose){
     let downOnBackdrop = false;
     modalEl.addEventListener("mousedown", (e) => {
       downOnBackdrop = (e.target === modalEl);
@@ -59,6 +59,7 @@
     modalEl.addEventListener("mouseup", (e) => {
       if (downOnBackdrop && e.target === modalEl) {
         modalEl.classList.add("hidden");
+        if (typeof onClose === "function") { try { onClose(); } catch {} }
       }
       downOnBackdrop = false;
     });
@@ -887,7 +888,7 @@
   // inside an input and ends on the backdrop was incorrectly registered
   // as a backdrop-click. Only close when BOTH mousedown and mouseup
   // landed on the backdrop itself.
-  _bindBackdropClose(modal);
+  _bindBackdropClose(modal, _stopMotionStatusPoll);
 
   async function loadStreamOptions(selected){
     const sel = $("#stream-select");
@@ -972,7 +973,6 @@
       if (form.motion_detect_enabled) form.motion_detect_enabled.checked = !!cam.motion_detect_enabled;
       renderScheduleRows(cam.record_schedule || []);
       loadStreamOptions(cam.stream || "");
-      _startMotionStatusPoll(cam.id);
     } else {
       $("#modal-title").textContent = "Kamera Ekle";
       delBtn.classList.add("hidden");
@@ -984,7 +984,12 @@
       _renderMotionStatus(null);
     }
     $("#rec-schedule-editor").classList.toggle("hidden", form.record_mode.value !== "schedule");
+    // Show the modal BEFORE kicking the motion poll — the poll's tick
+    // guard checks modal visibility synchronously, and if the modal is
+    // still hidden at that moment it kills itself and the status pill
+    // gets stuck on "Durum sorgulanıyor…".
     modal.classList.remove("hidden");
+    if (cam) _startMotionStatusPoll(cam.id);
   }
 
   // Motion status polling — active only while the camera edit modal is open.
@@ -1066,6 +1071,7 @@
       if (id){ await api.put("/api/cameras/" + id, body); toast("Güncellendi", "ok"); }
       else { await api.post("/api/cameras", body); toast("Eklendi", "ok"); }
       modal.classList.add("hidden");
+      _stopMotionStatusPoll();
       await reloadCameras();
       updateRecStatus();
     } catch (err) { toast("Kaydedilemedi: " + err.message, "err"); }
@@ -1078,6 +1084,7 @@
       stopPlayer(id);
       await api.del("/api/cameras/" + id);
       modal.classList.add("hidden");
+      _stopMotionStatusPoll();
       await reloadCameras();
     } catch (err) { toast("Silinemedi: " + err.message, "err"); }
   });
