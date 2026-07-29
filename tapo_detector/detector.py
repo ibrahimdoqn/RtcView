@@ -382,9 +382,15 @@ class TapoMotionPersonDetector:
                     time.sleep(0.3)
                     continue
 
-                # Gercekten beklenmeyen hata
+                # Gercekten beklenmeyen hata. Hatanin Python tipini de
+                # logluyoruz cunku ONVIFError'in kendi mesaji cok kisa/
+                # anlamsiz olabiliyor (orn. "Unknown error: error" —
+                # kameranin dondurdugu SOAP Fault metni bu kadar terse
+                # olabiliyor); tip bilgisi en azindan hangi katmanda
+                # (zeep Fault mi, requests baglanti hatasi mi, vs.)
+                # oldugunu ayirt etmeye yardimci olur.
                 unexpected_errors += 1
-                logger.warning("Beklenmeyen pull hatasi: %s", e)
+                logger.warning("Beklenmeyen pull hatasi: %s: %s", type(e).__name__, e)
                 if unexpected_errors >= self.max_unexpected_errors:
                     logger.warning(
                         "%d ardisik beklenmeyen hata, abonelik yenileniyor.",
