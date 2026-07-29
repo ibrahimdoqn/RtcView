@@ -130,6 +130,10 @@ class CameraEventWatcher:
         self._open_ids = {"motion": None, "person": None}
         self._last_seen = {"motion": 0.0, "person": 0.0}
         self._last_db_write = {"motion": 0.0, "person": 0.0}
+        # tapo_detector.get_state()["timestamp"] only advances when it
+        # actually applies a real camera event — used to tell a fresh
+        # True apart from a stale one frozen by a stuck connection.
+        self._last_underlying_ts: Optional[str] = None
         self._state = {
             "connected": False,
             "subscribed": False,
@@ -293,9 +297,20 @@ class CameraEventWatcher:
             return
         state = self._det.get_state()
         now = time.time()
-        for kind in self.enabled_kinds:
-            if state.get(kind):
-                self._mark_active(kind, now)
+        # A True value only counts as fresh evidence of ongoing motion if
+        # tapo_detector's own timestamp actually moved since our last
+        # poll — i.e. it just applied a real event. If the underlying
+        # pull loop is stuck (reconnecting, resubscribing, failing), its
+        # state dict simply stops mutating and a stale True would
+        # otherwise keep refreshing _last_seen forever, defeating the
+        # "stopped after N seconds of silence" timeout entirely.
+        ts_str = state.get("timestamp")
+        fresh = ts_str is not None and ts_str != self._last_underlying_ts
+        self._last_underlying_ts = ts_str
+        if fresh:
+            for kind in self.enabled_kinds:
+                if state.get(kind):
+                    self._mark_active(kind, now)
         self._check_timeouts(now)
 
 
