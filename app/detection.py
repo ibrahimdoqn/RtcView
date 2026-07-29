@@ -21,6 +21,7 @@ top of its single-camera ``TapoMotionPersonDetector``:
     no synchronous one-off connectivity check in its public API).
 """
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -30,9 +31,19 @@ from typing import Optional
 log = logging.getLogger("detection")
 
 TAPO_IMPORT_ERROR = None
+_TAPO_WSDL_DIR: Optional[str] = None
 try:
+    import tapo_detector
     from tapo_detector import TapoMotionPersonDetector
     ONVIF_AVAILABLE = True
+    # onvif-zeep's WSDL files are a data directory shipped next to (not
+    # inside) the installed `onvif` package, and that placement is known
+    # to go missing depending on pip version/install method. Point the
+    # standalone probe below at tapo_detector's own bundled copy instead
+    # of trusting wherever pip happened to put onvif-zeep's.
+    _TAPO_WSDL_DIR = os.path.join(os.path.dirname(os.path.abspath(tapo_detector.__file__)), "wsdl")
+    if not os.path.isdir(_TAPO_WSDL_DIR):
+        _TAPO_WSDL_DIR = None
 except Exception as _e:
     ONVIF_AVAILABLE = False
     TAPO_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
@@ -407,8 +418,11 @@ class DetectionManager:
             if Transport is not None:
                 transport = Transport(timeout=_PROBE_WSDL_TIMEOUT_SEC,
                                       operation_timeout=_PROBE_OPERATION_TIMEOUT_SEC)
+            kwargs = {"transport": transport}
+            if _TAPO_WSDL_DIR:
+                kwargs["wsdl_dir"] = _TAPO_WSDL_DIR
             onvif_cam = ONVIFCamera(host, port, cam.get("onvif_user", ""), cam.get("onvif_pass", ""),
-                                     transport=transport)
+                                     **kwargs)
             info = onvif_cam.create_devicemgmt_service().GetDeviceInformation()
             return {"ok": True, "device": f"{info.Manufacturer} {info.Model} (fw {info.FirmwareVersion})"}
         except Exception as e:

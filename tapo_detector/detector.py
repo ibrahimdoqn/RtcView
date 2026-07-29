@@ -43,10 +43,20 @@ import threading
 from datetime import datetime, timedelta
 from typing import Dict, Generator, Optional, Tuple, List
 
+import os
+
 import lxml.etree as ET
 from onvif import ONVIFCamera
 
 logger = logging.getLogger("tapo_detector")
+
+# onvif-zeep bundles its WSDL files as a data directory that sits NEXT TO
+# (not inside) the installed `onvif` package; depending on the pip
+# version / install method that placement can end up missing or
+# unreadable ("wsdl bulunamadi" / sürekli pull hatasi). Point at this
+# package's own bundled copy instead so the ONVIF client never depends on
+# where pip happened to put onvif-zeep's data files.
+_WSDL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wsdl")
 
 # ONVIF Events servisinin WSDL namespace'i. PullMessages elementini
 # kutuphanenin kirilgan 'ns0' takma adindan bagimsiz, tam nitelikli olarak
@@ -176,7 +186,9 @@ class TapoMotionPersonDetector:
     # ------------------------------------------------------------------
     def _connect(self) -> bool:
         try:
-            self._cam = ONVIFCamera(self.ip, self.port, self.username, self.password)
+            self._cam = ONVIFCamera(
+                self.ip, self.port, self.username, self.password, wsdl_dir=_WSDL_DIR
+            )
             info = self._cam.create_devicemgmt_service().GetDeviceInformation()
             logger.info(
                 "Kameraya baglanildi: %s %s (fw %s)",

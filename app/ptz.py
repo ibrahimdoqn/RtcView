@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 from typing import Optional
 
@@ -12,6 +13,20 @@ except Exception as _e:
     ONVIF_AVAILABLE = False
     ONVIF_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
     log.warning("onvif-zeep import failed: %s", ONVIF_IMPORT_ERROR)
+
+# onvif-zeep's WSDL files are a data directory shipped next to (not
+# inside) the installed `onvif` package, and that placement is known to
+# go missing depending on pip version/install method. Prefer the
+# tapo_detector package's own bundled copy (same repo, same onvif-zeep
+# version) over trusting wherever pip happened to put onvif-zeep's.
+_WSDL_DIR: Optional[str] = None
+try:
+    import tapo_detector as _tapo_detector
+    _WSDL_DIR = os.path.join(os.path.dirname(os.path.abspath(_tapo_detector.__file__)), "wsdl")
+    if not os.path.isdir(_WSDL_DIR):
+        _WSDL_DIR = None
+except Exception:
+    _WSDL_DIR = None
 
 
 class PtzController:
@@ -37,7 +52,8 @@ class PtzController:
             pw = camera.get("onvif_pass") or camera.get("password", "")
             if not host:
                 raise RuntimeError("Camera has no host configured for ONVIF")
-            onvif = ONVIFCamera(host, port, user, pw)
+            kwargs = {"wsdl_dir": _WSDL_DIR} if _WSDL_DIR else {}
+            onvif = ONVIFCamera(host, port, user, pw, **kwargs)
             media = onvif.create_media_service()
             ptz = onvif.create_ptz_service()
             profiles = media.GetProfiles()
