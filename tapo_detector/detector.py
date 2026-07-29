@@ -209,6 +209,23 @@ class TapoMotionPersonDetector:
             events_service = self._cam.create_events_service()
             events_service.CreatePullPointSubscription()
 
+            # WORKAROUND: onvif-zeep caches the pullpoint service's own
+            # endpoint from the camera's self-reported
+            # SubscriptionReference.Address (see onvif.client.update_xaddrs).
+            # Some Tapo firmware reports a bogus/unreachable address there
+            # (observed: an internal-only port, e.g. ':1026', instead of
+            # the real ONVIF port) even though the Events service itself
+            # — used successfully just above — is announced correctly via
+            # GetCapabilities. Left alone, every PullMessages call fails
+            # with "Connection refused" forever. Overwrite the cached
+            # address with the known-good Events XAddr before building
+            # the pullpoint service so it's constructed with the right
+            # endpoint from the start.
+            pullpoint_ns = _EVENTS_NS + "/PullPointSubscription"
+            events_xaddr = self._cam.xaddrs.get(_EVENTS_NS)
+            if events_xaddr and self._cam.xaddrs.get(pullpoint_ns) != events_xaddr:
+                self._cam.xaddrs[pullpoint_ns] = events_xaddr
+
             self._pullpoint = self._cam.create_pullpoint_service()
 
             # ONEMLI: 'ns0' bug'ini bypass etmek icin tam nitelikli
