@@ -59,6 +59,11 @@ except Exception:
     ONVIFCamera = None
     Transport = None
 
+# Reuse the day/time-window matcher from recorder.py rather than
+# reimplementing it — same cross-module-private-import precedent already
+# used by storage.py's rescan() (`from app.recorder import _parse_fname_ts`).
+from app.recorder import _schedule_active
+
 POLL_INTERVAL_SEC = 1.0     # how often we sample tapo_detector.get_state()
 EXTEND_WRITE_MIN_INTERVAL = 2.0  # throttle "still active" DB writes
 LOG_MAXLEN = 200
@@ -79,6 +84,17 @@ _MSG_SUB_FAIL = "Abonelik olusturulamadi: %s"
 # the request thread.
 _PROBE_WSDL_TIMEOUT_SEC = 8
 _PROBE_OPERATION_TIMEOUT_SEC = 20
+
+
+def _notify_window_active(schedule, now=None) -> bool:
+    """Empty schedule = no time restriction (notify any time) — the
+    OPPOSITE of record_schedule's empty=never. An unconfigured per-camera
+    notification schedule should mean "notify whenever detected", not
+    "never notify"; enabled/snooze/notify_enabled are already checked
+    before this ever runs."""
+    if not schedule:
+        return True
+    return _schedule_active(schedule, now)
 
 
 class _PerCameraLogCapture(logging.Handler):
@@ -107,10 +123,11 @@ class CameraEventWatcher:
     camera. Built fresh (by DetectionManager) whenever the camera's
     config changes — it never re-reads config mid-flight."""
 
-    def __init__(self, cam: dict, storage):
+    def __init__(self, cam: dict, storage, config_store):
         self.cam = cam
         self.cam_id = cam["id"]
         self.storage = storage
+        self.config_store = config_store
         self.enabled_kinds = {
             k for k in ("motion", "person") if cam.get(f"{k}_detection_enabled")
         }
@@ -253,10 +270,32 @@ class CameraEventWatcher:
                 self._last_db_write[kind] = ts
             if not was_active:
                 self._log_line(f"{KIND_LABEL[kind]} başladı")
+                self._maybe_notify(kind, ts)
         elif ts - last_write >= EXTEND_WRITE_MIN_INTERVAL:
             self.storage.extend_detection(det_id, ts)
             with self._lock:
                 self._last_db_write[kind] = ts
+
+    def _maybe_notify(self, kind: str, ts: float):
+        """Fires once per false->true edge (called only from the
+        `not was_active` branch above — never on the periodic "still
+        active" pokes). No check for "is detection enabled for this kind"
+        is needed here: this method is only ever reachable for kinds in
+        self.enabled_kinds, built once at construction from
+        motion_detection_enabled/person_detection_enabled."""
+        try:
+            ncfg = self.config_store.get_notifications()
+            if not ncfg.get("enabled", True):
+                return
+            if float(ncfg.get("snooze_until", 0) or 0) > ts:
+                return
+            if not self.cam.get("notify_enabled", True):
+                return
+            if not _notify_window_active(self.cam.get("notify_schedule") or []):
+                return
+            self.storage.create_notification(self.cam_id, kind, ts)
+        except Exception as e:
+            log.debug("notify check failed for %s/%s: %s", self.cam_id, kind, e)
 
     def _close_kind(self, kind: str, end_ts: float, reason: str):
         with self._lock:
@@ -383,7 +422,7 @@ class DetectionManager:
             with self._lock:
                 w = self._watchers.get(cam["id"])
             if want and w is None:
-                nw = CameraEventWatcher(cam, self.storage)
+                nw = CameraEventWatcher(cam, self.storage, self.cfg)
                 nw.start()
                 with self._lock:
                     self._watchers[cam["id"]] = nw

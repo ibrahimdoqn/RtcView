@@ -194,6 +194,9 @@ def create_app(config_path: str) -> Flask:
             "motion_detection_enabled": bool(body.get("motion_detection_enabled", False)),
             "person_detection_enabled": bool(body.get("person_detection_enabled", False)),
             "motion_timeout_seconds": motion_timeout,
+            "group_ids": [str(g) for g in (body.get("group_ids") or []) if str(g).strip()],
+            "notify_enabled": bool(body.get("notify_enabled", True)),
+            "notify_schedule": body.get("notify_schedule", []),
         }
         store.add_camera(cam)
         recorder.reload_camera(cam["id"])
@@ -212,6 +215,8 @@ def create_app(config_path: str) -> Flask:
                 body["motion_timeout_seconds"] = max(5, min(300, int(body["motion_timeout_seconds"] or 15)))
             except (TypeError, ValueError):
                 return jsonify({"error": "invalid motion_timeout_seconds"}), 400
+        if "group_ids" in body:
+            body["group_ids"] = [str(g) for g in (body.get("group_ids") or []) if str(g).strip()]
         ok = store.update_camera(camera_id, body)
         if not ok:
             return jsonify({"error": "not found"}), 404
@@ -237,6 +242,42 @@ def create_app(config_path: str) -> Flask:
         if not isinstance(order, list):
             return jsonify({"error": "order must be a list"}), 400
         store.reorder_cameras(order)
+        return jsonify({"ok": True})
+
+    # ---------- Camera groups ----------
+    @app.get("/api/groups")
+    def api_groups_list():
+        return jsonify(store.get_groups())
+
+    @app.post("/api/groups")
+    def api_groups_add():
+        body = request.get_json(force=True) or {}
+        name = (body.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name required"}), 400
+        group = {"id": "grp_" + uuid.uuid4().hex[:8], "name": name}
+        store.add_group(group)
+        return jsonify(group), 201
+
+    @app.put("/api/groups/<group_id>")
+    def api_groups_update(group_id):
+        body = request.get_json(force=True) or {}
+        updates = {}
+        if "name" in body:
+            name = (body.get("name") or "").strip()
+            if not name:
+                return jsonify({"error": "name required"}), 400
+            updates["name"] = name
+        ok = store.update_group(group_id, updates)
+        if not ok:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"ok": True})
+
+    @app.delete("/api/groups/<group_id>")
+    def api_groups_delete(group_id):
+        ok = store.remove_group(group_id)
+        if not ok:
+            return jsonify({"error": "not found"}), 404
         return jsonify({"ok": True})
 
     # ---------- PTZ ----------
@@ -268,6 +309,50 @@ def create_app(config_path: str) -> Flask:
         if not cam:
             return jsonify({"error": "not found"}), 404
         return jsonify(detector.test_connection(cam))
+
+    # ---------- Notifications ----------
+    @app.get("/api/notifications/settings")
+    def api_notif_settings_get():
+        return jsonify(store.get_notifications())
+
+    @app.post("/api/notifications/settings")
+    def api_notif_settings_set():
+        body = request.get_json(force=True) or {}
+        clean = {}
+        if "enabled" in body:
+            clean["enabled"] = bool(body["enabled"])
+        store.update_notifications(clean)
+        return jsonify(store.get_notifications())
+
+    @app.post("/api/notifications/snooze")
+    def api_notif_snooze():
+        body = request.get_json(force=True) or {}
+        try:
+            minutes = float(body.get("minutes", 0) or 0)
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid minutes"}), 400
+        until = (time.time() + minutes * 60) if minutes > 0 else 0
+        store.update_notifications({"snooze_until": until})
+        return jsonify(store.get_notifications())
+
+    @app.get("/api/notifications")
+    def api_notifications_list():
+        unread_only = request.args.get("unread_only") in ("1", "true", "yes")
+        try:
+            limit = max(1, min(500, int(request.args.get("limit", 200))))
+        except ValueError:
+            limit = 200
+        return jsonify(storage.list_notifications(unread_only=unread_only, limit=limit))
+
+    @app.post("/api/notifications/read-all")
+    def api_notifications_read_all():
+        storage.mark_all_notifications_read()
+        return jsonify({"ok": True})
+
+    @app.delete("/api/notifications")
+    def api_notifications_clear():
+        storage.clear_all_notifications()
+        return jsonify({"ok": True})
 
     @app.post("/api/ptz/<camera_id>/move")
     def api_ptz_move(camera_id):

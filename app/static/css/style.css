@@ -1013,3 +1013,186 @@ kbd{
   .pb-controls{padding:.4rem .5rem;}
 }
 
+/* ========================================================================
+   CHIPS — generic pill toggle (camera↔group picker, sidebar group filter)
+   ======================================================================== */
+.chip-row{display:flex;flex-wrap:wrap;gap:.4rem;}
+.chip{
+  display:inline-flex;align-items:center;
+  padding:.4rem .75rem;border-radius:999px;font-size:.82rem;font-weight:500;
+  background:rgba(255,255,255,.05);border:1px solid var(--border-solid);color:var(--muted);
+  transition:background .12s var(--ease-out), border-color .12s var(--ease-out), color .12s var(--ease-out);
+}
+.chip:hover{background:rgba(255,255,255,.1);}
+.chip.on{background:var(--accent);border-color:var(--accent);color:#fff;}
+
+.group-filter-row{
+  display:flex;gap:.4rem;padding:.55rem .8rem;overflow-x:auto;
+  border-bottom:1px solid var(--border);flex:0 0 auto;
+  -webkit-overflow-scrolling:touch;
+}
+.group-filter-row::-webkit-scrollbar{display:none;}
+.group-filter-row.hidden{display:none;}
+.group-filter-chip{
+  flex:0 0 auto;padding:.35rem .7rem;border-radius:999px;font-size:.78rem;font-weight:500;
+  background:rgba(255,255,255,.05);border:1px solid var(--border-solid);color:var(--muted);
+  white-space:nowrap;transition:background .12s var(--ease-out), color .12s var(--ease-out), border-color .12s var(--ease-out);
+}
+.group-filter-chip:hover{background:rgba(255,255,255,.1);}
+.group-filter-chip.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+
+/* Sidebar row group tags */
+.cam-item .cam-groups{display:flex;gap:.25rem;flex:0 0 auto;overflow:hidden;}
+.group-chip-mini{
+  background:rgba(255,255,255,.08);color:var(--muted);
+  font-size:.62rem;font-weight:600;padding:.12rem .4rem;border-radius:999px;
+  white-space:nowrap;flex:0 0 auto;
+}
+
+/* ========================================================================
+   GROUPS MANAGEMENT (Kameralar sekmesi)
+   ======================================================================== */
+.groups-manage{
+  border:1px solid var(--border-solid);border-radius:11px;padding:.7rem;
+  display:flex;flex-direction:column;gap:.5rem;
+}
+.groups-manage-head{display:flex;justify-content:space-between;align-items:center;font-size:.82rem;color:var(--muted);font-weight:600;}
+.groups-manage-list{display:flex;flex-direction:column;gap:.35rem;}
+.groups-manage-row{
+  display:flex;align-items:center;gap:.4rem;
+  background:var(--panel-2);border:1px solid var(--border-solid);border-radius:9px;padding:.35rem .5rem;
+}
+.groups-manage-row .gm-name{
+  flex:1;background:transparent;border:0;color:var(--text);font-size:.88rem;
+  padding:.3rem 0;outline:none;min-width:0;
+}
+.groups-manage-row .gm-name:focus{background:rgba(255,255,255,.05);border-radius:5px;padding-left:.35rem;}
+.groups-manage-row .gm-del{color:var(--muted);border-radius:7px;padding:.3rem .5rem;}
+.groups-manage-row .gm-del:hover{background:rgba(255,69,58,.15);color:var(--danger);}
+
+/* Camera list rows inside the Kameralar tab */
+.cam-tab-toolbar{
+  display:flex;justify-content:space-between;align-items:center;
+  font-size:.82rem;color:var(--muted);font-weight:600;
+}
+.cam-tab-row{
+  display:flex;align-items:center;gap:.5rem;
+  background:var(--panel-2);border:1px solid var(--border-solid);border-radius:10px;
+  padding:.55rem .7rem;
+}
+.cam-tab-row .name{flex:1;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+.cam-tab-row-groups{display:flex;gap:.25rem;flex-wrap:wrap;flex:0 0 auto;}
+.cam-tab-back{align-self:flex-start;}
+
+/* ========================================================================
+   NOTIFICATIONS — sidebar bell badge + popover panel
+   ======================================================================== */
+#btn-notif{position:relative;}
+.notif-badge{
+  position:absolute;top:-4px;right:-4px;
+  min-width:16px;height:16px;padding:0 4px;border-radius:999px;
+  background:var(--danger);color:#fff;font-size:.62rem;font-weight:700;
+  display:grid;place-items:center;line-height:1;
+  box-shadow:0 0 0 2px var(--panel-solid);
+}
+.notif-badge.hidden{display:none;}
+.fab-notif-dot{
+  position:absolute;top:6px;right:6px;
+  width:9px;height:9px;border-radius:50%;
+  background:var(--danger);box-shadow:0 0 0 2px var(--bg), 0 0 6px rgba(255,69,58,.7);
+}
+.fab-notif-dot.hidden{display:none;}
+
+.notif-backdrop{
+  position:fixed;inset:0;z-index:54;background:rgba(0,0,0,.35);
+  opacity:0;pointer-events:none;transition:opacity .22s var(--ease-out);
+}
+.notif-backdrop:not(.hidden){opacity:1;pointer-events:auto;}
+.notif-panel{
+  position:fixed;z-index:56;
+  bottom:calc(24px + var(--safe-b));left:calc(24px + var(--safe-l));
+  width:340px;max-width:88vw;max-height:min(520px,70vh);
+  display:flex;flex-direction:column;
+  background:var(--glass);border:1px solid var(--glass-brd);border-radius:18px;
+  backdrop-filter:blur(28px) saturate(1.8);-webkit-backdrop-filter:blur(28px) saturate(1.8);
+  box-shadow:var(--shadow-lg), inset 0 1px 0 var(--glass-hi);
+  animation:glassIn .28s var(--ease-spring);
+  overflow:hidden;
+}
+.notif-panel.hidden{display:none;}
+.notif-panel-head{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:.8rem .9rem;border-bottom:1px solid rgba(255,255,255,.1);
+  font-weight:600;color:#fff;flex:0 0 auto;
+}
+.notif-list{
+  flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:.4rem;display:flex;flex-direction:column;gap:.3rem;
+}
+.notif-row{
+  display:flex;align-items:center;gap:.55rem;
+  padding:.6rem .65rem;border-radius:11px;cursor:pointer;
+  background:rgba(255,255,255,.04);transition:background .12s var(--ease-out);
+}
+.notif-row:hover{background:rgba(255,255,255,.09);}
+.notif-row.unread{background:rgba(10,132,255,.14);}
+.notif-dot{width:10px;height:10px;border-radius:50%;flex:0 0 auto;}
+.notif-dot.motion{background:#f5a623;box-shadow:0 0 6px rgba(245,166,35,.7);}
+.notif-dot.person{background:#3b82f6;box-shadow:0 0 6px rgba(59,130,246,.7);}
+.notif-body{flex:1;display:flex;flex-direction:column;gap:.05rem;min-width:0;}
+.notif-cam{font-size:.85rem;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.notif-kind{font-size:.75rem;color:rgba(255,255,255,.6);}
+.notif-time{font-size:.7rem;color:rgba(255,255,255,.45);flex:0 0 auto;white-space:nowrap;}
+.notif-empty{padding:2rem 1rem;text-align:center;color:rgba(255,255,255,.4);font-size:.85rem;}
+
+@media (max-width: 640px), (orientation: portrait) and (max-width: 900px){
+  .notif-panel{
+    left:0;right:0;bottom:0;width:100%;max-width:100%;
+    border-radius:20px 20px 0 0;max-height:75dvh;
+    padding-bottom:var(--safe-b);
+  }
+}
+
+/* ========================================================================
+   SETTINGS PAGE — full-screen, tabbed (replaces the old camera + settings
+   modals). Tabpanels reuse .modal-body for field/fieldset/legend styling.
+   ======================================================================== */
+.settings-page{
+  position:fixed;inset:0;z-index:130;background:var(--bg);color:var(--text);
+  display:flex;flex-direction:column;
+  padding-top:var(--safe-t);padding-bottom:var(--safe-b);
+}
+.settings-page.hidden{display:none!important;}
+.settings-header{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:.9rem 1.1rem;border-bottom:1px solid var(--border);
+  background:var(--panel);
+  backdrop-filter:blur(20px) saturate(1.6);-webkit-backdrop-filter:blur(20px) saturate(1.6);
+  flex:0 0 auto;
+}
+.settings-header h2{margin:0;font-size:1.15rem;font-weight:600;letter-spacing:-0.015em;}
+.settings-tabs{
+  display:flex;gap:.35rem;padding:.6rem .9rem;overflow-x:auto;
+  border-bottom:1px solid var(--border);flex:0 0 auto;
+  -webkit-overflow-scrolling:touch;
+}
+.settings-tabs::-webkit-scrollbar{display:none;}
+.settings-tab-btn{
+  flex:0 0 auto;padding:.5rem 1rem;border-radius:999px;font-size:.85rem;font-weight:500;
+  background:rgba(255,255,255,.05);border:1px solid var(--border-solid);color:var(--muted);
+  white-space:nowrap;
+  transition:background .12s var(--ease-out), color .12s var(--ease-out), border-color .12s var(--ease-out);
+}
+.settings-tab-btn:hover{background:rgba(255,255,255,.1);}
+.settings-tab-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+.settings-content{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;min-width:0;}
+.settings-tabpanel.hidden{display:none;}
+.settings-tabpanel.modal-body{max-width:640px;margin:0 auto;}
+
+@media (max-width: 480px){
+  .settings-header{padding:.7rem .9rem;}
+  .settings-header h2{font-size:1rem;}
+  .settings-tabs{padding:.5rem .6rem;}
+  .settings-tab-btn{padding:.4rem .8rem;font-size:.8rem;}
+}
+

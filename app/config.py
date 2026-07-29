@@ -35,7 +35,12 @@ DEFAULT_CONFIG = {
         "purge_interval_seconds": 60,
         "ffmpeg_path": "ffmpeg",
     },
-    "cameras": []
+    "notifications": {
+        "enabled": True,
+        "snooze_until": 0,  # epoch seconds; 0 or past = not snoozed
+    },
+    "cameras": [],
+    "groups": [],  # [{"id": "grp_xxxxxxxx", "name": "İç Mekan"}]
 }
 
 # Per-camera recording defaults merged when a camera is loaded. Live
@@ -57,6 +62,16 @@ CAMERA_DETECTION_DEFAULTS = {
     "motion_detection_enabled": False,
     "person_detection_enabled": False,
     "motion_timeout_seconds": 15,
+}
+
+# Per-camera notification defaults. notify_schedule uses the same shape as
+# record_schedule, but an EMPTY schedule means the OPPOSITE thing here:
+# "no time restriction" (notify any time) rather than record_schedule's
+# "never" — a freshly-enabled camera should just notify immediately, not
+# require the user to configure a schedule first.
+CAMERA_NOTIFICATION_DEFAULTS = {
+    "notify_enabled": True,
+    "notify_schedule": [],
 }
 
 _lock = threading.Lock()
@@ -130,6 +145,9 @@ class ConfigStore:
                 cam.setdefault(k, json.loads(json.dumps(v)))
             for k, v in CAMERA_DETECTION_DEFAULTS.items():
                 cam.setdefault(k, json.loads(json.dumps(v)))
+            for k, v in CAMERA_NOTIFICATION_DEFAULTS.items():
+                cam.setdefault(k, json.loads(json.dumps(v)))
+            cam.setdefault("group_ids", [])
 
     def _save_locked(self):
         tmp = self.config_path.with_suffix(".tmp")
@@ -159,6 +177,44 @@ class ConfigStore:
             self._data["recording"].update(updates)
             self._save_locked()
 
+    def get_notifications(self):
+        return self._data["notifications"]
+
+    def update_notifications(self, updates: dict):
+        with _lock:
+            self._data["notifications"].update(updates)
+            self._save_locked()
+
+    def get_groups(self):
+        return self._data["groups"]
+
+    def add_group(self, group: dict):
+        with _lock:
+            self._data["groups"].append(group)
+            self._save_locked()
+
+    def update_group(self, group_id: str, updates: dict) -> bool:
+        with _lock:
+            for g in self._data["groups"]:
+                if g["id"] == group_id:
+                    g.update(updates)
+                    self._save_locked()
+                    return True
+            return False
+
+    def remove_group(self, group_id: str) -> bool:
+        with _lock:
+            before = len(self._data["groups"])
+            self._data["groups"] = [g for g in self._data["groups"] if g["id"] != group_id]
+            removed = len(self._data["groups"]) != before
+            if removed:
+                for cam in self._data["cameras"]:
+                    gids = cam.get("group_ids") or []
+                    if group_id in gids:
+                        cam["group_ids"] = [g for g in gids if g != group_id]
+                self._save_locked()
+            return removed
+
     def get_cameras(self):
         return self._data["cameras"]
 
@@ -178,6 +234,9 @@ class ConfigStore:
                 camera.setdefault(k, json.loads(json.dumps(v)))
             for k, v in CAMERA_DETECTION_DEFAULTS.items():
                 camera.setdefault(k, json.loads(json.dumps(v)))
+            for k, v in CAMERA_NOTIFICATION_DEFAULTS.items():
+                camera.setdefault(k, json.loads(json.dumps(v)))
+            camera.setdefault("group_ids", [])
             self._data["cameras"].append(camera)
             self._save_locked()
 

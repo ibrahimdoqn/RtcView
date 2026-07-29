@@ -13,6 +13,10 @@
     sidebarOpen: false,
     ptzOpen: null,
     playback: null,          // playback session state, see initPlayback
+    groups: [],
+    notifications: [],
+    notifUnread: 0,
+    groupFilter: null,       // active group id in the sidebar/grid filter, or null = all
   };
   const isMobile = () => window.matchMedia("(max-width: 640px), (orientation: portrait) and (max-width: 900px)").matches;
 
@@ -73,16 +77,19 @@
       state.go2rtc  = cfg.go2rtc || {};
       state.recording = cfg.recording || {};
       state.cameras = cfg.cameras || [];
+      state.groups = cfg.groups || [];
       applySettings();
       renderSidebar(); renderGrid();
       updateStatus();
       updateRecStatus();
+      updateNotifications();
       registerSW();
       wireKeyboard();
     } catch (e) { toast("Yapılandırma yüklenemedi: " + e.message, "err"); }
     // Reduced polling — see optimisation plan Stage 1
     setInterval(updateStatus, 10000);
     setInterval(updateRecStatus, 4000);
+    setInterval(updateNotifications, 15000);
   }
 
   function applySettings(){
@@ -144,16 +151,22 @@
   $("#sidebar-backdrop").addEventListener("click", closeSidebar);
 
   function renderSidebar(){
+    renderGroupFilterRow();
     const list = $("#camera-list"); list.innerHTML = "";
     const q = ($("#search-input").value || "").toLowerCase();
-    state.cameras.filter(c => !q || c.name.toLowerCase().includes(q)).forEach(cam => {
+    visibleCameras().filter(c => !q || c.name.toLowerCase().includes(q)).forEach(cam => {
       const el = document.createElement("div");
       el.className = "cam-item" + (cam.id === state.selectedId ? " active" : "");
       el.dataset.id = cam.id;
       el.draggable = true;
+      const groupChips = (cam.group_ids || []).map(gid => {
+        const g = state.groups.find(x => x.id === gid);
+        return g ? `<span class="group-chip-mini">${escapeHtml(g.name)}</span>` : "";
+      }).join("");
       el.innerHTML = `<span class="grip">⋮⋮</span>
         <span class="rec-mini" title="Kayıt aktif"></span>
         <span class="name">${escapeHtml(cam.name)}</span>
+        <span class="cam-groups">${groupChips}</span>
         <span class="st" data-st></span>
         <button class="cam-edit" title="Düzenle" aria-label="Kamerayı düzenle">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -272,11 +285,12 @@
 
     const grid = $("#grid"); grid.innerHTML = "";
     grid.classList.toggle("solo", state.solo);
-    const cams = state.cameras;
+    const cams = visibleCameras();
     if (cams.length === 0){
-      grid.innerHTML = `<div class="tile empty"><div class="center-msg">
-        Henüz kamera yok. Menüden (<b>B</b>) "+ Kamera" ile ekleyin.
-      </div></div>`;
+      const msg = state.groupFilter
+        ? "Bu grupta kamera yok."
+        : `Henüz kamera yok. Menüden (<b>B</b>) Ayarlar → Kameralar sekmesinden ekleyin.`;
+      grid.innerHTML = `<div class="tile empty"><div class="center-msg">${msg}</div></div>`;
       return;
     }
     cams.forEach(cam => {
@@ -749,7 +763,12 @@
         if (playbackKey(e)) return;
       }
       const k = e.key.toLowerCase();
-      if (k === "escape"){ if (state.solo) exitSolo(); else if (state.sidebarOpen) closeSidebar(); return; }
+      if (k === "escape"){
+        if (!$("#settings-page").classList.contains("hidden")){ closeSettingsPage(); return; }
+        if (!$("#notif-panel").classList.contains("hidden")){ closeNotifPanel(); return; }
+        if (state.solo) exitSolo(); else if (state.sidebarOpen) closeSidebar();
+        return;
+      }
       if (k === "b" || k === "tab"){ e.preventDefault(); toggleSidebar(); return; }
       if (k === "f"){ e.preventDefault(); toggleFullscreen(); return; }
       if (k === "g"){ exitSolo(); return; }
@@ -874,21 +893,219 @@
     e.target.value = "";
   });
 
-  // -------- Camera modal --------
-  const modal = $("#modal-backdrop");
+  // -------- Notifications (bell popover) --------
+  async function updateNotifications(){
+    try {
+      const list = await api.get("/api/notifications?limit=100");
+      state.notifications = list || [];
+      state.notifUnread = state.notifications.filter(n => !n.read).length;
+      renderNotifBadge();
+      if (!$("#notif-panel").classList.contains("hidden")) renderNotifList();
+    } catch { /* keep quiet — background poll */ }
+  }
+  function renderNotifBadge(){
+    const badge = $("#notif-badge");
+    const dot = $("#fab-notif-dot");
+    const n = state.notifUnread;
+    if (badge){ badge.textContent = String(n); badge.classList.toggle("hidden", n === 0); }
+    if (dot) dot.classList.toggle("hidden", n === 0);
+  }
+  function _fmtRelTime(ts){
+    const diff = Math.max(0, Date.now() / 1000 - ts);
+    if (diff < 60) return "az önce";
+    if (diff < 3600) return Math.floor(diff / 60) + " dk önce";
+    if (diff < 86400) return Math.floor(diff / 3600) + " sa önce";
+    return new Date(ts * 1000).toLocaleString("tr-TR");
+  }
+  function renderNotifList(){
+    const wrap = $("#notif-list"); if (!wrap) return;
+    if (!state.notifications.length){
+      wrap.innerHTML = `<div class="notif-empty">Henüz bildirim yok.</div>`;
+      return;
+    }
+    wrap.innerHTML = state.notifications.map(n => {
+      const cam = state.cameras.find(c => c.id === n.cam_id);
+      const camName = cam ? escapeHtml(cam.name) : "Bilinmeyen kamera";
+      const kindLabel = n.kind === "person" ? "İnsan algılandı" : "Hareket algılandı";
+      return `<div class="notif-row${n.read ? "" : " unread"}" data-id="${n.id}" data-cam="${escapeHtml(n.cam_id)}" data-ts="${n.event_ts}">
+        <span class="notif-dot ${n.kind}"></span>
+        <span class="notif-body">
+          <span class="notif-cam">${camName}</span>
+          <span class="notif-kind">${kindLabel}</span>
+        </span>
+        <span class="notif-time">${_fmtRelTime(n.event_ts)}</span>
+      </div>`;
+    }).join("");
+    $$(".notif-row", wrap).forEach(row => {
+      row.addEventListener("click", () => {
+        const camId = row.dataset.cam;
+        const ts = parseFloat(row.dataset.ts);
+        closeNotifPanel();
+        if (state.cameras.some(c => c.id === camId)) openPlayback({ camId, atTime: ts });
+        else toast("Bu kamera artık mevcut değil", "err");
+      });
+    });
+  }
+  function openNotifPanel(){
+    $("#notif-panel").classList.remove("hidden");
+    $("#notif-backdrop").classList.remove("hidden");
+    renderNotifList();
+    api.post("/api/notifications/read-all").then(() => {
+      state.notifications.forEach(n => { n.read = 1; });
+      state.notifUnread = 0;
+      renderNotifBadge();
+    }).catch(() => {});
+  }
+  function closeNotifPanel(){
+    $("#notif-panel").classList.add("hidden");
+    $("#notif-backdrop").classList.add("hidden");
+  }
+  $("#btn-notif").addEventListener("click", () => { closeSidebar(); openNotifPanel(); });
+  $("#notif-backdrop").addEventListener("click", closeNotifPanel);
+  $("#notif-clear").addEventListener("click", async () => {
+    if (!confirm("Tüm bildirimler silinsin mi?")) return;
+    try {
+      await api.del("/api/notifications");
+      state.notifications = []; state.notifUnread = 0;
+      renderNotifBadge(); renderNotifList();
+    } catch (e) { toast("Silinemedi: " + e.message, "err"); }
+  });
+
+  // -------- Camera detail (Kameralar sekmesi) --------
   const form = $("#camera-form");
   const delBtn = $("#btn-delete");
 
-  $("#btn-add-camera").addEventListener("click", () => { closeSidebar(); openEdit(null); });
-  $$("[data-close]").forEach(b => b.addEventListener("click", () => {
-    modal.classList.add("hidden");
+  function showCameraList(){
+    $("#cam-tab-list").classList.remove("hidden");
+    $("#cam-tab-detail").classList.add("hidden");
     stopMotionPoll();
-  }));
-  // Backdrop-click closes the modal, but a text selection that starts
-  // inside an input and ends on the backdrop was incorrectly registered
-  // as a backdrop-click. Only close when BOTH mousedown and mouseup
-  // landed on the backdrop itself.
-  _bindBackdropClose(modal, stopMotionPoll);
+    renderGroupsManageList();
+    renderCamTabList();
+  }
+  function showCameraDetail(){
+    $("#cam-tab-list").classList.add("hidden");
+    $("#cam-tab-detail").classList.remove("hidden");
+  }
+  $("#btn-add-camera-tab").addEventListener("click", () => openEdit(null));
+  $("#cam-tab-back").addEventListener("click", showCameraList);
+
+  function renderCamTabList(){
+    const wrap = $("#cam-tab-list-rows"); if (!wrap) return;
+    wrap.innerHTML = "";
+    state.cameras.forEach(cam => {
+      const row = document.createElement("div");
+      row.className = "cam-tab-row";
+      const groupChips = (cam.group_ids || []).map(gid => {
+        const g = state.groups.find(x => x.id === gid);
+        return g ? `<span class="group-chip-mini">${escapeHtml(g.name)}</span>` : "";
+      }).join("");
+      row.innerHTML = `<span class="name">${escapeHtml(cam.name)}</span>
+        <span class="cam-tab-row-groups">${groupChips}</span>
+        <button type="button" class="btn ghost small">Düzenle</button>`;
+      row.querySelector("button").addEventListener("click", () => openEdit(cam));
+      wrap.appendChild(row);
+    });
+  }
+
+  // ----- Camera groups management (Kameralar sekmesi) -----
+  function renderGroupsManageList(){
+    const wrap = $("#groups-manage-list"); if (!wrap) return;
+    wrap.innerHTML = "";
+    state.groups.forEach(g => {
+      const row = document.createElement("div");
+      row.className = "groups-manage-row";
+      row.innerHTML = `<input type="text" class="gm-name" value="${escapeHtml(g.name)}" />
+        <button type="button" class="btn ghost small gm-del" title="Sil">✕</button>`;
+      const input = row.querySelector(".gm-name");
+      const save = async () => {
+        const name = input.value.trim();
+        if (!name || name === g.name){ input.value = g.name; return; }
+        try {
+          await api.put("/api/groups/" + g.id, { name });
+          g.name = name;
+          renderGroupFilterRow();
+          renderCamTabList();
+        } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); input.value = g.name; }
+      };
+      input.addEventListener("blur", save);
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+      row.querySelector(".gm-del").addEventListener("click", async () => {
+        if (!confirm(`"${g.name}" grubu silinsin mi?`)) return;
+        try {
+          await api.del("/api/groups/" + g.id);
+          state.groups = state.groups.filter(x => x.id !== g.id);
+          state.cameras.forEach(c => { c.group_ids = (c.group_ids || []).filter(id => id !== g.id); });
+          if (state.groupFilter === g.id) state.groupFilter = null;
+          renderGroupsManageList();
+          renderGroupFilterRow();
+          renderCamTabList();
+          renderSidebar(); renderGrid();
+          if (!$("#cam-tab-detail").classList.contains("hidden")) renderCamGroupChips(readGroupChips());
+        } catch (e) { toast("Silinemedi: " + e.message, "err"); }
+      });
+      wrap.appendChild(row);
+    });
+  }
+  $("#btn-add-group").addEventListener("click", async () => {
+    const name = (prompt("Grup adı:") || "").trim();
+    if (!name) return;
+    try {
+      const g = await api.post("/api/groups", { name });
+      state.groups.push(g);
+      renderGroupsManageList();
+      renderGroupFilterRow();
+    } catch (e) { toast("Eklenemedi: " + e.message, "err"); }
+  });
+
+  // ----- Group filter (sidebar + grid) -----
+  function visibleCameras(){
+    return state.cameras.filter(c => !state.groupFilter || (c.group_ids || []).includes(state.groupFilter));
+  }
+  function renderGroupFilterRow(){
+    const row = $("#group-filter-row"); if (!row) return;
+    if (!state.groups.length){ row.classList.add("hidden"); row.innerHTML = ""; return; }
+    row.classList.remove("hidden");
+    const chips = [{ id: null, name: "Tümü" }, ...state.groups];
+    row.innerHTML = chips.map(g =>
+      `<button type="button" class="group-filter-chip${state.groupFilter === g.id ? " active" : ""}" data-gid="${g.id === null ? "" : escapeHtml(g.id)}">${escapeHtml(g.name)}</button>`
+    ).join("");
+    $$(".group-filter-chip", row).forEach(btn => {
+      btn.addEventListener("click", () => {
+        state.groupFilter = btn.dataset.gid || null;
+        renderGroupFilterRow();
+        renderSidebar(); renderGrid();
+      });
+    });
+  }
+
+  // ----- Camera↔group chip picker (camera-form) -----
+  function renderCamGroupChips(selectedIds){
+    const wrap = $("#cam-group-chips"); if (!wrap) return;
+    wrap.innerHTML = "";
+    if (!state.groups.length){
+      wrap.innerHTML = `<span class="usage-text">Henüz grup yok. "Gruplar" bölümünden ekleyebilirsiniz.</span>`;
+      return;
+    }
+    state.groups.forEach(g => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chip" + (selectedIds.includes(g.id) ? " on" : "");
+      chip.textContent = g.name;
+      chip.dataset.gid = g.id;
+      chip.addEventListener("click", () => chip.classList.toggle("on"));
+      wrap.appendChild(chip);
+    });
+  }
+  function readGroupChips(){
+    return $$("#cam-group-chips .chip.on").map(c => c.dataset.gid);
+  }
+
+  function updateNotifyFieldsetVisibility(){
+    const on = form.motion_detection_enabled.checked || form.person_detection_enabled.checked;
+    $("#notify-fieldset").classList.toggle("hidden", !on);
+  }
+  form.motion_detection_enabled.addEventListener("change", updateNotifyFieldsetVisibility);
+  form.person_detection_enabled.addEventListener("change", updateNotifyFieldsetVisibility);
 
   // ----- Motion/person live status + debug panel -----
   let _motionPollTimer = null;
@@ -964,11 +1181,11 @@
 
   // ----- Schedule editor (per-camera weekly windows) -----
   const DAY_LABELS = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"];
-  function renderScheduleRows(schedule){
-    const wrap = $("#rec-schedule-rows");
+  function renderScheduleRows(wrapEl, schedule, opts = {}){
+    const wrap = wrapEl;
     wrap.innerHTML = "";
     (schedule || []).forEach((w, idx) => wrap.appendChild(scheduleRow(w, idx)));
-    if (!wrap.children.length){
+    if (!wrap.children.length && opts.defaultRowIfEmpty !== false){
       wrap.appendChild(scheduleRow({ days:[0,1,2,3,4,5,6], start:"08:00", end:"18:00" }, 0));
     }
   }
@@ -992,8 +1209,8 @@
     row.appendChild(days); row.appendChild(st); row.appendChild(et); row.appendChild(del);
     return row;
   }
-  function readScheduleRows(){
-    return $$("#rec-schedule-rows .sched-row").map(r => {
+  function readScheduleRows(wrapEl){
+    return Array.from(wrapEl.querySelectorAll(".sched-row")).map(r => {
       const days = Array.from(r.querySelectorAll(".days button"))
         .map((b, i) => b.classList.contains("on") ? i : -1).filter(i => i >= 0);
       const times = r.querySelectorAll("input[type=time]");
@@ -1003,14 +1220,17 @@
   $("#rec-schedule-add").addEventListener("click", () => {
     $("#rec-schedule-rows").appendChild(scheduleRow({ days:[], start:"08:00", end:"18:00" }, 0));
   });
+  $("#notify-schedule-add").addEventListener("click", () => {
+    $("#notify-schedule-rows").appendChild(scheduleRow({ days:[], start:"08:00", end:"18:00" }, 0));
+  });
   form.record_mode.addEventListener("change", () => {
     $("#rec-schedule-editor").classList.toggle("hidden", form.record_mode.value !== "schedule");
   });
 
   function openEdit(cam){
+    openSettingsPage("kameralar");
     form.reset();
     if (cam){
-      $("#modal-title").textContent = "Kamerayı Düzenle";
       delBtn.classList.remove("hidden");
       form.id.value = cam.id;
       form.name.value = cam.name || "";
@@ -1025,23 +1245,27 @@
       form.motion_detection_enabled.checked = !!cam.motion_detection_enabled;
       form.person_detection_enabled.checked = !!cam.person_detection_enabled;
       form.motion_timeout_seconds.value = cam.motion_timeout_seconds || 15;
-      // Guarded so a stale HTML cache without the checkbox doesn't
-      // throw and abort the rest of openEdit before the modal shows.
-      renderScheduleRows(cam.record_schedule || []);
+      form.notify_enabled.checked = cam.notify_enabled !== false;
+      renderScheduleRows($("#rec-schedule-rows"), cam.record_schedule || []);
+      renderScheduleRows($("#notify-schedule-rows"), cam.notify_schedule || [], { defaultRowIfEmpty: false });
+      renderCamGroupChips(cam.group_ids || []);
       loadStreamOptions(cam.stream || "");
       startMotionPoll(cam.id);
     } else {
-      $("#modal-title").textContent = "Kamera Ekle";
       delBtn.classList.add("hidden");
       form.record_mode.value = "off";
       form.motion_timeout_seconds.value = 15;
-      renderScheduleRows([]);
+      form.notify_enabled.checked = true;
+      renderScheduleRows($("#rec-schedule-rows"), []);
+      renderScheduleRows($("#notify-schedule-rows"), [], { defaultRowIfEmpty: false });
+      renderCamGroupChips([]);
       loadStreamOptions("");
       stopMotionPoll();
       renderMotionPanel(null);
     }
     $("#rec-schedule-editor").classList.toggle("hidden", form.record_mode.value !== "schedule");
-    modal.classList.remove("hidden");
+    updateNotifyFieldsetVisibility();
+    showCameraDetail();
   }
 
   $("#btn-refresh-streams").addEventListener("click", () => loadStreamOptions(form.stream.value));
@@ -1054,18 +1278,21 @@
     body.record_audio = form.record_audio.checked;
     body.onvif_port = parseInt(body.onvif_port || 80);
     body.retention_days_override = parseInt(body.retention_days_override || 0);
-    body.record_schedule = readScheduleRows();
+    body.record_schedule = readScheduleRows($("#rec-schedule-rows"));
     body.motion_detection_enabled = form.motion_detection_enabled.checked;
     body.person_detection_enabled = form.person_detection_enabled.checked;
     body.motion_timeout_seconds = parseInt(body.motion_timeout_seconds || 15);
+    body.notify_enabled = form.notify_enabled.checked;
+    body.notify_schedule = readScheduleRows($("#notify-schedule-rows"));
+    body.group_ids = readGroupChips();
     if (!body.stream){ toast("Bir stream seçin", "err"); return; }
     const id = body.id; delete body.id;
     try {
       if (id){ await api.put("/api/cameras/" + id, body); toast("Güncellendi", "ok"); }
       else { await api.post("/api/cameras", body); toast("Eklendi", "ok"); }
-      modal.classList.add("hidden");
       stopMotionPoll();
       await reloadCameras();
+      showCameraList();
       updateRecStatus();
     } catch (err) { toast("Kaydedilemedi: " + err.message, "err"); }
   });
@@ -1076,9 +1303,9 @@
     try {
       stopPlayer(id);
       await api.del("/api/cameras/" + id);
-      modal.classList.add("hidden");
       stopMotionPoll();
       await reloadCameras();
+      showCameraList();
     } catch (err) { toast("Silinemedi: " + err.message, "err"); }
   });
 
@@ -1086,12 +1313,34 @@
     const cfg = await api.get("/api/config");
     state.cameras = cfg.cameras;
     renderSidebar(); renderGrid();
+    renderCamTabList();
   }
 
-  // -------- Settings --------
-  const sModal = $("#settings-backdrop");
-  $("#btn-settings").addEventListener("click", async () => {
+  // -------- Settings page (full-screen, tabbed) --------
+  let _lastSettingsTab = "genel";
+  function openSettingsPage(tab){
     closeSidebar();
+    $("#settings-page").classList.remove("hidden");
+    switchSettingsTab(tab || _lastSettingsTab);
+  }
+  function closeSettingsPage(){
+    $("#settings-page").classList.add("hidden");
+    stopMotionPoll();
+  }
+  function switchSettingsTab(name){
+    _lastSettingsTab = name;
+    $$(".settings-tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+    $$(".settings-tabpanel").forEach(p => p.classList.toggle("hidden", p.dataset.tab !== name));
+    if (name === "genel") loadGenelTab();
+    else if (name === "kameralar") showCameraList();
+    else if (name === "bildirimler") loadNotifSettingsTab();
+    else if (name === "kayit") loadKayitTab();
+  }
+  $$(".settings-tab-btn").forEach(btn => btn.addEventListener("click", () => switchSettingsTab(btn.dataset.tab)));
+  $("#btn-settings").addEventListener("click", () => openSettingsPage("genel"));
+  $("#settings-close").addEventListener("click", closeSettingsPage);
+
+  async function loadGenelTab(){
     $("#s-grid-cols").value = state.settings.grid_columns || 3;
     $("#s-theme").value = state.settings.theme || "dark";
     $("#s-show-names").checked = state.settings.show_camera_names !== false;
@@ -1105,6 +1354,36 @@
       $("#s-g2-port").value = g.api_port || 1984;
       $("#s-g2-rtsp").value = g.rtsp_port || 8554;
     } catch {}
+  }
+  $("#s-save-genel").addEventListener("click", async () => {
+    const body = {
+      grid_columns: parseInt($("#s-grid-cols").value),
+      theme: $("#s-theme").value,
+      show_camera_names: $("#s-show-names").checked,
+      show_status_badges: $("#s-show-badges").checked,
+      auto_reconnect: $("#s-auto-reconnect").checked,
+      reconnect_delay_ms: parseInt($("#s-reconnect-delay").value),
+    };
+    try {
+      // Device-scoped transport (not sent to server — local per browser)
+      const prevTransport = getDeviceTransport();
+      const newTransport = $("#s-device-transport").value === "mse" ? "mse" : "rtc";
+      if (newTransport !== prevTransport) setDeviceTransport(newTransport);
+
+      state.settings = await api.post("/api/settings", body);
+      await api.post("/api/go2rtc/settings", {
+        host: ($("#s-g2-host").value || "127.0.0.1").trim(),
+        api_port: parseInt($("#s-g2-port").value || 1984),
+        rtsp_port: parseInt($("#s-g2-rtsp").value || 8554),
+      });
+      applySettings();
+      renderGrid();                     // pulls in new transport on restart
+      toast(newTransport !== prevTransport ? "Yayın modu değiştirildi" : "Ayarlar kaydedildi", "ok");
+      updateStatus();
+    } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
+  });
+
+  async function loadKayitTab(){
     try {
       const r = await api.get("/api/recording/settings");
       state.recording = r;
@@ -1123,10 +1402,63 @@
       $("#s-rec-retention").value = r.retention_days || 14;
     } catch {}
     refreshUsageBar();
-    sModal.classList.remove("hidden");
+  }
+  $("#s-save-kayit").addEventListener("click", async () => {
+    const paths = _readRecPaths();
+    if (!paths.length){ toast("En az bir kayıt klasörü ekleyin", "err"); return; }
+    const recBody = {
+      enabled: $("#s-rec-enabled").checked,
+      storage_paths: paths,
+      segment_seconds: parseInt($("#s-rec-segment").value || 300),
+      retention_days: parseInt($("#s-rec-retention").value || 14),
+    };
+    try {
+      state.recording = await api.post("/api/recording/settings", recBody);
+      toast("Ayarlar kaydedildi", "ok");
+      updateRecStatus();
+      refreshUsageBar();
+    } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
   });
-  $$("[data-close-settings]").forEach(b => b.addEventListener("click", () => sModal.classList.add("hidden")));
-  _bindBackdropClose(sModal);
+
+  // ----- Bildirimler tab: enable toggle + snooze (auto-save, no Kaydet) -----
+  async function loadNotifSettingsTab(){
+    try {
+      const n = await api.get("/api/notifications/settings");
+      $("#n-enabled").checked = n.enabled !== false;
+      renderSnoozeStatus(n.snooze_until);
+    } catch {}
+  }
+  function renderSnoozeStatus(snoozeUntil){
+    const el = $("#n-snooze-status"); if (!el) return;
+    const until = Number(snoozeUntil || 0);
+    el.textContent = (until > Date.now() / 1000)
+      ? "Ertelendi: " + new Date(until * 1000).toLocaleString("tr-TR") + " kadar"
+      : "Ertelenmedi";
+  }
+  $("#n-enabled").addEventListener("change", async () => {
+    try {
+      const n = await api.post("/api/notifications/settings", { enabled: $("#n-enabled").checked });
+      renderSnoozeStatus(n.snooze_until);
+    } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
+  });
+  $$("[data-snooze]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const v = btn.dataset.snooze;
+      let minutes;
+      if (v === "tomorrow"){
+        const now = new Date();
+        const tmr = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 8, 0, 0);
+        minutes = Math.max(1, Math.round((tmr.getTime() - now.getTime()) / 60000));
+      } else {
+        minutes = parseFloat(v) || 0;
+      }
+      try {
+        const n = await api.post("/api/notifications/snooze", { minutes });
+        renderSnoozeStatus(n.snooze_until);
+        toast(minutes > 0 ? "Ertelendi" : "Erteleme iptal edildi", "ok");
+      } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
+    });
+  });
 
   async function refreshUsageBar(){
     try {
@@ -1423,45 +1755,6 @@
   }
 
 
-  $("#s-save").addEventListener("click", async () => {
-    const body = {
-      grid_columns: parseInt($("#s-grid-cols").value),
-      theme: $("#s-theme").value,
-      show_camera_names: $("#s-show-names").checked,
-      show_status_badges: $("#s-show-badges").checked,
-      auto_reconnect: $("#s-auto-reconnect").checked,
-      reconnect_delay_ms: parseInt($("#s-reconnect-delay").value),
-    };
-    try {
-      // Device-scoped transport (not sent to server — local per browser)
-      const prevTransport = getDeviceTransport();
-      const newTransport = $("#s-device-transport").value === "mse" ? "mse" : "auto";
-      if (newTransport !== prevTransport) setDeviceTransport(newTransport);
-
-      state.settings = await api.post("/api/settings", body);
-      await api.post("/api/go2rtc/settings", {
-        host: ($("#s-g2-host").value || "127.0.0.1").trim(),
-        api_port: parseInt($("#s-g2-port").value || 1984),
-        rtsp_port: parseInt($("#s-g2-rtsp").value || 8554),
-      });
-      const paths = _readRecPaths();
-      if (!paths.length){ toast("En az bir kayıt klasörü ekleyin", "err"); return; }
-      const recBody = {
-        enabled: $("#s-rec-enabled").checked,
-        storage_paths: paths,
-        segment_seconds: parseInt($("#s-rec-segment").value || 300),
-        retention_days: parseInt($("#s-rec-retention").value || 14),
-      };
-      state.recording = await api.post("/api/recording/settings", recBody);
-      applySettings();
-      renderGrid();                     // pulls in new transport on restart
-      sModal.classList.add("hidden");
-      toast(newTransport !== prevTransport ? "Yayın modu değiştirildi" : "Ayarlar kaydedildi", "ok");
-      updateStatus();
-      updateRecStatus();
-    } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
-  });
-
   $("#search-input").addEventListener("input", renderSidebar);
 
   let resizeTimer = null;
@@ -1479,16 +1772,19 @@
   // ========================================================================
   // PLAYBACK (İzleme) — timeline + segment auto-next
   // ========================================================================
-  function openPlayback(){
+  function openPlayback(target){
     if (state.cameras.length === 0){ toast("Önce kamera ekleyin"); return; }
     if (!state.playback) initPlayback();
     const pb = state.playback;
     // Prefill camera + date
     const sel = $("#pb-cam");
     sel.innerHTML = state.cameras.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
-    pb.camId = state.selectedId && state.cameras.some(c => c.id === state.selectedId) ? state.selectedId : state.cameras[0].id;
+    const validTarget = target && target.camId && state.cameras.some(c => c.id === target.camId);
+    pb.camId = validTarget ? target.camId
+      : (state.selectedId && state.cameras.some(c => c.id === state.selectedId) ? state.selectedId : state.cameras[0].id);
     sel.value = pb.camId;
-    pb.date = pb.date || todayLocal();
+    pb.pendingSeek = (target && target.atTime != null) ? target.atTime : null;
+    pb.date = pb.pendingSeek != null ? _dateStrFromUnix(pb.pendingSeek) : (pb.date || todayLocal());
     $("#pb-date").value = pb.date;
     $("#playback").classList.remove("hidden");
     loadDay();
@@ -1564,6 +1860,7 @@
   function initPlayback(){
     state.playback = {
       camId: null, date: null, segs: [], detections: [], detectionEnabled: false, active: null,
+      pendingSeek: null,
       // New timeline model: fixed centre playhead, sliding track.
       // centerTime = the wall-clock instant currently under the playhead.
       // pxPerSec  = zoom (how many pixels represent one second).
@@ -2004,7 +2301,8 @@
       ]);
       pb.segs = segs || [];
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
-      const t = _pickInitialTime(pb);
+      const t = (pb.pendingSeek != null) ? pb.pendingSeek : _pickInitialTime(pb);
+      pb.pendingSeek = null;
       pb.centerTime = t;
       if (pb.segs.length){
         const seg = pb.segs.find(s => s.started_at <= t && t <= s.ended_at)

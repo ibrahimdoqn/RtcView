@@ -47,7 +47,24 @@ CREATE TABLE IF NOT EXISTS detections (
     ended_at   REAL    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_det_cam_time ON detections(cam_id, started_at);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    cam_id     TEXT    NOT NULL,
+    kind       TEXT    NOT NULL,   -- 'motion' | 'person'
+    event_ts   REAL    NOT NULL,   -- wall-clock instant of the detection edge (for playback jump)
+    created_at REAL    NOT NULL,   -- row insert time (for retention pruning)
+    read       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_notif_created ON notifications(created_at);
+CREATE INDEX IF NOT EXISTS idx_notif_cam     ON notifications(cam_id, event_ts);
 """
+
+# Notifications are a transient action log, not video — kept separate from
+# recording.retention_days (which can be 0/unlimited and means something
+# different: how long to keep footage).
+NOTIF_RETENTION_DAYS = 30
+NOTIF_MAX_ROWS = 2000
 
 
 class Storage:
@@ -420,6 +437,37 @@ class Storage:
         cols = ["id", "cam_id", "kind", "started_at", "ended_at"]
         return [dict(zip(cols, r)) for r in rows]
 
+    # ---------- Notifications ----------
+    def create_notification(self, cam_id: str, kind: str, event_ts: float) -> Optional[int]:
+        try:
+            with self._lock:
+                cur = self._db.execute(
+                    "INSERT INTO notifications (cam_id, kind, event_ts, created_at) VALUES (?,?,?,?)",
+                    (cam_id, kind, event_ts, time.time()),
+                )
+                return cur.lastrowid
+        except Exception as e:
+            log.debug("create_notification failed: %s", e)
+            return None
+
+    def list_notifications(self, unread_only: bool = False, limit: int = 200) -> list[dict]:
+        q = "SELECT id, cam_id, kind, event_ts, created_at, read FROM notifications"
+        if unread_only:
+            q += " WHERE read = 0"
+        q += " ORDER BY event_ts DESC LIMIT ?"
+        with self._lock:
+            rows = self._db.execute(q, (limit,)).fetchall()
+        cols = ["id", "cam_id", "kind", "event_ts", "created_at", "read"]
+        return [dict(zip(cols, r)) for r in rows]
+
+    def mark_all_notifications_read(self):
+        with self._lock:
+            self._db.execute("UPDATE notifications SET read = 1 WHERE read = 0")
+
+    def clear_all_notifications(self):
+        with self._lock:
+            self._db.execute("DELETE FROM notifications")
+
     # ---------- Health ----------
     def health(self) -> dict:
         """Report the storage subsystem's live state across ALL roots.
@@ -643,6 +691,20 @@ class Storage:
                     removed += 1; freed += int(b or 0)
             with self._lock:
                 self._db.execute("DELETE FROM detections WHERE ended_at < ?", (cutoff,))
+
+        # Notification retention: independent of recording.retention_days
+        # (notifications are a transient action log, not video). Note this
+        # still only runs when purge_once() itself runs, which — like the
+        # detections cleanup above — only happens while recording is
+        # enabled (see _purge_loop); a pre-existing quirk, not new here.
+        notif_cutoff = time.time() - NOTIF_RETENTION_DAYS * 86400
+        with self._lock:
+            self._db.execute("DELETE FROM notifications WHERE created_at < ?", (notif_cutoff,))
+            self._db.execute(
+                "DELETE FROM notifications WHERE id NOT IN "
+                "(SELECT id FROM notifications ORDER BY created_at DESC LIMIT ?)",
+                (NOTIF_MAX_ROWS,),
+            )
 
         # Per-disk quota: EACH configured storage root carries its own
         # max_gb, taken from its storage_paths entry. max_bytes=0 for a
