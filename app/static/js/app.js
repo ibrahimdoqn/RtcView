@@ -2092,93 +2092,51 @@
       frag.appendChild(el);
     }
 
+    // ----- detection row (only for cameras with motion/person tracking
+    // on): a thin strip above the segment row, gray by default with
+    // orange/blue runs painted over whatever was detected. Drawn as
+    // children of the same #pb-track as everything else, so it's part
+    // of the one timeline box — no separate/overflowing element. -----
+    if (pb.detectionEnabled){
+      const base = document.createElement("div");
+      base.className = "pb-detect-seg none";
+      base.style.left = "0px"; base.style.width = tlWidth + "px";
+      frag.appendChild(base);
+      const addDetectBar = (s0, s1, cls) => {
+        const vs0 = Math.max(s0, viewStart), vs1 = Math.min(s1, viewEnd);
+        if (vs1 <= vs0) return;
+        const x = (vs0 - viewStart) * pb.pxPerSec;
+        const w = Math.max(1, (vs1 - vs0) * pb.pxPerSec);
+        const el = document.createElement("div");
+        el.className = "pb-detect-seg " + cls;
+        el.style.left = x + "px"; el.style.width = w + "px";
+        frag.appendChild(el);
+      };
+      // motion first, person drawn after so it visually wins on overlap
+      (pb.detections || []).filter(d => d.kind === "motion")
+        .forEach(d => addDetectBar(d.started_at, d.ended_at, "motion"));
+      (pb.detections || []).filter(d => d.kind === "person")
+        .forEach(d => addDetectBar(d.started_at, d.ended_at, "person"));
+    }
+
     // ----- segment bars (only visible slices, clipped) -----
-    // One bar per recording segment. For cameras with motion/person
-    // detection on, that bar's FILL color is split into runs matching
-    // what was detected during each slice (orange=motion, blue=person,
-    // gray=neither) instead of a separate strip; locked/manual/active
-    // are drawn as a thin ring on top so that metadata stays visible
-    // without a second bar. Cameras without detection keep the plain
-    // recording-presence coloring.
     pb.segs.forEach(s => {
       const s0 = Math.max(s.started_at, viewStart);
       const s1 = Math.min(s.ended_at, viewEnd);
       if (s1 <= s0) return;
+      const x = (s0 - viewStart) * pb.pxPerSec;
+      const w = Math.max(2, (s1 - s0) * pb.pxPerSec);
+      const el = document.createElement("div");
+      el.className = "pb-seg"
+        + (s.locked ? " locked" : "")
+        + (s.trigger === "manual" ? " manual" : "")
+        + (pb.active && s.id === pb.active.id ? " active" : "");
+      el.style.left = x + "px";
+      el.style.width = w + "px";
       const t0 = new Date(s.started_at*1000);
-      const title = `${pad2(t0.getHours())}:${pad2(t0.getMinutes())}:${pad2(t0.getSeconds())} · ${fmtDuration(s.duration)} · ${fmtBytes(s.bytes)}`
+      el.title = `${pad2(t0.getHours())}:${pad2(t0.getMinutes())}:${pad2(t0.getSeconds())} · ${fmtDuration(s.duration)} · ${fmtBytes(s.bytes)}`
         + (s.locked ? " · KİLİTLİ" : "") + (s.trigger === "manual" ? " · manuel" : "");
-
-      if (!pb.detectionEnabled){
-        const x = (s0 - viewStart) * pb.pxPerSec;
-        const w = Math.max(2, (s1 - s0) * pb.pxPerSec);
-        const el = document.createElement("div");
-        el.className = "pb-seg"
-          + (s.locked ? " locked" : "")
-          + (s.trigger === "manual" ? " manual" : "")
-          + (pb.active && s.id === pb.active.id ? " active" : "");
-        el.style.left = x + "px";
-        el.style.width = w + "px";
-        el.title = title;
-        frag.appendChild(el);
-        return;
-      }
-
-      // Break [s0,s1] into contiguous runs of one color, from whichever
-      // motion/person intervals overlap this segment. person wins over
-      // motion when both are active in the same slice.
-      const points = new Set([s0, s1]);
-      const motionIvs = [], personIvs = [];
-      (pb.detections || []).forEach(d => {
-        const a = Math.max(d.started_at, s0), b = Math.min(d.ended_at, s1);
-        if (b <= a) return;
-        points.add(a); points.add(b);
-        (d.kind === "person" ? personIvs : motionIvs).push([a, b]);
-      });
-      const within = (t, ivs) => ivs.some(([a,b]) => t >= a && t < b);
-      const sorted = Array.from(points).sort((a,b) => a - b);
-      let runStart = sorted[0], runColor = null;
-      for (let i = 0; i < sorted.length - 1; i++){
-        const a = sorted[i], b = sorted[i+1];
-        if (b <= a) continue;
-        const mid = (a + b) / 2;
-        const color = within(mid, personIvs) ? "person" : (within(mid, motionIvs) ? "motion" : "none");
-        if (color !== runColor){
-          if (runColor !== null){
-            const x = (runStart - viewStart) * pb.pxPerSec;
-            const w = Math.max(1, (a - runStart) * pb.pxPerSec);
-            const el = document.createElement("div");
-            el.className = "pb-seg-fill " + runColor;
-            el.style.left = x + "px"; el.style.width = w + "px";
-            el.title = title;
-            frag.appendChild(el);
-          }
-          runStart = a; runColor = color;
-        }
-      }
-      if (runColor !== null){
-        const end = sorted[sorted.length - 1];
-        const x = (runStart - viewStart) * pb.pxPerSec;
-        const w = Math.max(1, (end - runStart) * pb.pxPerSec);
-        const el = document.createElement("div");
-        el.className = "pb-seg-fill " + runColor;
-        el.style.left = x + "px"; el.style.width = w + "px";
-        el.title = title;
-        frag.appendChild(el);
-      }
-
-      const statusCls = [
-        s.locked ? "locked" : "",
-        s.trigger === "manual" ? "manual" : "",
-        (pb.active && s.id === pb.active.id) ? "active" : "",
-      ].filter(Boolean).join(" ");
-      if (statusCls){
-        const x = (s0 - viewStart) * pb.pxPerSec;
-        const w = Math.max(2, (s1 - s0) * pb.pxPerSec);
-        const ov = document.createElement("div");
-        ov.className = "pb-seg-status " + statusCls;
-        ov.style.left = x + "px"; ov.style.width = w + "px";
-        frag.appendChild(ov);
-      }
+      frag.appendChild(el);
     });
 
     track.replaceChildren(frag);

@@ -575,7 +575,7 @@ kbd{
   .pb-time{display:none;}
   .pb-timeline-wrap{padding:.5rem .5rem calc(.6rem + var(--safe-b));}
   /* Slightly taller playhead-style timeline on mobile */
-  .pb-timeline{height:78px;}
+  .pb-timeline{height:84px;}
   .pb-tick .pb-tick-lbl{font-size:.6rem;}
   .pb-time-badge{font-size:.8rem;padding:.3rem .6rem;}
 }
@@ -913,7 +913,7 @@ kbd{
   border-top:1px solid var(--border);
 }
 .pb-timeline{
-  position:relative;height:74px;
+  position:relative;height:80px;
   background:linear-gradient(180deg,#0f1218 0%,#0a0c11 100%);
   border:1px solid rgba(255,255,255,.06);border-radius:12px;overflow:hidden;
   user-select:none;touch-action:none;
@@ -931,18 +931,24 @@ kbd{
 }
 /* Ticks (minor + major) live inside the track */
 .pb-tick{
-  position:absolute;top:32px;bottom:8px;width:1px;background:rgba(255,255,255,.10);
+  position:absolute;top:22px;bottom:8px;width:1px;background:rgba(255,255,255,.10);
 }
-.pb-tick.major{background:rgba(255,255,255,.22);top:24px;}
+.pb-tick.major{background:rgba(255,255,255,.22);top:14px;}
 .pb-tick .pb-tick-lbl{
-  position:absolute;top:-20px;left:0;transform:translateX(-50%);
+  position:absolute;top:-14px;left:0;transform:translateX(-50%);
   font-size:.66rem;color:rgba(255,255,255,.55);font-weight:500;
   white-space:nowrap;letter-spacing:.02em;
   font-family:ui-monospace,"SF Mono",monospace;
 }
-/* Segment bars sit above the ruler ticks, rounded */
+/* Two rows sit on the ruler: a thin detection row on top (motion/person,
+   only rendered for cameras with that enabled) and the recording-segment
+   row below it (always shown). */
+.pb-detect-seg{position:absolute;top:22px;height:9px;border-radius:3px;}
+.pb-detect-seg.none{background:#4b5160;}
+.pb-detect-seg.motion{background:#f5a623;}
+.pb-detect-seg.person{background:#3b82f6;}
 .pb-seg{
-  position:absolute;top:44px;height:20px;
+  position:absolute;top:36px;height:24px;
   background:linear-gradient(180deg,rgba(10,132,255,.85),rgba(10,132,255,.65));
   border-radius:4px;
   box-shadow:0 1px 3px rgba(0,0,0,.25);
@@ -1000,26 +1006,6 @@ kbd{
 .pb-detect-legend .sw.person{background:#3b82f6;}
 .pb-detect-legend .sw.none{background:#4b5160;}
 
-/* ----- Detection-colored segment fill: same single bar as recordings,
-   just colored by what was detected during that slice — motion=orange,
-   person=blue, neither=gray. Used instead of .pb-seg (not alongside it)
-   for cameras with motion/person detection enabled. ----- */
-.pb-seg-fill{
-  position:absolute;top:44px;height:20px;border-radius:4px;
-  box-shadow:0 1px 3px rgba(0,0,0,.25);
-}
-.pb-seg-fill.motion{background:linear-gradient(180deg,rgba(245,166,35,.9),rgba(224,148,26,.75));}
-.pb-seg-fill.person{background:linear-gradient(180deg,rgba(59,130,246,.9),rgba(47,111,216,.75));}
-.pb-seg-fill.none{background:linear-gradient(180deg,rgba(91,98,116,.85),rgba(69,75,90,.75));}
-/* Status overlay: locked/manual/active drawn as a ring on top of the
-   fill so segment metadata stays visible without a second bar. */
-.pb-seg-status{
-  position:absolute;top:44px;height:20px;border-radius:4px;
-  pointer-events:none;
-}
-.pb-seg-status.active{box-shadow:0 0 0 2px rgba(48,209,88,.95) inset,0 0 8px rgba(48,209,88,.5);}
-.pb-seg-status.locked{box-shadow:0 0 0 2px rgba(255,214,10,.95) inset;}
-.pb-seg-status.manual{box-shadow:0 0 0 2px rgba(255,69,58,.95) inset;}
 
 @media (max-width:640px){
   .pb-header{flex-wrap:wrap;padding:.4rem .5rem;gap:.35rem;}
