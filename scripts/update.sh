@@ -56,7 +56,7 @@ info "Uygulama dosyaları güncelleniyor..."
 tar -C "$SRC_DIR" \
   --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
   --exclude='venv' --exclude='config' --exclude='logs' --exclude='recordings' \
-  -cf - app requirements.txt scripts 2>/dev/null | \
+  -cf - app tapo_detector requirements.txt scripts 2>/dev/null | \
   tar -C "$INSTALL_DIR" -xf -
 
 # ------------- pip deps -------------

@@ -116,7 +116,7 @@ fi
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 info "Kaynak kopyalanıyor: $SRC_DIR -> $INSTALL_DIR"
 tar -C "$SRC_DIR" --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
-  -cf - app requirements.txt scripts 2>/dev/null | tar -C "$INSTALL_DIR" -xf -
+  -cf - app tapo_detector requirements.txt scripts 2>/dev/null | tar -C "$INSTALL_DIR" -xf -
 
 # ------------- venv -------------
 info "Python venv oluşturuluyor (izole ortam)..."
