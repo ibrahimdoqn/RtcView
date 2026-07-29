@@ -76,9 +76,14 @@ def _make_transport():
 
 
 def _extract_topic(msg) -> str:
+    """Always returns a str — never None. Some topics this camera also
+    emits (TPSmartEvent, LineCross, ...) have been observed to carry a
+    None `_value_1`; letting that leak out as None crashes any later
+    `substring in raw_topic` check with a TypeError."""
     try:
         topic_obj = msg.Topic
-        return topic_obj._value_1 if hasattr(topic_obj, "_value_1") else str(topic_obj)
+        val = topic_obj._value_1 if hasattr(topic_obj, "_value_1") else str(topic_obj)
+        return val if isinstance(val, str) else ("" if val is None else str(val))
     except Exception:
         return ""
 
@@ -231,6 +236,8 @@ class CameraEventWatcher:
                 self._close_kind(kind, ts, "izleyici durduruldu")
 
     def _match_kind(self, raw_topic: str) -> Optional[str]:
+        if not raw_topic:
+            return None
         for kind, key in KIND_TOPICS.items():
             if key in raw_topic:
                 return kind
@@ -302,7 +309,14 @@ class CameraEventWatcher:
                 self._set(connected=True, subscribed=True)
                 if response and response.NotificationMessage:
                     for msg in response.NotificationMessage:
-                        self._handle_message(msg)
+                        # One malformed/unexpected message (this camera also
+                        # emits topics we don't track, e.g. TPSmartEvent,
+                        # LineCross) must never abort the rest of the batch
+                        # or trip the outer error counter — log and move on.
+                        try:
+                            self._handle_message(msg)
+                        except Exception as e:
+                            self._log_line(f"Mesaj işlenemedi (atlandı): {type(e).__name__}: {e}")
                 self._check_timeouts(time.time())
             except Exception as e:
                 err_str = str(e)
