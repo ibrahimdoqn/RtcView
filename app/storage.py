@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS snapshots (
     bytes      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_snap_cam_time ON snapshots(cam_id, taken_at);
+
+CREATE TABLE IF NOT EXISTS detections (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    cam_id     TEXT    NOT NULL,
+    kind       TEXT    NOT NULL,   -- 'motion' | 'person'
+    started_at REAL    NOT NULL,
+    ended_at   REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_det_cam_time ON detections(cam_id, started_at);
 """
 
 
@@ -363,6 +372,54 @@ class Storage:
         cols = ["id","cam_id","path","taken_at","bytes"]
         return [dict(zip(cols, r)) for r in rows]
 
+    # ---------- Detections (ONVIF motion / person intervals) ----------
+    def open_detection(self, cam_id: str, kind: str, ts: float) -> Optional[int]:
+        """Start a new detection interval; returns its row id (or None on
+        failure — callers must tolerate a missing id, it just means this
+        one edge won't be reflected on the timeline)."""
+        try:
+            with self._lock:
+                cur = self._db.execute(
+                    "INSERT INTO detections (cam_id, kind, started_at, ended_at) VALUES (?,?,?,?)",
+                    (cam_id, kind, ts, ts),
+                )
+                return cur.lastrowid
+        except Exception as e:
+            log.debug("open_detection failed: %s", e)
+            return None
+
+    def extend_detection(self, det_id: int, ts: float):
+        """Push an open interval's end forward — called on repeat 'still
+        active' events and on final close (explicit stop or timeout)."""
+        if det_id is None:
+            return
+        try:
+            with self._lock:
+                self._db.execute("UPDATE detections SET ended_at=? WHERE id=?", (ts, det_id))
+        except Exception as e:
+            log.debug("extend_detection failed: %s", e)
+
+    def list_detections(self, cam_id: Optional[str] = None,
+                        t_from: Optional[float] = None,
+                        t_to: Optional[float] = None,
+                        limit: int = 5000) -> list[dict]:
+        q = "SELECT id, cam_id, kind, started_at, ended_at FROM detections"
+        conds, args = [], []
+        if cam_id:
+            conds.append("cam_id = ?"); args.append(cam_id)
+        if t_from is not None:
+            conds.append("ended_at >= ?"); args.append(t_from)
+        if t_to is not None:
+            conds.append("started_at <= ?"); args.append(t_to)
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        q += " ORDER BY started_at ASC LIMIT ?"
+        args.append(limit)
+        with self._lock:
+            rows = self._db.execute(q, args).fetchall()
+        cols = ["id", "cam_id", "kind", "started_at", "ended_at"]
+        return [dict(zip(cols, r)) for r in rows]
+
     # ---------- Health ----------
     def health(self) -> dict:
         """Report the storage subsystem's live state across ALL roots.
@@ -584,6 +641,8 @@ class Storage:
             for sid, p, b in old:
                 if self.delete_segment(sid):
                     removed += 1; freed += int(b or 0)
+            with self._lock:
+                self._db.execute("DELETE FROM detections WHERE ended_at < ?", (cutoff,))
 
         # Per-disk quota: EACH configured storage root carries its own
         # max_gb, taken from its storage_paths entry. max_bytes=0 for a

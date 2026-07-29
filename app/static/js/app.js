@@ -882,12 +882,67 @@
   $("#btn-add-camera").addEventListener("click", () => { closeSidebar(); openEdit(null); });
   $$("[data-close]").forEach(b => b.addEventListener("click", () => {
     modal.classList.add("hidden");
+    stopMotionPoll();
   }));
   // Backdrop-click closes the modal, but a text selection that starts
   // inside an input and ends on the backdrop was incorrectly registered
   // as a backdrop-click. Only close when BOTH mousedown and mouseup
   // landed on the backdrop itself.
-  _bindBackdropClose(modal);
+  _bindBackdropClose(modal, stopMotionPoll);
+
+  // ----- Motion/person live status + debug panel -----
+  let _motionPollTimer = null;
+  function startMotionPoll(camId){
+    stopMotionPoll();
+    const tick = async () => {
+      try {
+        const all = await api.get("/api/detection/status");
+        renderMotionPanel(all[camId]);
+      } catch { /* keep quiet — this is a background poll */ }
+    };
+    tick();
+    _motionPollTimer = setInterval(tick, 2500);
+  }
+  function stopMotionPoll(){
+    if (_motionPollTimer){ clearInterval(_motionPollTimer); _motionPollTimer = null; }
+  }
+  function _fmtClock(t){ return t ? new Date(t * 1000).toLocaleTimeString("tr-TR") : "—"; }
+  function renderMotionPanel(st){
+    const mBox = $("#ind-motion"), pBox = $("#ind-person");
+    if (!st){
+      mBox.classList.remove("active"); pBox.classList.remove("active");
+      $("#motion-debug-info").textContent = "Kamerayı kaydettikten sonra canlı durum burada görünür.";
+      $("#motion-debug-log").textContent = "—";
+      return;
+    }
+    mBox.classList.toggle("active", !!st.motion_active);
+    pBox.classList.toggle("active", !!st.person_active);
+    const lines = [
+      `Bağlantı: ${st.connected ? "Bağlı" : "Bağlı değil"}`,
+      `Abonelik: ${st.subscribed ? "Aktif" : "Yok"}`,
+      st.device_info ? `Cihaz: ${st.device_info}` : null,
+      `Son hareket: ${_fmtClock(st.last_motion_at)}`,
+      `Son insan: ${_fmtClock(st.last_person_at)}`,
+      `"Durdu" kabul süresi: ${st.timeout_seconds ?? 15} sn`,
+      st.last_error ? `Son hata: ${st.last_error}` : null,
+    ].filter(Boolean);
+    $("#motion-debug-info").textContent = lines.join("\n");
+    $("#motion-debug-log").textContent = (st.log && st.log.length) ? st.log.slice(-40).join("\n") : "Henüz olay yok.";
+  }
+  $("#motion-test-btn").addEventListener("click", async () => {
+    const id = form.id.value;
+    const resEl = $("#motion-test-result");
+    if (!id){ toast("Önce kamerayı kaydedin", "err"); return; }
+    resEl.textContent = "Test ediliyor…"; resEl.style.color = "";
+    try {
+      const r = await api.post(`/api/cameras/${id}/detection/test`, {});
+      resEl.textContent = r.ok ? `✓ ${r.device}` : `✗ ${r.error}`;
+      resEl.style.color = r.ok ? "var(--ok)" : "var(--danger)";
+    } catch (e) {
+      resEl.textContent = "✗ " + e.message;
+      resEl.style.color = "var(--danger)";
+    }
+  });
 
   async function loadStreamOptions(selected){
     const sel = $("#stream-select");
@@ -967,16 +1022,23 @@
       form.record_mode.value = cam.record_mode || "off";
       form.record_audio.checked = !!cam.record_audio;
       form.retention_days_override.value = cam.retention_days_override || 0;
+      form.motion_detection_enabled.checked = !!cam.motion_detection_enabled;
+      form.person_detection_enabled.checked = !!cam.person_detection_enabled;
+      form.motion_timeout_seconds.value = cam.motion_timeout_seconds || 15;
       // Guarded so a stale HTML cache without the checkbox doesn't
       // throw and abort the rest of openEdit before the modal shows.
       renderScheduleRows(cam.record_schedule || []);
       loadStreamOptions(cam.stream || "");
+      startMotionPoll(cam.id);
     } else {
       $("#modal-title").textContent = "Kamera Ekle";
       delBtn.classList.add("hidden");
       form.record_mode.value = "off";
+      form.motion_timeout_seconds.value = 15;
       renderScheduleRows([]);
       loadStreamOptions("");
+      stopMotionPoll();
+      renderMotionPanel(null);
     }
     $("#rec-schedule-editor").classList.toggle("hidden", form.record_mode.value !== "schedule");
     modal.classList.remove("hidden");
@@ -993,12 +1055,16 @@
     body.onvif_port = parseInt(body.onvif_port || 80);
     body.retention_days_override = parseInt(body.retention_days_override || 0);
     body.record_schedule = readScheduleRows();
+    body.motion_detection_enabled = form.motion_detection_enabled.checked;
+    body.person_detection_enabled = form.person_detection_enabled.checked;
+    body.motion_timeout_seconds = parseInt(body.motion_timeout_seconds || 15);
     if (!body.stream){ toast("Bir stream seçin", "err"); return; }
     const id = body.id; delete body.id;
     try {
       if (id){ await api.put("/api/cameras/" + id, body); toast("Güncellendi", "ok"); }
       else { await api.post("/api/cameras", body); toast("Eklendi", "ok"); }
       modal.classList.add("hidden");
+      stopMotionPoll();
       await reloadCameras();
       updateRecStatus();
     } catch (err) { toast("Kaydedilemedi: " + err.message, "err"); }
@@ -1011,6 +1077,7 @@
       stopPlayer(id);
       await api.del("/api/cameras/" + id);
       modal.classList.add("hidden");
+      stopMotionPoll();
       await reloadCameras();
     } catch (err) { toast("Silinemedi: " + err.message, "err"); }
   });
@@ -1452,13 +1519,35 @@
     if (pb.date !== todayLocal() || document.hidden) return;
     try {
       const [t0, t1] = dayRangeUnix(pb.date);
-      const segs = await api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`);
+      pb.dayStart = t0; pb.dayEnd = t1;
+      const [segs] = await Promise.all([
+        api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`),
+        loadDetections(),
+      ]);
       const oldActiveId = pb.active ? pb.active.id : null;
       pb.segs = segs || [];
       if (oldActiveId) pb.active = pb.segs.find(s => s.id === oldActiveId) || pb.active;
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
       renderTimeline();
     } catch { /* keep quiet — this is a background refresh */ }
+  }
+
+  // Detection intervals (motion=orange / person=blue) for the currently
+  // selected camera + day. Only fetched for cameras that actually have
+  // ONVIF motion/person tracking turned on — no point polling cameras
+  // that never emit these events.
+  async function loadDetections(){
+    const pb = state.playback;
+    const cam = state.cameras.find(c => c.id === pb.camId);
+    const enabled = !!(cam && (cam.motion_detection_enabled || cam.person_detection_enabled));
+    const track = $("#pb-detect-track"), legend = $("#pb-detect-legend");
+    if (track) track.classList.toggle("hidden", !enabled);
+    if (legend) legend.classList.toggle("hidden", !enabled);
+    if (!enabled){ pb.detections = []; return; }
+    try {
+      const evs = await api.get(`/api/detection/events?cam=${encodeURIComponent(pb.camId)}&from=${pb.dayStart}&to=${pb.dayEnd}`);
+      pb.detections = evs || [];
+    } catch { pb.detections = []; }
   }
   function todayLocal(){
     const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
@@ -1472,7 +1561,7 @@
 
   function initPlayback(){
     state.playback = {
-      camId: null, date: null, segs: [], active: null,
+      camId: null, date: null, segs: [], detections: [], active: null,
       // New timeline model: fixed centre playhead, sliding track.
       // centerTime = the wall-clock instant currently under the playhead.
       // pxPerSec  = zoom (how many pixels represent one second).
@@ -1587,7 +1676,10 @@
     const [t0, t1] = dayRangeUnix(pb.date);
     pb.dayStart = t0; pb.dayEnd = t1;
     try {
-      const segs = await api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`);
+      const [segs] = await Promise.all([
+        api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`),
+        loadDetections(),
+      ]);
       pb.segs = segs || [];
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
       renderTimeline();
@@ -1904,7 +1996,10 @@
     if (!pb.pxPerSec) pb.pxPerSec = _defaultPxPerSec();
     $("#pb-status").textContent = "Yükleniyor…";
     try {
-      const segs = await api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`);
+      const [segs] = await Promise.all([
+        api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`),
+        loadDetections(),
+      ]);
       pb.segs = segs || [];
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
       const t = _pickInitialTime(pb);
@@ -1953,9 +2048,11 @@
     const pb = state.playback;
     const tl = $("#pb-timeline");
     const track = $("#pb-track");
+    const dtrack = $("#pb-detect-track");
     tl.classList.toggle("empty", pb.segs.length === 0);
     if (pb.centerTime == null || pb.pxPerSec == null){
       track.innerHTML = "";
+      if (dtrack) dtrack.innerHTML = "";
       updateTimeBadge();
       return;
     }
@@ -2016,6 +2113,30 @@
     });
 
     track.replaceChildren(frag);
+
+    // ----- detection track: base is gray ("no motion/person"), motion
+    // paints orange, person paints blue on top (drawn last, so where the
+    // two overlap the blue "person" bar wins visually). -----
+    if (dtrack && !dtrack.classList.contains("hidden")){
+      const dfrag = document.createDocumentFragment();
+      const addDetectBar = (s0, s1, cls) => {
+        const vs0 = Math.max(s0, viewStart), vs1 = Math.min(s1, viewEnd);
+        if (vs1 <= vs0) return;
+        const x = (vs0 - viewStart) * pb.pxPerSec;
+        const w = Math.max(1, (vs1 - vs0) * pb.pxPerSec);
+        const el = document.createElement("div");
+        el.className = "pb-detect-seg " + cls;
+        el.style.left = x + "px";
+        el.style.width = w + "px";
+        dfrag.appendChild(el);
+      };
+      (pb.detections || []).filter(d => d.kind === "motion")
+        .forEach(d => addDetectBar(d.started_at, d.ended_at, "motion"));
+      (pb.detections || []).filter(d => d.kind === "person")
+        .forEach(d => addDetectBar(d.started_at, d.ended_at, "person"));
+      dtrack.replaceChildren(dfrag);
+    }
+
     updateTimeBadge();
   }
 

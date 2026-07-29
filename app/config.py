@@ -48,6 +48,17 @@ CAMERA_RECORDING_DEFAULTS = {
     "retention_days_override": 0,  # 0 = use global
 }
 
+# Per-camera ONVIF motion/person event-detection defaults. Opt-in per
+# camera since not every camera's ONVIF stack actually emits these
+# topics. motion_timeout_seconds handles cameras (e.g. Tapo) that only
+# ever send the "started" edge and never report motion stopping: if no
+# new event for a kind arrives within this window, it's treated as over.
+CAMERA_DETECTION_DEFAULTS = {
+    "motion_detection_enabled": False,
+    "person_detection_enabled": False,
+    "motion_timeout_seconds": 15,
+}
+
 _lock = threading.Lock()
 
 
@@ -117,6 +128,8 @@ class ConfigStore:
         for cam in self._data.get("cameras", []):
             for k, v in CAMERA_RECORDING_DEFAULTS.items():
                 cam.setdefault(k, json.loads(json.dumps(v)))
+            for k, v in CAMERA_DETECTION_DEFAULTS.items():
+                cam.setdefault(k, json.loads(json.dumps(v)))
 
     def _save_locked(self):
         tmp = self.config_path.with_suffix(".tmp")
@@ -162,6 +175,8 @@ class ConfigStore:
     def add_camera(self, camera: dict):
         with _lock:
             for k, v in CAMERA_RECORDING_DEFAULTS.items():
+                camera.setdefault(k, json.loads(json.dumps(v)))
+            for k, v in CAMERA_DETECTION_DEFAULTS.items():
                 camera.setdefault(k, json.loads(json.dumps(v)))
             self._data["cameras"].append(camera)
             self._save_locked()

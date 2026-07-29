@@ -17,6 +17,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_from_
 from flask_cors import CORS
 
 from app.config import ConfigStore
+from app.detection import DetectionManager, ONVIF_AVAILABLE as ONVIF_EVENTS_AVAILABLE
 from app.go2rtc_client import Go2RtcClient
 from app.ptz import ptz_controller, ONVIF_AVAILABLE
 from app.recorder import RecordingManager, MANUAL_DEFAULT_SECONDS
@@ -47,16 +48,21 @@ def create_app(config_path: str) -> Flask:
     go2rtc = Go2RtcClient(store)
     storage = Storage(store)
     recorder = RecordingManager(store, storage)
+    detector = DetectionManager(store, storage)
 
     app.config["STORE"] = store
     app.config["GO2RTC"] = go2rtc
     app.config["STORAGE"] = storage
     app.config["RECORDER"] = recorder
+    app.config["DETECTOR"] = detector
 
     storage.start()
     recorder.start()
+    detector.start()
 
     def _shutdown():
+        try: detector.stop()
+        except Exception: pass
         try: recorder.stop()
         except Exception: pass
         try: storage.stop()
@@ -104,6 +110,7 @@ def create_app(config_path: str) -> Flask:
             "go2rtc_running": go2rtc.is_running(),
             "go2rtc": gc,
             "onvif_available": ONVIF_AVAILABLE,
+            "onvif_events_available": ONVIF_EVENTS_AVAILABLE,
             "recording_enabled": store.get_recording().get("enabled", True),
             "version": "1.1.0",
         })
@@ -167,6 +174,10 @@ def create_app(config_path: str) -> Flask:
         stream = (body.get("stream") or "").strip()
         if not name or not stream:
             return jsonify({"error": "name and stream are required"}), 400
+        try:
+            motion_timeout = max(5, min(300, int(body.get("motion_timeout_seconds", 15) or 15)))
+        except (TypeError, ValueError):
+            motion_timeout = 15
         cam = {
             "id": body.get("id") or "cam_" + uuid.uuid4().hex[:8],
             "name": name,
@@ -180,9 +191,13 @@ def create_app(config_path: str) -> Flask:
             "record_schedule": body.get("record_schedule", []),
             "record_audio": bool(body.get("record_audio", False)),
             "retention_days_override": int(body.get("retention_days_override", 0) or 0),
+            "motion_detection_enabled": bool(body.get("motion_detection_enabled", False)),
+            "person_detection_enabled": bool(body.get("person_detection_enabled", False)),
+            "motion_timeout_seconds": motion_timeout,
         }
         store.add_camera(cam)
         recorder.reload_camera(cam["id"])
+        detector.reload_camera(cam["id"])
         return jsonify(cam), 201
 
     @app.put("/api/cameras/<camera_id>")
@@ -192,11 +207,17 @@ def create_app(config_path: str) -> Flask:
         # transport is now a device-scoped localStorage preference, so drop
         # any incoming stream_mode value.
         body.pop("stream_mode", None)
+        if "motion_timeout_seconds" in body:
+            try:
+                body["motion_timeout_seconds"] = max(5, min(300, int(body["motion_timeout_seconds"] or 15)))
+            except (TypeError, ValueError):
+                return jsonify({"error": "invalid motion_timeout_seconds"}), 400
         ok = store.update_camera(camera_id, body)
         if not ok:
             return jsonify({"error": "not found"}), 404
         ptz_controller.invalidate(camera_id)
         recorder.reload_camera(camera_id)
+        detector.reload_camera(camera_id)
         return jsonify({"ok": True})
 
     @app.delete("/api/cameras/<camera_id>")
@@ -206,6 +227,7 @@ def create_app(config_path: str) -> Flask:
             return jsonify({"error": "not found"}), 404
         ptz_controller.invalidate(camera_id)
         recorder.reload_camera(camera_id)
+        detector.reload_camera(camera_id)
         return jsonify({"ok": True})
 
     @app.post("/api/cameras/reorder")
@@ -223,6 +245,29 @@ def create_app(config_path: str) -> Flask:
             if c["id"] == camera_id:
                 return c
         return None
+
+    # ---------- Motion / person detection (ONVIF) ----------
+    @app.get("/api/detection/status")
+    def api_detection_status():
+        return jsonify(detector.status())
+
+    @app.get("/api/detection/events")
+    def api_detection_events():
+        cam = request.args.get("cam")
+        try:
+            t_from = float(request.args.get("from")) if request.args.get("from") else None
+            t_to = float(request.args.get("to")) if request.args.get("to") else None
+        except ValueError:
+            return jsonify({"error": "invalid time range"}), 400
+        limit = int(request.args.get("limit", 5000))
+        return jsonify(storage.list_detections(cam_id=cam, t_from=t_from, t_to=t_to, limit=limit))
+
+    @app.post("/api/cameras/<camera_id>/detection/test")
+    def api_detection_test(camera_id):
+        cam = _find_camera(camera_id)
+        if not cam:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(detector.test_connection(cam))
 
     @app.post("/api/ptz/<camera_id>/move")
     def api_ptz_move(camera_id):
