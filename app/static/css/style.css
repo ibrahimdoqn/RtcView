@@ -992,19 +992,34 @@ kbd{
   color:rgba(255,255,255,.35);font-size:.85rem;
 }
 
-/* ----- Detection track: motion=orange, person=blue, else gray ----- */
+/* ----- Detection legend (shown above the timeline for cameras with
+   motion/person tracking on) ----- */
 .pb-detect-legend{display:flex;gap:.9rem;padding:0 .15rem .3rem;font-size:.7rem;color:var(--muted);}
 .pb-detect-legend .sw{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:.3rem;vertical-align:middle;}
 .pb-detect-legend .sw.motion{background:#f5a623;}
 .pb-detect-legend .sw.person{background:#3b82f6;}
 .pb-detect-legend .sw.none{background:#4b5160;}
-.pb-detect-track{
-  position:relative;height:10px;border-radius:5px;overflow:hidden;
-  background:#4b5160;margin-bottom:.35rem;
+
+/* ----- Detection-colored segment fill: same single bar as recordings,
+   just colored by what was detected during that slice — motion=orange,
+   person=blue, neither=gray. Used instead of .pb-seg (not alongside it)
+   for cameras with motion/person detection enabled. ----- */
+.pb-seg-fill{
+  position:absolute;top:44px;height:20px;border-radius:4px;
+  box-shadow:0 1px 3px rgba(0,0,0,.25);
 }
-.pb-detect-seg{position:absolute;top:0;bottom:0;}
-.pb-detect-seg.motion{background:#f5a623;}
-.pb-detect-seg.person{background:#3b82f6;}
+.pb-seg-fill.motion{background:linear-gradient(180deg,rgba(245,166,35,.9),rgba(224,148,26,.75));}
+.pb-seg-fill.person{background:linear-gradient(180deg,rgba(59,130,246,.9),rgba(47,111,216,.75));}
+.pb-seg-fill.none{background:linear-gradient(180deg,rgba(91,98,116,.85),rgba(69,75,90,.75));}
+/* Status overlay: locked/manual/active drawn as a ring on top of the
+   fill so segment metadata stays visible without a second bar. */
+.pb-seg-status{
+  position:absolute;top:44px;height:20px;border-radius:4px;
+  pointer-events:none;
+}
+.pb-seg-status.active{box-shadow:0 0 0 2px rgba(48,209,88,.95) inset,0 0 8px rgba(48,209,88,.5);}
+.pb-seg-status.locked{box-shadow:0 0 0 2px rgba(255,214,10,.95) inset;}
+.pb-seg-status.manual{box-shadow:0 0 0 2px rgba(255,69,58,.95) inset;}
 
 @media (max-width:640px){
   .pb-header{flex-wrap:wrap;padding:.4rem .5rem;gap:.35rem;}
