@@ -366,15 +366,16 @@ input,select{font:inherit;color:inherit;}
 .modal-body fieldset{
   border:1px solid var(--border-solid);border-radius:11px;padding:.75rem;
   display:flex;flex-direction:column;gap:.55rem;margin:0;
+  min-width:0;
 }
 .modal-body fieldset legend{color:var(--muted);font-size:.78rem;padding:0 .4rem;font-weight:500;}
 .modal-body details{color:var(--text);font-size:.85rem;}
 .modal-body details summary{cursor:pointer;padding:.3rem 0;color:var(--muted);font-weight:500;}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:.55rem;}
 /* Motion/person live indicator boxes (camera modal) */
-.detect-indicators{display:flex;gap:.6rem;}
+.detect-indicators{display:flex;gap:.6rem;min-width:0;}
 .detect-box{
-  flex:1;display:flex;align-items:center;gap:.5rem;
+  flex:1;display:flex;align-items:center;gap:.5rem;min-width:0;
   padding:.55rem .65rem;border-radius:10px;
   background:rgba(255,255,255,.04);border:1px solid var(--border-solid);
   transition:background .2s var(--ease-out),border-color .2s var(--ease-out);
@@ -391,10 +392,11 @@ input,select{font:inherit;color:inherit;}
 #ind-person.active{border-color:rgba(59,130,246,.4);background:rgba(59,130,246,.08);}
 #ind-person.active .detect-dot{background:#3b82f6;opacity:1;box-shadow:0 0 8px rgba(59,130,246,.75);}
 #ind-person.active .detect-label{color:var(--text);}
-.motion-debug-body{display:flex;flex-direction:column;gap:.55rem;margin-top:.4rem;}
+.motion-debug-body{display:flex;flex-direction:column;gap:.55rem;margin-top:.4rem;min-width:0;}
 .motion-debug-info{
   font-size:.76rem;color:var(--muted);line-height:1.55;white-space:pre-line;
   font-family:ui-monospace,"SF Mono",monospace;
+  min-width:0;overflow-wrap:break-word;
 }
 .modal-actions{display:flex;justify-content:flex-end;gap:.55rem;margin-top:.6rem;flex-wrap:wrap;}
 /* System-stats table (compact metric rows) */
@@ -428,7 +430,7 @@ input,select{font:inherit;color:inherit;}
 
 /* Log viewer */
 .log-view{
-  max-height:340px;overflow:auto;
+  max-height:340px;overflow:auto;min-width:0;
   background:var(--panel-2);border:1px solid var(--border-solid);border-radius:9px;
   padding:.55rem .7rem;margin:0;
   font-family:ui-monospace,"SF Mono",monospace;font-size:.72rem;
