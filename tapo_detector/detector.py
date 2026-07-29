@@ -283,10 +283,19 @@ class TapoMotionPersonDetector:
     def _apply_event(self, raw_topic: str, items: List[Tuple[str, str]]) -> None:
         field = None
         value_key = None
-        for key, (fname, vkey) in _TOPIC_TO_FIELD.items():
-            if key in raw_topic:
-                field, value_key = fname, vkey
-                break
+        # raw_topic can legitimately be None: _extract_topic() falls back
+        # to it for topics whose Topic._value_1 comes back empty (observed
+        # for some non-motion/person topics this camera also emits, e.g.
+        # TPSmartEvent). `key in None` raises TypeError, which — since
+        # this is called per-message with no per-message try/except in
+        # the pull loop — used to abort the ENTIRE batch and get logged
+        # as "Beklenmeyen pull hatasi" for what is actually a harmless,
+        # unrelated event.
+        if raw_topic:
+            for key, (fname, vkey) in _TOPIC_TO_FIELD.items():
+                if key in raw_topic:
+                    field, value_key = fname, vkey
+                    break
         if field is None:
             return  # izlenmeyen/bilinmeyen topic - sessizce atla
 
@@ -347,9 +356,15 @@ class TapoMotionPersonDetector:
 
                 if response and response.NotificationMessage:
                     for msg in response.NotificationMessage:
-                        raw_topic = self._extract_topic(msg)
-                        items = self._extract_simple_items(msg)
-                        self._apply_event(raw_topic, items)
+                        # One malformed/unexpected message must never
+                        # abort the rest of the batch or trip the
+                        # unexpected-error counter below.
+                        try:
+                            raw_topic = self._extract_topic(msg)
+                            items = self._extract_simple_items(msg)
+                            self._apply_event(raw_topic, items)
+                        except Exception as msg_err:
+                            logger.debug("Mesaj islenemedi (atlandi): %s", msg_err)
 
             except Exception as e:
                 err_str = str(e)
