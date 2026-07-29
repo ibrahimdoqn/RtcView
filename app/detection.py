@@ -1,131 +1,119 @@
-"""ONVIF motion / person event detection.
+"""ONVIF motion / person detection — thin integration layer around the
+vendored ``tapo_detector`` package (see ``/tapo_detector`` at the repo
+root). That package is used exactly as delivered; nothing in it is
+modified. This module only adds what a multi-camera dashboard needs on
+top of its single-camera ``TapoMotionPersonDetector``:
 
-Ports the field-tested approach from the Tapo C520WS reference script:
-edge-triggered PullPoint polling for exactly two verified topics
-(``CellMotionDetector/Motion`` and ``PeopleDetector/People``), tolerant of
-the camera's frequent benign ``RemoteDisconnected`` hiccups, with a
-resubscribe → reconnect escalation when errors pile up.
-
-On top of that, this module adds what a dashboard needs that a one-shot
-CLI script doesn't:
-  - Per-camera opt-in (``motion_detection_enabled`` / ``person_detection_enabled``).
-  - Detection intervals persisted to ``storage`` (detections table) so the
-    playback timeline can be colored after the fact.
-  - A watchdog that treats "no new event for N seconds" as "detection
-    stopped", because several cameras (Tapo firmware observed in
-    practice) only ever send the start edge and never report the stop.
-  - A small in-memory status snapshot (connection/subscription state,
-    last error, last events, a rolling log) for the camera settings UI's
-    debug panel.
+  - One instance per opted-in camera, supervised/rebuilt on config
+    change (mirrors ``RecordingManager``'s pattern).
+  - A "motion/person stopped" timeout watchdog, built by SAMPLING the
+    package's public ``get_state()`` once a second. ``tapo_detector``
+    only flips its state on an explicit camera event, so a camera that
+    never sends the "stopped" edge (Tapo, per field testing) would
+    otherwise stay "active" forever — this is layered on top rather
+    than patched into the package.
+  - Detection intervals persisted to storage for the playback timeline.
+  - A per-camera status/log snapshot for the settings UI's debug panel,
+    captured via a ``logging.Handler`` attached to ``tapo_detector``'s
+    own logger — read-only introspection, does not touch its source.
+  - A standalone "test connection" probe for the UI's test button, using
+    onvif-zeep directly (independent of the vendored package, which has
+    no synchronous one-off connectivity check in its public API).
 """
 import logging
 import threading
 import time
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 log = logging.getLogger("detection")
 
-ONVIF_IMPORT_ERROR = None
+TAPO_IMPORT_ERROR = None
 try:
-    from onvif import ONVIFCamera
-    from zeep.transports import Transport
+    from tapo_detector import TapoMotionPersonDetector
     ONVIF_AVAILABLE = True
 except Exception as _e:
     ONVIF_AVAILABLE = False
-    ONVIF_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
-    log.warning("onvif-zeep import failed: %s", ONVIF_IMPORT_ERROR)
+    TAPO_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+    log.warning("tapo_detector import failed: %s", TAPO_IMPORT_ERROR)
 
 try:
-    import lxml.etree as ET
+    # Only used for the standalone "test connection" probe below — the
+    # watcher itself never touches onvif/zeep directly, that's entirely
+    # tapo_detector's job.
+    from onvif import ONVIFCamera
+    from zeep.transports import Transport
 except Exception:
-    ET = None
+    ONVIFCamera = None
+    Transport = None
 
-EVENTS_NS = "http://www.onvif.org/ver10/events/wsdl"
-
-# topic substring -> internal kind. Only these two are field-verified
-# (see the Tapo C520WS reference doc); anything else is ignored.
-KIND_TOPICS = {
-    "motion": "CellMotionDetector/Motion",
-    "person": "PeopleDetector/People",
-}
-KIND_VALUE_KEY = {"motion": "IsMotion", "person": "IsPeople"}
-KIND_LABEL = {"motion": "Hareket", "person": "İnsan"}
-
-PULL_TIMEOUT_SEC = 10
-MAX_CONSECUTIVE_ERRORS = 15     # genuinely unexpected errors -> resubscribe
-MAX_BENIGN_ERRORS = 300         # RemoteDisconnected etc. -> much higher tolerance
-RESUBSCRIBE_WAIT_SEC = 3
-RECONNECT_WAIT_SEC = 5
+POLL_INTERVAL_SEC = 1.0     # how often we sample tapo_detector.get_state()
 EXTEND_WRITE_MIN_INTERVAL = 2.0  # throttle "still active" DB writes
 LOG_MAXLEN = 200
+KIND_LABEL = {"motion": "Hareket", "person": "İnsan"}
+_TAPO_LOGGER_NAME = "tapo_detector"
 
-# Bounded HTTP timeouts so a silently-unreachable camera (dropped packets,
-# dead IP, firewall) fails fast with a clear error instead of hanging the
-# watcher thread forever — a hung thread can't be stopped from Python and
-# would leak on every subsequent camera edit. operation_timeout must stay
-# comfortably above PULL_TIMEOUT_SEC since the camera legitimately holds
-# the PullMessages request open for up to that long.
-WSDL_TIMEOUT_SEC = 8
-OPERATION_TIMEOUT_SEC = PULL_TIMEOUT_SEC + 10
+# tapo_detector/detector.py's exact (frozen, unmodified, vendored) log
+# format strings — matched via LogRecord.msg (the raw format string, not
+# the interpolated text) to derive connected/subscribed state without
+# touching its source. Stable for as long as we ship this exact copy.
+_MSG_CONNECT_OK = "Kameraya baglanildi: %s %s (fw %s)"
+_MSG_CONNECT_FAIL = "Kameraya baglanilamadi: %s"
+_MSG_SUB_OK = "PullPoint abonelik olusturuldu."
+_MSG_SUB_FAIL = "Abonelik olusturulamadi: %s"
 
-
-def _make_transport():
-    return Transport(timeout=WSDL_TIMEOUT_SEC, operation_timeout=OPERATION_TIMEOUT_SEC)
-
-
-def _extract_topic(msg) -> str:
-    """Always returns a str — never None. Some topics this camera also
-    emits (TPSmartEvent, LineCross, ...) have been observed to carry a
-    None `_value_1`; letting that leak out as None crashes any later
-    `substring in raw_topic` check with a TypeError."""
-    try:
-        topic_obj = msg.Topic
-        val = topic_obj._value_1 if hasattr(topic_obj, "_value_1") else str(topic_obj)
-        return val if isinstance(val, str) else ("" if val is None else str(val))
-    except Exception:
-        return ""
+# Bounded HTTP timeouts for the standalone test probe only, so an
+# unreachable camera fails fast with a clear error instead of hanging
+# the request thread.
+_PROBE_WSDL_TIMEOUT_SEC = 8
+_PROBE_OPERATION_TIMEOUT_SEC = 20
 
 
-def _extract_simple_items(msg) -> list:
-    if ET is None:
-        return []
-    try:
-        msg_content = msg.Message._value_1
-        if not hasattr(msg_content, "iter"):
-            return []
-        items = []
-        for el in msg_content.iter():
-            tag = el.tag
-            localname = ET.QName(tag).localname if isinstance(tag, str) else str(tag)
-            if localname == "SimpleItem":
-                items.append((el.get("Name"), el.get("Value")))
-        return items
-    except Exception:
-        return []
+class _PerCameraLogCapture(logging.Handler):
+    """Routes tapo_detector's log records to the owning watcher's rolling
+    log. tapo_detector logs every camera through one shared module-level
+    logger AND one shared thread name ("tapo-detector"), so the only way
+    to tell camera A's lines from camera B's — without editing the
+    vendored package — is by the OS thread id LogRecord already carries
+    automatically."""
+
+    def __init__(self, owner: "CameraEventWatcher"):
+        super().__init__(level=logging.INFO)
+        self._owner = owner
+
+    def emit(self, record: logging.LogRecord):
+        if record.thread != self._owner.thread_ident:
+            return
+        try:
+            self._owner._on_log_record(record)
+        except Exception:
+            pass
 
 
 class CameraEventWatcher:
-    """Owns one ONVIF PullPoint subscription + background thread for a
-    single camera. Built fresh (by DetectionManager) whenever the
-    camera's config changes — it never re-reads config mid-flight."""
+    """Wraps one ``TapoMotionPersonDetector`` instance for a single
+    camera. Built fresh (by DetectionManager) whenever the camera's
+    config changes — it never re-reads config mid-flight."""
 
     def __init__(self, cam: dict, storage):
         self.cam = cam
         self.cam_id = cam["id"]
         self.storage = storage
         self.enabled_kinds = {
-            k for k in ("motion", "person")
-            if cam.get(f"{k}_detection_enabled")
+            k for k in ("motion", "person") if cam.get(f"{k}_detection_enabled")
         }
         try:
             self.timeout_seconds = max(3, int(cam.get("motion_timeout_seconds", 15) or 15))
         except (TypeError, ValueError):
             self.timeout_seconds = 15
 
+        self._det: Optional["TapoMotionPersonDetector"] = None
+        self.thread_ident: Optional[int] = None
+        self._log_handler: Optional[_PerCameraLogCapture] = None
+
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._poll_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._log: deque = deque(maxlen=LOG_MAXLEN)
         self._open_ids = {"motion": None, "person": None}
@@ -134,10 +122,8 @@ class CameraEventWatcher:
         self._state = {
             "connected": False,
             "subscribed": False,
-            "device_info": "",
             "last_error": "",
             "last_error_at": None,
-            "consecutive_errors": 0,
             "started_at": time.time(),
             "motion_active": False,
             "person_active": False,
@@ -148,19 +134,53 @@ class CameraEventWatcher:
 
     # ---------- lifecycle ----------
     def start(self):
+        if not ONVIF_AVAILABLE:
+            self._set(last_error=f"tapo_detector kurulu değil ({TAPO_IMPORT_ERROR})")
+            self._log_line(f"tapo_detector kurulu değil: {TAPO_IMPORT_ERROR}")
+            return
+        if not self.enabled_kinds:
+            return
+        try:
+            self._det = TapoMotionPersonDetector(
+                ip=self.cam.get("onvif_host") or self.cam.get("host"),
+                port=int(self.cam.get("onvif_port", 80) or 80),
+                username=self.cam.get("onvif_user") or "",
+                password=self.cam.get("onvif_pass") or "",
+                pull_timeout=10.0,
+            )
+            self._det.start()
+        except Exception as e:
+            self._set(last_error=f"{type(e).__name__}: {e}", last_error_at=time.time())
+            self._log_line(f"tapo_detector başlatılamadı: {e}")
+            self._det = None
+            return
+        # Read-only introspection of tapo_detector's own thread object —
+        # its ident is unique per instance even though the *name* isn't,
+        # and CPython guarantees .ident is set by the time start() returns.
+        self.thread_ident = self._det._thread.ident if self._det._thread else None
+        self._log_handler = _PerCameraLogCapture(self)
+        logging.getLogger(_TAPO_LOGGER_NAME).addHandler(self._log_handler)
         self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name=f"onvif-evt-{self.cam_id}")
-        self._thread.start()
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, daemon=True, name=f"detect-poll-{self.cam_id}")
+        self._poll_thread.start()
 
     def stop(self):
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=6)
+        if self._poll_thread:
+            self._poll_thread.join(timeout=6)
+        if self._log_handler:
+            logging.getLogger(_TAPO_LOGGER_NAME).removeHandler(self._log_handler)
+            self._log_handler = None
+        if self._det:
+            try:
+                self._det.stop(timeout=6)
+            except Exception as e:
+                log.warning("tapo_detector stop failed for %s: %s", self.cam_id, e)
         self._close_all_open(time.time())
 
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return self._poll_thread is not None and self._poll_thread.is_alive()
 
     # ---------- status / debug ----------
     def status(self) -> dict:
@@ -178,13 +198,30 @@ class CameraEventWatcher:
         ts = datetime.now().strftime("%H:%M:%S")
         with self._lock:
             self._log.append(f"[{ts}] {msg}")
-        log.info("[%s] %s", self.cam_id, msg)
 
     def _set(self, **kwargs):
         with self._lock:
             self._state.update(kwargs)
 
-    # ---------- detection state machine ----------
+    def _on_log_record(self, record: logging.LogRecord):
+        """Mirror tapo_detector's own log lines into our per-camera log,
+        and derive connected/subscribed flags from its (frozen, unchanged)
+        format strings — see the module docstring for why this is safe."""
+        self._log_line(record.getMessage())
+        if record.msg == _MSG_CONNECT_OK:
+            self._set(connected=True, last_error="")
+        elif record.msg == _MSG_CONNECT_FAIL:
+            self._set(connected=False, subscribed=False,
+                      last_error=record.getMessage(), last_error_at=time.time())
+        elif record.msg == _MSG_SUB_OK:
+            self._set(subscribed=True)
+        elif record.msg == _MSG_SUB_FAIL:
+            self._set(subscribed=False,
+                      last_error=record.getMessage(), last_error_at=time.time())
+        elif record.levelno >= logging.WARNING:
+            self._set(last_error=record.getMessage(), last_error_at=time.time())
+
+    # ---------- detection state machine (sampling-based) ----------
     def _mark_active(self, kind: str, ts: float):
         with self._lock:
             was_active = self._state[f"{kind}_active"]
@@ -217,9 +254,6 @@ class CameraEventWatcher:
                 self.storage.extend_detection(det_id, end_ts)
             self._log_line(f"{KIND_LABEL[kind]} durdu ({reason})")
 
-    def _mark_inactive(self, kind: str, ts: float):
-        self._close_kind(kind, ts, "kamera bildirdi")
-
     def _check_timeouts(self, now: float):
         for kind in self.enabled_kinds:
             with self._lock:
@@ -235,138 +269,23 @@ class CameraEventWatcher:
             if active:
                 self._close_kind(kind, ts, "izleyici durduruldu")
 
-    def _match_kind(self, raw_topic: str) -> Optional[str]:
-        if not raw_topic:
-            return None
-        for kind, key in KIND_TOPICS.items():
-            if key in raw_topic:
-                return kind
-        return None
-
-    def _handle_message(self, msg):
-        kind = self._match_kind(_extract_topic(msg))
-        if kind is None or kind not in self.enabled_kinds:
-            return
-        items = dict(_extract_simple_items(msg))
-        val = items.get(KIND_VALUE_KEY[kind])
-        if val is None:
-            return
-        ts = time.time()
-        if str(val).strip().lower() == "true":
-            self._mark_active(kind, ts)
-        else:
-            self._mark_inactive(kind, ts)
-
-    # ---------- ONVIF plumbing ----------
-    def _connect(self):
-        try:
-            host = self.cam.get("onvif_host") or self.cam.get("host")
-            port = int(self.cam.get("onvif_port", 80) or 80)
-            user = self.cam.get("onvif_user") or ""
-            pw = self.cam.get("onvif_pass") or ""
-            onvif_cam = ONVIFCamera(host, port, user, pw, transport=_make_transport())
-            info = onvif_cam.create_devicemgmt_service().GetDeviceInformation()
-            device_info = f"{info.Manufacturer} {info.Model} (fw {info.FirmwareVersion})"
-            self._set(connected=True, device_info=device_info, last_error="")
-            self._log_line(f"Bağlandı: {device_info}")
-            return onvif_cam
-        except Exception as e:
-            err = f"{type(e).__name__}: {e}"
-            self._set(connected=False, subscribed=False, last_error=err, last_error_at=time.time())
-            self._log_line(f"Bağlantı hatası: {err}")
-            return None
-
-    def _create_pullpoint(self, onvif_cam):
-        try:
-            events_service = onvif_cam.create_events_service()
-            events_service.CreatePullPointSubscription()
-            pullpoint = onvif_cam.create_pullpoint_service()
-            pull_messages_type = pullpoint.zeep_client.get_element(f"{{{EVENTS_NS}}}PullMessages")
-            self._set(subscribed=True)
-            return pullpoint, pull_messages_type
-        except Exception as e:
-            err = f"{type(e).__name__}: {e}"
-            self._set(subscribed=False, last_error=err, last_error_at=time.time())
-            self._log_line(f"Abonelik hatası: {err}")
-            return None, None
-
-    def _listen_loop(self, onvif_cam) -> bool:
-        """Returns True if the watcher was stopped cleanly (stop event),
-        False if the caller should reconnect from scratch."""
-        pullpoint, pull_messages_type = self._create_pullpoint(onvif_cam)
-        if pullpoint is None:
-            return False
-        self._log_line("Abonelik oluşturuldu, dinleniyor...")
-        consecutive_errors = 0
-        consecutive_benign = 0
-        while not self._stop.is_set():
+    # ---------- polling loop ----------
+    def _poll_loop(self):
+        while not self._stop.wait(POLL_INTERVAL_SEC):
             try:
-                req = pull_messages_type(
-                    Timeout=timedelta(seconds=PULL_TIMEOUT_SEC), MessageLimit=50)
-                response = pullpoint.PullMessages(req)
-                consecutive_errors = 0
-                consecutive_benign = 0
-                self._set(connected=True, subscribed=True)
-                if response and response.NotificationMessage:
-                    for msg in response.NotificationMessage:
-                        # One malformed/unexpected message (this camera also
-                        # emits topics we don't track, e.g. TPSmartEvent,
-                        # LineCross) must never abort the rest of the batch
-                        # or trip the outer error counter — log and move on.
-                        try:
-                            self._handle_message(msg)
-                        except Exception as e:
-                            self._log_line(f"Mesaj işlenemedi (atlandı): {type(e).__name__}: {e}")
-                self._check_timeouts(time.time())
+                self._tick()
             except Exception as e:
-                err_str = str(e)
-                now = time.time()
-                # This camera (Tapo firmware, per field testing) drops the
-                # PullMessages connection frequently and harmlessly — do
-                # NOT count these against the real-error threshold or the
-                # watcher would resubscribe forever and never see events.
-                if "RemoteDisconnected" in err_str or "Connection aborted" in err_str:
-                    consecutive_benign += 1
-                    self._check_timeouts(now)
-                    if consecutive_benign >= MAX_BENIGN_ERRORS:
-                        self._log_line(
-                            f"{consecutive_benign} art arda bağlantı hatası, abonelik yenileniyor")
-                        self._stop.wait(RESUBSCRIBE_WAIT_SEC)
-                        return False
-                    self._stop.wait(0.3)
-                    continue
-                consecutive_benign = 0
-                consecutive_errors += 1
-                self._set(last_error=f"{type(e).__name__}: {e}", last_error_at=now,
-                          consecutive_errors=consecutive_errors)
-                self._log_line(f"Pull hatası: {e}")
-                self._check_timeouts(now)
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    self._log_line(
-                        f"{consecutive_errors} art arda beklenmeyen hata, abonelik yenileniyor")
-                    self._stop.wait(RESUBSCRIBE_WAIT_SEC)
-                    return False
-                self._stop.wait(0.3)
-        return True
+                log.exception("detect poll tick failed for %s: %s", self.cam_id, e)
 
-    def _run(self):
-        if not ONVIF_AVAILABLE:
-            self._set(last_error=f"onvif-zeep kurulu değil ({ONVIF_IMPORT_ERROR})")
-            self._log_line(f"onvif-zeep kurulu değil: {ONVIF_IMPORT_ERROR}")
+    def _tick(self):
+        if self._det is None:
             return
-        if not self.enabled_kinds:
-            return
-        while not self._stop.is_set():
-            onvif_cam = self._connect()
-            if onvif_cam is None:
-                if self._stop.wait(RECONNECT_WAIT_SEC):
-                    break
-                continue
-            clean = self._listen_loop(onvif_cam)
-            if clean:
-                break
-        self._close_all_open(time.time())
-        self._set(connected=False, subscribed=False)
+        state = self._det.get_state()
+        now = time.time()
+        for kind in self.enabled_kinds:
+            if state.get(kind):
+                self._mark_active(kind, now)
+        self._check_timeouts(now)
 
 
 class DetectionManager:
@@ -462,7 +381,7 @@ class DetectionManager:
                     "ONVIF host tanımlı değil" if not c.get("onvif_host") else "")
                 out[c["id"]] = {
                     "cam_id": c["id"], "enabled": enabled, "running": False,
-                    "connected": False, "subscribed": False, "device_info": "",
+                    "connected": False, "subscribed": False,
                     "motion_active": False, "person_active": False,
                     "last_motion_at": None, "last_person_at": None, "last_event_at": None,
                     "last_error": reason, "last_error_at": None,
@@ -472,17 +391,24 @@ class DetectionManager:
         return out
 
     def test_connection(self, cam: dict) -> dict:
-        """Synchronous one-off connectivity probe for a UI 'Test' button —
-        deliberately independent of any running watcher/subscription."""
-        if not ONVIF_AVAILABLE:
-            return {"ok": False, "error": f"onvif-zeep kurulu değil ({ONVIF_IMPORT_ERROR})"}
+        """Synchronous one-off connectivity probe for a UI 'Test' button.
+        Independent of tapo_detector (which has no public one-off check)
+        — uses onvif-zeep directly, exactly like the watcher underneath
+        tapo_detector does, with a bounded timeout so an unreachable
+        camera fails fast."""
+        if ONVIFCamera is None:
+            return {"ok": False, "error": "onvif-zeep kurulu değil"}
         host = cam.get("onvif_host")
         if not host:
             return {"ok": False, "error": "ONVIF host tanımlı değil"}
         try:
             port = int(cam.get("onvif_port", 80) or 80)
+            transport = None
+            if Transport is not None:
+                transport = Transport(timeout=_PROBE_WSDL_TIMEOUT_SEC,
+                                      operation_timeout=_PROBE_OPERATION_TIMEOUT_SEC)
             onvif_cam = ONVIFCamera(host, port, cam.get("onvif_user", ""), cam.get("onvif_pass", ""),
-                                     transport=_make_transport())
+                                     transport=transport)
             info = onvif_cam.create_devicemgmt_service().GetDeviceInformation()
             return {"ok": True, "device": f"{info.Manufacturer} {info.Model} (fw {info.FirmwareVersion})"}
         except Exception as e:
