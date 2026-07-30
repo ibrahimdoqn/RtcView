@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Excludes the saved server address from backup/restore — it's a local
+  network address (Tailscale IP or LAN hostname) that's meaningless to
+  auto-restore onto a different device or network, and trivial to re-enter.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="rtcview_prefs.xml" />
+</full-backup-content>

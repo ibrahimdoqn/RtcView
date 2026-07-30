@@ -7,3 +7,17 @@ venv/
 .env
 logs/
 *.log
+
+# Android build artifacts / local IDE state — the android/ source tree
+# itself is tracked, none of this generated output is.
+android/.gradle/
+android/.idea/
+android/build/
+android/app/build/
+android/local.properties
+android/gradle/wrapper/gradle-wrapper.jar
+android/gradlew
+android/gradlew.bat
+android/*.iml
+android/app/*.iml
+android/.kotlin/

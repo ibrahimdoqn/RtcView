@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.RtcView" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/rtcview_accent</item>
+        <item name="colorPrimaryDark">@color/rtcview_bg</item>
+        <item name="colorAccent">@color/rtcview_accent</item>
+        <item name="android:windowBackground">@color/rtcview_bg</item>
+        <item name="android:statusBarColor">@color/rtcview_bg</item>
+        <item name="android:navigationBarColor">@color/rtcview_bg</item>
+    </style>
+</resources>

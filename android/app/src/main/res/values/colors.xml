@@ -1,0 +1,7 @@
+<resources>
+    <color name="rtcview_bg">#000000</color>
+    <color name="rtcview_panel">#17191F</color>
+    <color name="rtcview_accent">#0A84FF</color>
+    <color name="rtcview_text">#F2F4F7</color>
+    <color name="rtcview_muted">#A4ADBC</color>
+</resources>

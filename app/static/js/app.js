@@ -85,6 +85,7 @@
       updateNotifications();
       registerSW();
       wireKeyboard();
+      handleDeepLink();
     } catch (e) { toast("Yapılandırma yüklenemedi: " + e.message, "err"); }
     // Reduced polling — see optimisation plan Stage 1
     setInterval(updateStatus, 10000);
@@ -96,6 +97,42 @@
     document.documentElement.dataset.theme = state.settings.theme || "dark";
     const cols = Math.max(1, Math.min(8, parseInt(state.settings.grid_columns || 3)));
     $("#grid").style.setProperty("--cols", cols);
+  }
+
+  // ?open_cam=<id>&open_at=<unix_ts> jumps straight to that camera/moment
+  // in playback on load — used by the Android companion app's notification
+  // tap (it can't call into page JS directly, so it just navigates here
+  // with these params instead). Harmless/no-op for a normal browser visit.
+  //
+  // Persisted through sessionStorage, not just read from the URL: on a
+  // completely fresh install (no service worker registered yet — exactly
+  // the Android WebView's very first launch), registerSW()'s
+  // controllerchange handler reloads the page moments after this runs,
+  // which would otherwise silently drop the deep link the instant the
+  // reload wipes the in-memory JS state — sessionStorage survives that
+  // reload within the same tab/session, the URL params don't.
+  function handleDeepLink(){
+    const params = new URLSearchParams(location.search);
+    const camId = params.get("open_cam");
+    const atTime = parseFloat(params.get("open_at"));
+    if (camId && isFinite(atTime)){
+      // Saved but NOT consumed/removed yet — if a reload interrupts this
+      // very run before it visibly takes effect, the params are already
+      // stripped from the URL, so only the *next* run (the one below,
+      // with no URL params) can pick this back up. Only that run should
+      // ever clear it.
+      try { sessionStorage.setItem("rtcview.deeplink", JSON.stringify({ camId, atTime })); } catch {}
+      history.replaceState(null, "", location.pathname);
+      openPlayback({ camId, atTime });
+      return;
+    }
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("rtcview.deeplink") || "null");
+      if (saved && saved.camId && isFinite(saved.atTime)){
+        sessionStorage.removeItem("rtcview.deeplink");
+        openPlayback({ camId: saved.camId, atTime: saved.atTime });
+      }
+    } catch {}
   }
 
   async function updateStatus(){
