@@ -2057,6 +2057,7 @@
       // Timeline needs to re-project after the timeline width changes
       if (state.playback && !$("#playback").classList.contains("hidden")){
         renderTimeline();
+        _ensureRangeLoaded();
       }
     }, 120);
   });
@@ -2102,15 +2103,19 @@
   async function refreshDaySilent(){
     const pb = state.playback;
     if (!pb || $("#playback").classList.contains("hidden")) return;
-    // Auto-refresh only makes sense on TODAY (past days don't change).
-    // Also cheap: if the tab is hidden, don't burn API calls.
-    if (pb.date !== todayLocal() || document.hidden) return;
+    // Auto-refresh only makes sense while TODAY is part of what's loaded
+    // (past-only ranges don't change). Also cheap: if the tab is hidden,
+    // don't burn API calls.
+    const [todayStart] = dayRangeUnix(todayLocal());
+    if (pb.loadedTo < todayStart || document.hidden) return;
     try {
-      const [t0, t1] = dayRangeUnix(pb.date);
-      pb.dayStart = t0; pb.dayEnd = t1;
+      // Re-fetch the whole currently-loaded range (not just "today") so an
+      // extension into yesterday/tomorrow made via scrolling isn't dropped
+      // by this periodic refresh.
+      const from = pb.loadedFrom, to = pb.loadedTo;
       const [segs] = await Promise.all([
-        api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`),
-        loadDetections(),
+        api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${from}&to=${to}`),
+        loadDetections(from, to),
       ]);
       const oldActiveId = pb.active ? pb.active.id : null;
       pb.segs = segs || [];
@@ -2126,7 +2131,7 @@
   // that never emit these events. These are painted directly onto the
   // recording-segment bar itself (see renderTimeline) rather than a
   // separate strip, so there's exactly one bar in the timeline.
-  async function loadDetections(){
+  async function loadDetections(from, to){
     const pb = state.playback;
     const cam = state.cameras.find(c => c.id === pb.camId);
     const enabled = !!(cam && (cam.motion_detection_enabled || cam.person_detection_enabled));
@@ -2135,7 +2140,7 @@
     if (legend) legend.classList.toggle("hidden", !enabled);
     if (!enabled){ pb.detections = []; return; }
     try {
-      const evs = await api.get(`/api/detection/events?cam=${encodeURIComponent(pb.camId)}&from=${pb.dayStart}&to=${pb.dayEnd}`);
+      const evs = await api.get(`/api/detection/events?cam=${encodeURIComponent(pb.camId)}&from=${from}&to=${to}`);
       pb.detections = evs || [];
     } catch { pb.detections = []; }
   }
@@ -2153,6 +2158,9 @@
     state.playback = {
       camId: null, date: null, segs: [], detections: [], detectionEnabled: false, active: null,
       pendingSeek: null,
+      // Range actually covered by segs/detections right now — grown
+      // incrementally by _ensureRangeLoaded as the view nears its edge.
+      loadedFrom: null, loadedTo: null,
       // New timeline model: fixed centre playhead, sliding track.
       // centerTime = the wall-clock instant currently under the playhead.
       // pxPerSec  = zoom (how many pixels represent one second).
@@ -2259,23 +2267,61 @@
     const d = new Date(t * 1000);
     return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
   }
-  let _dayReloadInFlight = false;
-  async function _reloadDayKeepingCenter(){
+  // Merge two id-keyed arrays (segments or detections) without dropping
+  // anything already held — this is what lets the timeline grow across a
+  // day boundary instead of the old model, which threw away everything
+  // outside the newly-selected calendar day on every crossing.
+  function _mergeById(existing, incoming){
+    if (!incoming || !incoming.length) return existing;
+    const map = new Map(existing.map(x => [x.id, x]));
+    for (const x of incoming) map.set(x.id, x);
+    return Array.from(map.values()).sort((a, b) => a.started_at - b.started_at);
+  }
+
+  // How far ahead of the loaded edge to start topping up — big enough that
+  // normal drag/zoom speeds never outrun the fetch and hit a visible gap.
+  const TIMELINE_EXTEND_MARGIN_SEC = 3 * 3600;
+  let _extendRangeInFlight = false;
+  // Grows pb.segs/pb.detections to cover the current view whenever it's
+  // getting close to the edge of what's already loaded, merging in newly
+  // fetched data (never replacing) — this is what makes drag-scrolling,
+  // zooming out, and paging to the previous/next day feel like one
+  // continuous timeline instead of hard-cutting to a blank day at the
+  // boundary.
+  async function _ensureRangeLoaded(){
     const pb = state.playback;
-    if (_dayReloadInFlight) return;
-    _dayReloadInFlight = true;
-    const [t0, t1] = dayRangeUnix(pb.date);
-    pb.dayStart = t0; pb.dayEnd = t1;
+    if (!pb || !pb.camId || pb.centerTime == null || pb.pxPerSec == null) return;
+    if (pb.loadedFrom == null || pb.loadedTo == null) return;
+    if (_extendRangeInFlight) return;
+    _extendRangeInFlight = true;
     try {
-      const [segs] = await Promise.all([
-        api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`),
-        loadDetections(),
-      ]);
-      pb.segs = segs || [];
+      for (let i = 0; i < 4; i++){ // hard cap — never loop forever
+        const tlWidth = $("#pb-timeline").getBoundingClientRect().width || 320;
+        const halfSpan = tlWidth / 2 / pb.pxPerSec;
+        const viewStart = pb.centerTime - halfSpan;
+        const viewEnd = pb.centerTime + halfSpan;
+        const needFrom = viewStart - TIMELINE_EXTEND_MARGIN_SEC < pb.loadedFrom;
+        const needTo = viewEnd + TIMELINE_EXTEND_MARGIN_SEC > pb.loadedTo;
+        if (!needFrom && !needTo) break;
+        const camId = pb.camId;
+        const from = needFrom ? pb.loadedFrom - 86400 : pb.loadedFrom;
+        const to = needTo ? pb.loadedTo + 86400 : pb.loadedTo;
+        const [segs, evs] = await Promise.all([
+          api.get(`/api/recordings?cam=${encodeURIComponent(camId)}&from=${from}&to=${to}`),
+          pb.detectionEnabled
+            ? api.get(`/api/detection/events?cam=${encodeURIComponent(camId)}&from=${from}&to=${to}`)
+            : Promise.resolve([]),
+        ]);
+        if (camId !== pb.camId) return; // camera switched mid-flight — discard
+        pb.segs = _mergeById(pb.segs, segs);
+        if (pb.detectionEnabled) pb.detections = _mergeById(pb.detections, evs);
+        pb.loadedFrom = Math.min(pb.loadedFrom, from);
+        pb.loadedTo = Math.max(pb.loadedTo, to);
+        renderTimeline();
+      }
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
-      renderTimeline();
-    } catch { /* keep quiet */ }
-    finally { _dayReloadInFlight = false; }
+    } catch { /* keep quiet — background top-up */ }
+    finally { _extendRangeInFlight = false; }
   }
 
   function setCenterTime(t, { fromScrub = false } = {}){
@@ -2283,16 +2329,17 @@
     if (!pb) return;
     pb.centerTime = t;
     if (fromScrub) pb.scrubbing = true;
-    // Detect crossing day boundary — auto-load that day's segments so the
-    // user can freely scroll into previous / next days without touching
-    // the date picker.
+    // Keep the date picker in sync with whichever day the playhead sits on.
+    // Loading is handled separately by _ensureRangeLoaded (below) which
+    // tops up pb.segs/pb.detections incrementally, so this no longer
+    // replaces the loaded data on every crossing.
     const newDate = _dateStrFromUnix(t);
     if (newDate !== pb.date){
       pb.date = newDate;
       const dateInput = $("#pb-date"); if (dateInput) dateInput.value = newDate;
-      _reloadDayKeepingCenter();
     }
     renderTimeline();
+    _ensureRangeLoaded();
   }
 
   function wireTimeline(){
@@ -2354,6 +2401,7 @@
       const factor = e.deltaY < 0 ? 1.25 : 1/1.25;
       pb.pxPerSec = _clampPxPerSec(pb.pxPerSec * factor);
       renderTimeline();
+      _ensureRangeLoaded();
     }, { passive: false });
 
     // Touch: single-finger drag, two-finger pinch to zoom
@@ -2381,6 +2429,7 @@
         const dist = Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
         state.playback.pxPerSec = _clampPxPerSec(touch.startPxPerSec * (dist / touch.startDist));
         renderTimeline();
+        _ensureRangeLoaded();
         e.preventDefault();
       }
     }, { passive: false });
@@ -2393,6 +2442,7 @@
     tl.addEventListener("dblclick", () => {
       state.playback.pxPerSec = _defaultPxPerSec();
       renderTimeline();
+      _ensureRangeLoaded();
     });
   }
 
@@ -2584,12 +2634,17 @@
     const pb = state.playback;
     const [t0, t1] = dayRangeUnix(pb.date);
     pb.dayStart = t0; pb.dayEnd = t1;
+    // loadedFrom/loadedTo tracks the actual range currently held in
+    // pb.segs/pb.detections (which _ensureRangeLoaded grows incrementally
+    // as the view nears its edge) — distinct from dayStart/dayEnd, which
+    // stays "the calendar day the date picker shows".
+    pb.loadedFrom = t0; pb.loadedTo = t1;
     if (!pb.pxPerSec) pb.pxPerSec = _defaultPxPerSec();
     $("#pb-status").textContent = "Yükleniyor…";
     try {
       const [segs] = await Promise.all([
         api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`),
-        loadDetections(),
+        loadDetections(t0, t1),
       ]);
       pb.segs = segs || [];
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
@@ -2607,6 +2662,11 @@
         updateActiveButtons();
         renderTimeline();
       }
+      // The initial view (e.g. a deep-link far from centerTime, or zoom
+      // retained from a previous session) may already need more than this
+      // one calendar day — top it up right away instead of waiting for a
+      // drag/zoom to trigger it.
+      _ensureRangeLoaded();
     } catch (e) {
       $("#pb-status").textContent = "Hata";
       toast("Kayıtlar yüklenemedi: " + e.message, "err");
@@ -2927,9 +2987,9 @@
     if (k === "4"){ v.playbackRate = 4;   $("#pb-speed").value = "4";   return true; }
     if (k === "5"){ v.playbackRate = 8;   $("#pb-speed").value = "8";   return true; }
     if (k === "6"){ v.playbackRate = 16;  $("#pb-speed").value = "16";  return true; }
-    if (k === "+" || k === "="){ state.playback.pxPerSec = _clampPxPerSec(state.playback.pxPerSec * 1.4); renderTimeline(); return true; }
-    if (k === "-" || k === "_"){ state.playback.pxPerSec = _clampPxPerSec(state.playback.pxPerSec / 1.4); renderTimeline(); return true; }
-    if (k === "0"){ state.playback.pxPerSec = _defaultPxPerSec(); renderTimeline(); return true; }
+    if (k === "+" || k === "="){ state.playback.pxPerSec = _clampPxPerSec(state.playback.pxPerSec * 1.4); renderTimeline(); _ensureRangeLoaded(); return true; }
+    if (k === "-" || k === "_"){ state.playback.pxPerSec = _clampPxPerSec(state.playback.pxPerSec / 1.4); renderTimeline(); _ensureRangeLoaded(); return true; }
+    if (k === "0"){ state.playback.pxPerSec = _defaultPxPerSec(); renderTimeline(); _ensureRangeLoaded(); return true; }
     return false;
   }
 
