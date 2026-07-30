@@ -374,7 +374,8 @@
             <li><kbd>←</kbd> / <kbd>→</kbd> ±10 sn</li>
             <li><kbd>,</kbd> / <kbd>.</kbd> kare-kare (duraklatılmışken)</li>
             <li><kbd>1</kbd> 0.5×, <kbd>2</kbd> 1×, <kbd>3</kbd> 2×, <kbd>4</kbd> 4×, <kbd>5</kbd> 8×, <kbd>6</kbd> 16×, <kbd>7</kbd> 32×</li>
-            <li><kbd>Esc</kbd> playback'ten çık</li>
+            <li><kbd>E</kbd> algılanan olaylar</li>
+            <li><kbd>Esc</kbd> olay listesini / playback'i kapat</li>
           </ul>
         </details>
       </div>
@@ -401,6 +402,17 @@
       <video id="pb-video" playsinline preload="metadata"></video>
       <div id="pb-zoom-info" class="pb-zoom-info" style="display:none">1.0×</div>
       <div id="pb-empty" class="pb-empty hidden">Bu gün için kayıt yok.</div>
+      <!-- Algılanan olaylar çekmecesi: masaüstünde sağdan, mobilde alttan
+           açılır. Sahnenin üstünde durur, böylece açıkken de zaman çizelgesi
+           ve oynatma kontrolleri kullanılabilir kalır. -->
+      <div id="pb-events-backdrop" class="pb-events-backdrop"></div>
+      <aside id="pb-events" class="pb-events" role="dialog" aria-label="Algılanan olaylar" aria-hidden="true">
+        <div class="pb-events-head">
+          <span class="pb-events-title">Algılanan Olaylar <span id="pb-events-count">(0)</span></span>
+          <button type="button" id="pb-events-close" class="icon-btn" title="Kapat">✕</button>
+        </div>
+        <div id="pb-events-list" class="pb-events-list"></div>
+      </aside>
     </div>
     <div class="pb-controls">
       <button id="pb-play" class="pb-btn" title="Oynat/Duraklat (Space)" aria-label="Oynat/Duraklat">
@@ -430,6 +442,16 @@
         <option value="32">32×</option>
       </select>
       <span id="pb-time" class="pb-time">—</span>
+      <!-- Olay çekmecesini açar. Kasten izlenen sürenin hemen yanında:
+           panel "şu an baktığım an"dan doğuyormuş gibi hissettirsin. -->
+      <button type="button" id="pb-events-btn" class="pb-btn pb-events-btn hidden"
+              title="Algılanan olaylar" aria-label="Algılanan olaylar" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 6h10M4 12h16M4 18h7"/>
+        </svg>
+        <span id="pb-events-badge" class="pb-events-badge">0</span>
+      </button>
       <div class="pb-spacer"></div>
       <button id="pb-snap" class="pb-btn" title="Kare kaydet" aria-label="Kare kaydet">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>

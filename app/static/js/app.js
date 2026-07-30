@@ -2257,6 +2257,7 @@
       state.playback.active = null;
       if (state.playback._resetVideoZoom) state.playback._resetVideoZoom();
     }
+    closePbEvents();
     $("#playback").classList.add("hidden");
   }
 
@@ -2281,6 +2282,7 @@
       pb.segs = segs || [];
       if (oldActiveId) pb.active = pb.segs.find(s => s.id === oldActiveId) || pb.active;
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
+      renderPbEvents();
       renderTimeline();
     } catch { /* keep quiet — this is a background refresh */ }
   }
@@ -2304,6 +2306,130 @@
       pb.detections = evs || [];
     } catch { pb.detections = []; }
   }
+
+  // ---------- Detected-events drawer ----------
+  // pb.detections holds raw motion/person intervals, and those routinely
+  // overlap — a person walking through trips the motion detector too, so
+  // the same moment arrives as two rows. Overlapping (or near-adjacent)
+  // intervals are merged into one event carrying the union of kinds, so
+  // the drawer lists things that HAPPENED rather than sensor readings.
+  const EVENT_MERGE_GAP_SEC = 3;
+
+  function _buildEvents(dets){
+    const sorted = [...(dets || [])].sort((a, b) => a.started_at - b.started_at);
+    const out = [];
+    for (const d of sorted){
+      const last = out[out.length - 1];
+      if (last && d.started_at <= last.end + EVENT_MERGE_GAP_SEC){
+        last.end = Math.max(last.end, d.ended_at);
+        last.kinds.add(d.kind);
+      } else {
+        out.push({ start: d.started_at, end: d.ended_at, kinds: new Set([d.kind]) });
+      }
+    }
+    return out.reverse();          // newest first
+  }
+
+  function renderPbEvents(){
+    const pb = state.playback;
+    const btn = $("#pb-events-btn"), list = $("#pb-events-list");
+    if (!pb || !btn || !list) return;
+    // Nothing to show for a camera without detection turned on.
+    btn.classList.toggle("hidden", !pb.detectionEnabled);
+    if (!pb.detectionEnabled){ closePbEvents(); pb.events = []; return; }
+
+    pb.events = _buildEvents(pb.detections);
+    const badge = $("#pb-events-badge");
+    badge.textContent = pb.events.length > 99 ? "99+" : String(pb.events.length);
+    badge.classList.toggle("hidden", !pb.events.length);
+    $("#pb-events-count").textContent = `(${pb.events.length})`;
+
+    list.innerHTML = "";
+    if (!pb.events.length){
+      const empty = document.createElement("div");
+      empty.className = "pb-events-empty";
+      empty.textContent = "Bu aralıkta algılanan olay yok.";
+      list.appendChild(empty);
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    pb.events.forEach((ev, i) => {
+      const row = document.createElement("button");
+      row.type = "button"; row.className = "pb-event"; row.dataset.idx = String(i);
+
+      const time = document.createElement("span");
+      time.className = "pb-event-time"; time.textContent = _fmtHms(ev.start);
+
+      const meta = document.createElement("span"); meta.className = "pb-event-meta";
+      const kinds = document.createElement("span"); kinds.className = "pb-event-kinds";
+      // Person first — it's the more specific, more interesting signal.
+      ["person", "motion"].forEach(k => {
+        if (!ev.kinds.has(k)) return;
+        const tag = document.createElement("span");
+        tag.className = "pb-event-kind " + k;
+        tag.textContent = k === "person" ? "İnsan" : "Hareket";
+        kinds.appendChild(tag);
+      });
+      const dur = document.createElement("span");
+      dur.className = "pb-event-dur";
+      // A single-sample detection has zero length; call it "anlık" rather
+      // than showing a bare 0:00 (see the zero-duration case in
+      // detection.py's _check_timeouts).
+      const secs = Math.max(0, ev.end - ev.start);
+      dur.textContent = secs < 1 ? "anlık" : fmtDuration(secs);
+      meta.append(kinds, dur);
+
+      row.append(time, meta);
+      row.addEventListener("click", () => {
+        setCenterTime(ev.start);
+        seekToAbsTime(ev.start);
+        // On a phone the sheet covers the video, so get out of the way;
+        // on desktop it sits beside it and can stay open for browsing.
+        if (isMobile()) closePbEvents();
+        highlightCurrentEvent();
+      });
+      frag.appendChild(row);
+    });
+    list.appendChild(frag);
+    highlightCurrentEvent();
+  }
+
+  // Cheap enough to run on every timeline repaint: only toggles a class.
+  function highlightCurrentEvent(){
+    const pb = state.playback;
+    if (!pb || !pb.events || pb.centerTime == null) return;
+    const t = pb.centerTime;
+    $$("#pb-events-list .pb-event").forEach(el => {
+      const ev = pb.events[Number(el.dataset.idx)];
+      el.classList.toggle("current",
+        !!ev && t >= ev.start - EVENT_MERGE_GAP_SEC && t <= ev.end + EVENT_MERGE_GAP_SEC);
+    });
+  }
+
+  function openPbEvents(){
+    $("#pb-events").classList.add("open");
+    $("#pb-events").setAttribute("aria-hidden", "false");
+    $("#pb-events-backdrop").classList.add("open");
+    $("#pb-events-btn").classList.add("active");
+    $("#pb-events-btn").setAttribute("aria-expanded", "true");
+    highlightCurrentEvent();
+    // Bring the event nearest the playhead into view instead of always
+    // starting at the newest one.
+    const cur = $("#pb-events-list .pb-event.current");
+    if (cur) cur.scrollIntoView({ block: "nearest" });
+  }
+  function closePbEvents(){
+    const panel = $("#pb-events"); if (!panel) return;
+    panel.classList.remove("open");
+    panel.setAttribute("aria-hidden", "true");
+    $("#pb-events-backdrop").classList.remove("open");
+    $("#pb-events-btn").classList.remove("active");
+    $("#pb-events-btn").setAttribute("aria-expanded", "false");
+  }
+  function togglePbEvents(){
+    if ($("#pb-events").classList.contains("open")) closePbEvents();
+    else openPbEvents();
+  }
   function todayLocal(){
     const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
   }
@@ -2317,6 +2443,7 @@
   function initPlayback(){
     state.playback = {
       camId: null, date: null, segs: [], detections: [], detectionEnabled: false, active: null,
+      events: [],              // merged detection events shown in the drawer
       pendingSeek: null,
       // Range actually covered by segs/detections right now — grown
       // incrementally by _ensureRangeLoaded as the view nears its edge.
@@ -2330,6 +2457,9 @@
       videoZoom: 1, videoPanX: 0, videoPanY: 0,
     };
     $("#pb-close").addEventListener("click", closePlayback);
+    $("#pb-events-btn").addEventListener("click", togglePbEvents);
+    $("#pb-events-close").addEventListener("click", closePbEvents);
+    $("#pb-events-backdrop").addEventListener("click", closePbEvents);
     $("#pb-cam").addEventListener("change", (e) => { state.playback.camId = e.target.value; loadDay(); });
     $("#pb-date").addEventListener("change", (e) => { state.playback.date = e.target.value; loadDay(); });
     $("#pb-prev-day").addEventListener("click", () => shiftDay(-1));
@@ -2474,7 +2604,10 @@
         ]);
         if (camId !== pb.camId) return; // camera switched mid-flight — discard
         pb.segs = _mergeById(pb.segs, segs);
-        if (pb.detectionEnabled) pb.detections = _mergeById(pb.detections, evs);
+        if (pb.detectionEnabled){
+          pb.detections = _mergeById(pb.detections, evs);
+          renderPbEvents();
+        }
         pb.loadedFrom = Math.min(pb.loadedFrom, from);
         pb.loadedTo = Math.max(pb.loadedTo, to);
         renderTimeline();
@@ -2808,6 +2941,7 @@
       ]);
       pb.segs = segs || [];
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
+      renderPbEvents();
       const t = (pb.pendingSeek != null) ? pb.pendingSeek : _pickInitialTime(pb);
       pb.pendingSeek = null;
       pb.centerTime = t;
@@ -2965,6 +3099,7 @@
     const badge = $("#pb-time-badge");
     if (!badge || !pb || pb.centerTime == null){ if (badge) badge.textContent = "--:--:--"; return; }
     badge.textContent = _fmtHms(pb.centerTime);
+    highlightCurrentEvent();
   }
 
   function loadSegment(seg, offset, opts = {}){
@@ -3135,7 +3270,14 @@
   function playbackKey(e){
     const v = $("#pb-video");
     const k = e.key.toLowerCase();
-    if (k === "escape"){ closePlayback(); return true; }
+    // Esc closes the events drawer first, then playback — the usual
+    // innermost-layer-first behaviour.
+    if (k === "escape"){
+      if ($("#pb-events").classList.contains("open")) closePbEvents();
+      else closePlayback();
+      return true;
+    }
+    if (k === "e"){ togglePbEvents(); return true; }
     if (k === " " || k === "spacebar"){ e.preventDefault(); v.paused ? v.play() : v.pause(); return true; }
     if (k === "arrowleft"){  e.preventDefault(); seekRelative(-10); return true; }
     if (k === "arrowright"){ e.preventDefault(); seekRelative(10);  return true; }
