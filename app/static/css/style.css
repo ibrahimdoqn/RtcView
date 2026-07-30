@@ -73,6 +73,19 @@ input,select{font:inherit;color:inherit;}
      double-tap-zoom so our JS gets every gesture. */
   touch-action:pan-y;
 }
+/* Tiles the JS has sized to their stream's real aspect-ratio (it sets both
+   style.aspectRatio and data-ratio together, so this matches exactly those).
+   An aspect-ratio makes a grid item size ITSELF instead of stretching to its
+   cell, so on any window whose cells are shorter than that ratio the tile
+   grew past its row and .grid's overflow:hidden sliced the bottom off the
+   picture. width:100% keeps it as wide as its cell — it must not size to
+   content, or a tile whose stream hasn't reported dimensions yet would
+   collapse to the <video> element's 300x150 default — max-height stops it
+   ever outgrowing the row, and align-self centres what is left. Where the
+   ratio already fitted this changes nothing; where it didn't, the tile is
+   now wider than the frame and object-fit:contain letterboxes inside it
+   instead of the bottom of the picture being cut off. */
+.tile[data-ratio]{width:100%;max-height:100%;align-self:center;}
 .tile.selected{outline-color:var(--accent);}
 .tile video{
   width:100%;height:100%;object-fit:contain;display:block;background:#000;
@@ -485,8 +498,14 @@ kbd{
   }
   .grid::-webkit-scrollbar{display:none;}
   /* Aspect defaults to 16/9 while stream is connecting; JS switches it
-     to the real stream ratio on loadedmetadata so the frame is complete. */
-  .tile{aspect-ratio:16/9;height:auto;min-height:0;border-radius:12px;background:#000;}
+     to the real stream ratio on loadedmetadata so the frame is complete.
+     Mobile is a scrolling single column, not a viewport-sized grid: a tile
+     is as tall as its own ratio makes it and the list scrolls, so the
+     desktop "never outgrow your cell" clamp above must not apply here —
+     align-self must go back to normal too, or the row height ends up
+     driving the ratio and the tile comes out narrower than the column. */
+  .tile,.tile[data-ratio]{aspect-ratio:16/9;height:auto;min-height:0;border-radius:12px;
+    background:#000;max-height:none;align-self:normal;}
   .tile video{object-fit:contain;width:100%;height:100%;} /* always show the full frame */
   .tile .badge{font-size:.72rem;padding:.18rem .5rem;top:6px;left:6px;}
   .tile.selected .badge{font-size:.8rem;padding:.24rem .6rem;}
@@ -557,17 +576,14 @@ kbd{
   .pb-header input[type=time]{min-height:32px;padding:.3rem .45rem;font-size:.85rem;}
   .pb-header .btn.small{min-height:32px;padding:.25rem .5rem;}
   .pb-status{width:100%;text-align:center;font-size:.72rem;}
-  /* Stage sizes itself to the video's real aspect-ratio and centers in
-     the 1fr row. That way there is no black bar under (or above) the
-     video — the video area exactly matches the picture, and the black
-     you see is the .playback background outside the stage. */
-  .pb-stage{
-    background:#000;
-    aspect-ratio:16/9;              /* JS overrides on loadedmetadata */
-    width:auto;height:auto;
-    max-width:100%;max-height:100%;
-    justify-self:center;align-self:center;
-  }
+  /* Stage fills the whole row between the header and the transport bar;
+     the <video> letterboxes inside it (object-fit:contain), so the picture
+     is always as large as it can be without being cropped. It must NOT get
+     an aspect-ratio: that makes the grid item size itself instead of
+     stretching to its row, which pushed the bottom of the picture under
+     the controls. Black around the picture is the stage's own background,
+     visually identical to the .playback background behind it. */
+  .pb-stage{background:#000;}
   /* One tight row for all 8 controls; hide the numeric time (playhead
      badge already shows it, no need to repeat inside the toolbar). */
   .pb-controls{padding:.35rem .45rem;gap:.3rem;flex-wrap:nowrap;overflow-x:auto;}
@@ -909,7 +925,15 @@ kbd{
 .pb-status{color:var(--muted);font-size:.8rem;}
 .pb-stage{position:relative;background:#000;min-height:0;overflow:hidden;
   display:grid;place-items:center;touch-action:none;user-select:none;}
+/* The video fills the stage exactly and letterboxes inside it. It must be
+   positioned, not laid out: as an in-flow grid item its implicit row is
+   auto-sized, so height:100% resolved against an indefinite height and the
+   element fell back to its intrinsic ratio — a 16:9 video in a wide window
+   became taller than the stage and its bottom was clipped. inset:0 pins the
+   box to the stage, which is also what the zoom/pan math assumes (it maps
+   pointer coordinates through the STAGE rect onto the video's transform). */
 .pb-stage video{
+  position:absolute;inset:0;
   width:100%;height:100%;object-fit:contain;background:#000;
   transform-origin:0 0;will-change:transform;transition:none;
 }
@@ -974,12 +998,14 @@ kbd{
 .pb-events-badge.hidden{display:none;}
 .pb-events-btn.active{color:var(--accent);}
 
-.pb-events-backdrop{
-  position:absolute;inset:0;z-index:5;
-  background:rgba(0,0,0,.35);
-  opacity:0;pointer-events:none;transition:opacity .24s var(--ease-out);
-}
-.pb-events-backdrop.open{opacity:1;pointer-events:auto;}
+/* Desktop: the drawer is a side rail with its own opaque glass background,
+   not a sheet over the video — a dimming scrim here would darken the whole
+   stage and (being position:absolute;inset:0 over .pb-stage) swallow every
+   zoom/pan pointer event even while just watching. It only becomes a real
+   scrim in the mobile media query below, where the drawer rises as a
+   bottom sheet over the picture and tap-outside-to-close is the right
+   behaviour. */
+.pb-events-backdrop{display:none;}
 
 .pb-events{
   position:absolute;z-index:6;
@@ -1055,7 +1081,12 @@ kbd{
     transform:translateY(100%);
     box-shadow:0 -12px 40px rgba(0,0,0,.5), inset 0 1px 0 var(--glass-hi);
   }
-  .pb-events-backdrop{position:fixed;}
+  .pb-events-backdrop{
+    display:block;position:fixed;inset:0;z-index:5;
+    background:rgba(0,0,0,.35);
+    opacity:0;pointer-events:none;transition:opacity .24s var(--ease-out);
+  }
+  .pb-events-backdrop.open{opacity:1;pointer-events:auto;}
   /* A grab-handle affordance, like iOS sheets. */
   .pb-events-head::before{
     content:"";position:absolute;top:.4rem;left:50%;transform:translateX(-50%);

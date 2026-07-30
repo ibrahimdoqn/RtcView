@@ -671,7 +671,9 @@
       const ar = Math.max(0.5, Math.min(3.5, w / h));
       const isSoloTile = state.solo && tile.dataset.id === state.selectedId;
       if (isSoloTile){
-        tile.style.height = ""; tile.style.aspectRatio = ""; return;
+        // data-ratio must track style.aspectRatio: the stylesheet keys the
+        // "don't outgrow your cell" clamp off it.
+        tile.style.height = ""; tile.style.aspectRatio = ""; delete tile.dataset.ratio; return;
       }
       tile.style.aspectRatio = String(ar);
       tile.dataset.ratio = ar.toFixed(3);
@@ -2501,13 +2503,12 @@
     v.addEventListener("timeupdate", onTimeUpdate);
     v.addEventListener("ended", playNextSegment);
     v.addEventListener("loadedmetadata", () => {
-      // Size the playback stage to the video's real aspect ratio so on
-      // mobile the video area exactly matches the frame — no black bar
-      // under (or above) the picture.
-      if (v.videoWidth && v.videoHeight){
-        const ar = v.videoWidth / v.videoHeight;
-        if (ar > 0.3 && ar < 4) $("#pb-stage").style.aspectRatio = String(ar);
-      }
+      // The stage always fills the row between the header and the transport
+      // bar; the <video> letterboxes inside it via object-fit:contain. Do NOT
+      // size the stage to the video's aspect ratio here — an aspect-ratio on
+      // a grid item stops it from stretching to its row, so a 16:9 stage in a
+      // 1920px-wide window became 1080px tall inside an ~875px row and the
+      // bottom of the picture disappeared under the controls.
       updateTimeLabel();
     });
 
@@ -2751,26 +2752,6 @@
       stage.classList.toggle("zoomed", pb.videoZoom > 1.001);
       info.style.display = pb.videoZoom > 1.001 ? "block" : "none";
       info.textContent = pb.videoZoom.toFixed(1) + "×";
-      // On mobile the stage is normally sized to the video's aspect ratio
-      // (no black bars outside). When the user zooms in, expand the stage
-      // to fill the whole row so the zoomed content can bleed into the
-      // otherwise-empty top/bottom space above and below the video.
-      if (isMobile()){
-        if (pb.videoZoom > 1.05){
-          stage.style.aspectRatio = "auto";
-          stage.style.width = "100%";
-          stage.style.height = "100%";
-          stage.style.maxWidth = "";
-          stage.style.maxHeight = "";
-        } else {
-          // Restore aspect ratio (defaults set by loadedmetadata)
-          if (v.videoWidth && v.videoHeight){
-            stage.style.aspectRatio = String(v.videoWidth / v.videoHeight);
-          }
-          stage.style.width = "";
-          stage.style.height = "";
-        }
-      }
     };
     const clampPan = (rect) => {
       const pb = state.playback;
@@ -2800,7 +2781,13 @@
     };
     state.playback._applyVideoTransform = applyVideoTransform;
 
+    // The events drawer sits INSIDE the stage, so its wheel/drag events
+    // bubble here. Without this guard the stage swallowed them
+    // (preventDefault) and zoomed the video instead of scrolling the list.
+    const fromDrawer = (e) => !!(e.target.closest && e.target.closest("#pb-events, #pb-events-backdrop"));
+
     stage.addEventListener("wheel", (e) => {
+      if (fromDrawer(e)) return;          // let the drawer scroll normally
       e.preventDefault();
       const rect = stage.getBoundingClientRect();
       zoomAt(e.clientX - rect.left, e.clientY - rect.top,
@@ -2808,6 +2795,7 @@
     }, { passive: false });
 
     stage.addEventListener("contextmenu", (e) => {
+      if (fromDrawer(e)) return;
       e.preventDefault();
       state.playback._resetVideoZoom();
     });
@@ -2816,6 +2804,7 @@
     let mp = null;
     stage.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
+      if (fromDrawer(e)) return;          // never pan the video from the drawer
       if (state.playback.videoZoom <= 1) return;
       mp = { x: e.clientX, y: e.clientY, panX: state.playback.videoPanX, panY: state.playback.videoPanY };
       stage.classList.add("grabbing");
@@ -2833,6 +2822,7 @@
     let tp = null;
     stage.addEventListener("touchstart", (e) => {
       const pb = state.playback;
+      if (fromDrawer(e)) return;          // drawer owns its own touch scroll
       if (e.touches.length === 2){
         const [a,b] = e.touches;
         tp = { mode:"pinch",
@@ -2848,6 +2838,7 @@
     }, { passive: true });
     stage.addEventListener("touchmove", (e) => {
       if (!tp) return;
+      if (fromDrawer(e)) return;
       const rect = stage.getBoundingClientRect();
       const pb = state.playback;
       if (tp.mode === "pinch" && e.touches.length === 2){
