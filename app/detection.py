@@ -140,9 +140,12 @@ MAX_SUBSCRIPTION_AGE_SEC = 300.0
 # Pause after an error before retrying the pull.
 ERROR_RETRY_SLEEP_SEC = 0.3
 
-# Pause between tearing down a subscription and creating the next one.
-# Kept short: this is dead time in which no event can be caught. (A real
-# subscribe FAILURE backs off with CONNECT_RETRY_SLEEP_SEC instead.)
+# Pause before rebuilding a subscription that was torn down BY ERRORS —
+# it avoids hammering a camera that is genuinely unwell. A planned
+# age-based renewal skips this entirely (see _run): the connection is
+# healthy there, and every millisecond between teardown and the next
+# successful subscribe is a blind window in which an event is missed.
+# (A subscribe that outright FAILS backs off with CONNECT_RETRY_SLEEP_SEC.)
 RESUBSCRIBE_GAP_SEC = 0.5
 
 # Backoff after a failed connect or failed subscribe.
@@ -557,19 +560,29 @@ class CameraEventWatcher:
                     self._sleep_interruptible(CONNECT_RETRY_SLEEP_SEC)
                     continue
 
-            self._listen_until_resubscribe_needed()
+            planned = self._listen_until_resubscribe_needed()
 
-            # Returned => the subscription must be recreated. Keep this gap
-            # short: it is dead time in which no event can be caught.
+            # Returned => the subscription must be recreated. Everything
+            # between here and the next successful subscribe is a blind
+            # window in which an event would be missed entirely, so a
+            # PLANNED renewal (the connection is healthy, we just don't
+            # trust the subscription's age) rebuilds immediately. Only an
+            # error-driven return backs off, to avoid hammering a camera
+            # that is actually unwell.
             self._pullpoint = None
             self._pull_messages_type = None
             self._set(subscribed=False)
-            if not self._stop.is_set():
+            if not planned and not self._stop.is_set():
                 self._sleep_interruptible(RESUBSCRIBE_GAP_SEC)
 
-    def _listen_until_resubscribe_needed(self):
+    def _listen_until_resubscribe_needed(self) -> bool:
         """Pull events until something says the subscription should be
-        rebuilt: too many errors, or simply old enough to distrust."""
+        rebuilt: too many errors, or simply old enough to distrust.
+
+        Returns True if this was a PLANNED (age-based) renewal on a
+        healthy connection, False if errors forced it — the caller uses
+        that to decide whether to back off before resubscribing.
+        """
         unexpected_errors = 0
         benign_errors = 0
 
@@ -586,7 +599,7 @@ class CameraEventWatcher:
             age = now - self._subscribed_at
             if age >= MAX_SUBSCRIPTION_AGE_SEC:
                 self._note(f"Abonelik {age:.0f} saniyedir açık, proaktif olarak yenileniyor.")
-                return
+                return True          # planlı: sağlıklı bağlantı, beklemeye gerek yok
 
             try:
                 req = self._pull_messages_type(
@@ -621,7 +634,7 @@ class CameraEventWatcher:
                     if benign_errors >= MAX_BENIGN_ERRORS:
                         self._note(f"{benign_errors} ardışık bağlantı hatası, "
                                    f"abonelik yenileniyor.", logging.WARNING)
-                        return
+                        return False
                     time.sleep(ERROR_RETRY_SLEEP_SEC)
                     continue
 
@@ -635,8 +648,10 @@ class CameraEventWatcher:
                 if unexpected_errors >= MAX_UNEXPECTED_ERRORS:
                     self._note(f"{unexpected_errors} ardışık beklenmeyen hata, "
                                f"abonelik yenileniyor.", logging.WARNING)
-                    return
+                    return False
                 time.sleep(ERROR_RETRY_SLEEP_SEC)
+
+        return False    # _stop set edildi
 
 
 class DetectionManager:
