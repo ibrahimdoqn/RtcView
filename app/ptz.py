@@ -16,16 +16,11 @@ except Exception as _e:
 
 # onvif-zeep's WSDL files are a data directory shipped next to (not
 # inside) the installed `onvif` package, and that placement is known to
-# go missing depending on pip version/install method. Prefer the
-# tapo_detector package's own bundled copy (same repo, same onvif-zeep
-# version) over trusting wherever pip happened to put onvif-zeep's.
-_WSDL_DIR: Optional[str] = None
-try:
-    import tapo_detector as _tapo_detector
-    _WSDL_DIR = os.path.join(os.path.dirname(os.path.abspath(_tapo_detector.__file__)), "wsdl")
-    if not os.path.isdir(_WSDL_DIR):
-        _WSDL_DIR = None
-except Exception:
+# go missing depending on pip version/install method. Prefer this repo's
+# own bundled copy at app/wsdl (same tree app/detection.py uses — if it
+# ever moves, update both) over trusting wherever pip put onvif-zeep's.
+_WSDL_DIR: Optional[str] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wsdl")
+if not os.path.isdir(_WSDL_DIR):
     _WSDL_DIR = None
 
 

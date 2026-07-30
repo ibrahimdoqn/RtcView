@@ -161,6 +161,7 @@ Playback:
 ```
 /opt/rtcview/
 ├── app/            # Flask kaynak (main, recorder, storage, ptz, detection, go2rtc_client, config)
+│   └── wsdl/       # ONVIF WSDL/XSD şemaları (detection + ptz bunu kullanır; bütün olarak taşınmalı)
 ├── venv/           # izole Python ortamı
 ├── config/config.json
 ├── logs/
@@ -172,7 +173,7 @@ Playback:
 ```
 > Not: go2rtc **bu dizinde değildir**; ağınızdaki mevcut go2rtc kullanılır.
 
-Repo kökünde ayrıca `tapo_detector/` (vendored ONVIF hareket/insan algılama motoru) bulunur.
+ONVIF hareket/insan algılama motorunun tamamı `app/detection.py` içindedir (kamera ile PullPoint event konuşması, algılama aralıklarının yazılması ve bildirimler). Ayarlanabilir değişkenler dosyanın başındaki "Tunables" bölümündedir.
 
 ## API özeti (yeni)
 

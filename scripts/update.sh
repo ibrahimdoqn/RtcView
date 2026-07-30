@@ -56,8 +56,13 @@ info "Uygulama dosyaları güncelleniyor..."
 tar -C "$SRC_DIR" \
   --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
   --exclude='venv' --exclude='config' --exclude='logs' --exclude='recordings' \
-  -cf - app tapo_detector requirements.txt scripts 2>/dev/null | \
+  -cf - app requirements.txt scripts 2>/dev/null | \
   tar -C "$INSTALL_DIR" -xf -
+
+# The vendored tapo_detector package was merged into app/detection.py and
+# its bundled ONVIF WSDL tree moved to app/wsdl. tar only adds files, so an
+# older install would keep a stale, now-unimported copy around — drop it.
+rm -rf "${INSTALL_DIR}/tapo_detector"
 
 # ------------- pip deps -------------
 info "Python bağımlılıkları kontrol ediliyor..."
