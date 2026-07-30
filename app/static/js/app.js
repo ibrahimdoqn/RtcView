@@ -1333,11 +1333,13 @@
   function closeSettingsPage(){
     $("#settings-page").classList.add("hidden");
     stopMotionPoll();
+    stopNotifTicker();
   }
   function switchSettingsTab(name){
     _lastSettingsTab = name;
     $$(".settings-tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
     $$(".settings-tabpanel").forEach(p => p.classList.toggle("hidden", p.dataset.tab !== name));
+    if (name !== "bildirimler") stopNotifTicker();
     if (name === "genel") loadGenelTab();
     else if (name === "kameralar") showCameraList();
     else if (name === "bildirimler") loadNotifSettingsTab();
@@ -1427,68 +1429,79 @@
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
   });
 
-  // ----- Bildirimler tab: master switch + per-group cards (auto-save) -----
+  // ----- Bildirimler tab: per-group cards (auto-save), no global switch -----
   function _debounce(fn, ms){
     let t;
     return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
   }
-  // <input type="datetime-local"> uses LOCAL wall-clock time with no
-  // timezone info, so epoch<->string conversion here must go through the
-  // Date constructor's local-time parsing (not Date.UTC).
-  function _dtLocalFromEpoch(ts){
-    const n = Number(ts || 0);
-    if (!n) return "";
-    const d = new Date(n * 1000);
-    const p = (v) => String(v).padStart(2, "0");
-    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
-  }
-  function _epochFromDtLocal(v){
+  // Time-of-day only (no date) — resolves to the NEXT occurrence of that
+  // clock time: today if it hasn't passed yet, otherwise tomorrow.
+  function _epochFromTimeOfDay(v){
     if (!v) return 0;
-    const t = new Date(v).getTime();
-    return isFinite(t) ? t / 1000 : 0;
+    const [hh, mm] = v.split(":").map(Number);
+    if (!isFinite(hh) || !isFinite(mm)) return 0;
+    const now = new Date();
+    const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
+    if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
+    return target.getTime() / 1000;
   }
-  function _overrideStatusText(ts, activeLabel, inactiveLabel){
-    const until = Number(ts || 0);
-    return (until > Date.now() / 1000)
-      ? `${activeLabel}: ${new Date(until * 1000).toLocaleString("tr-TR")} kadar`
-      : inactiveLabel;
+  function _fmtHM(ts){
+    const d = new Date(ts * 1000);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+  function _fmtRemaining(untilTs){
+    const diff = Math.max(0, untilTs - Date.now() / 1000);
+    const h = Math.floor(diff / 3600), m = Math.round((diff % 3600) / 60);
+    if (h > 0) return m > 0 ? `${h} sa ${m} dk kaldı` : `${h} sa kaldı`;
+    return `${Math.max(1, m)} dk kaldı`;
+  }
+  // Mirrors _group_notify_active in detection.py exactly (force wins,
+  // then snooze, then enabled+schedule; empty schedule = never).
+  function _scheduleActiveNow(schedule){
+    if (!schedule || !schedule.length) return false;
+    const now = new Date();
+    const dow = (now.getDay() + 6) % 7; // JS Sun=0..Sat=6 -> Mon=0..Sun=6
+    const hm = now.getHours() * 60 + now.getMinutes();
+    for (const w of schedule){
+      const days = w.days || [];
+      if (days.length && !days.includes(dow)) continue;
+      const [sh, sm] = (w.start || "00:00").split(":").map(Number);
+      const [eh, em] = (w.end || "23:59").split(":").map(Number);
+      const s = sh * 60 + sm, e = eh * 60 + em;
+      if (e > s) { if (hm >= s && hm < e) return true; }
+      else { if (hm >= s || hm < e) return true; }
+    }
+    return false;
+  }
+  // Which override row to show. A currently-ACTIVE override always wins
+  // display priority (so you can see its countdown / cancel it) even
+  // though snoozing flips the group to "inactive" — otherwise the Ertele
+  // row you just used would vanish the instant it took effect. With no
+  // override running, fall back to the natural (un-overridden) state:
+  // offer Ertele while notifications are flowing, Manuel Aç while quiet.
+  function _whichOverrideToShow(g){
+    const now = Date.now() / 1000;
+    if (Number(g.notify_snooze_until || 0) > now) return "snooze";
+    if (Number(g.notify_force_until || 0) > now) return "force";
+    const naturallyActive = g.notify_enabled !== false && _scheduleActiveNow(g.notify_schedule || []);
+    return naturallyActive ? "snooze" : "force";
+  }
+
+  let _notifTickTimer = null;
+  function startNotifTicker(){
+    stopNotifTicker();
+    _notifTickTimer = setInterval(() => {
+      $$(".notif-group-card").forEach(card => { if (card._tick) card._tick(); });
+    }, 15000);
+  }
+  function stopNotifTicker(){
+    if (_notifTickTimer){ clearInterval(_notifTickTimer); _notifTickTimer = null; }
   }
 
   async function loadNotifSettingsTab(){
-    try {
-      const n = await api.get("/api/notifications/settings");
-      $("#n-enabled").checked = n.enabled !== false;
-      renderSnoozeStatus(n.snooze_until);
-    } catch {}
     renderNotifGroups();
+    startNotifTicker();
   }
-  function renderSnoozeStatus(snoozeUntil){
-    const el = $("#n-snooze-status"); if (!el) return;
-    el.textContent = _overrideStatusText(snoozeUntil, "Ertelendi", "Ertelenmedi");
-  }
-  $("#n-enabled").addEventListener("change", async () => {
-    try {
-      const n = await api.post("/api/notifications/settings", { enabled: $("#n-enabled").checked });
-      renderSnoozeStatus(n.snooze_until);
-    } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
-  });
-  $("#n-snooze-set").addEventListener("click", async () => {
-    const epoch = _epochFromDtLocal($("#n-snooze-until").value);
-    if (!epoch){ toast("Bir tarih/saat seçin", "err"); return; }
-    try {
-      const n = await api.post("/api/notifications/snooze", { until: epoch });
-      renderSnoozeStatus(n.snooze_until);
-      toast("Ertelendi", "ok");
-    } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
-  });
-  $("#n-snooze-cancel").addEventListener("click", async () => {
-    try {
-      const n = await api.post("/api/notifications/snooze", { until: 0 });
-      renderSnoozeStatus(n.snooze_until);
-      $("#n-snooze-until").value = "";
-      toast("Erteleme iptal edildi", "ok");
-    } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
-  });
 
   // Notification config lives entirely on the GROUP now (a camera in no
   // group gets no notifications; a camera in several groups notifies if
@@ -1521,6 +1534,7 @@
       try {
         const updated = await api.put("/api/groups/" + g.id, { notify_enabled: enabledCb.checked });
         Object.assign(g, updated);
+        card._tick();
       } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); enabledCb.checked = !enabledCb.checked; }
     });
 
@@ -1533,12 +1547,13 @@
     schedWrap.append(schedRows, schedAdd);
     card.appendChild(schedWrap);
     const schedHint = document.createElement("small");
-    schedHint.textContent = "Boş bırakılırsa her saat bildirim gönderilir. Değişiklik otomatik kaydedilir.";
+    schedHint.textContent = "Zaman aralığı eklenmezse bu grup hiç bildirim göndermez. Değişiklik otomatik kaydedilir.";
     card.appendChild(schedHint);
     const saveSchedule = _debounce(async () => {
       try {
         const updated = await api.put("/api/groups/" + g.id, { notify_schedule: readScheduleRows(schedRows) });
         Object.assign(g, updated);
+        card._tick();
       } catch (e) { toast("Zamanlama kaydedilemedi: " + e.message, "err"); }
     }, 500);
     schedRows.addEventListener("change", saveSchedule);
@@ -1546,43 +1561,70 @@
     // both just mutate schedRows' children — one observer covers both.
     new MutationObserver(saveSchedule).observe(schedRows, { childList: true });
 
+    // Exactly ONE override control is relevant at a time: if the group is
+    // currently sending notifications, you'd want to Ertele (snooze) it;
+    // if it's currently quiet, you'd want to Manuel Aç (force it on).
+    // Both rows are built once and toggled by the ticker below, so a live
+    // countdown can update in place without losing in-progress edits.
     const overrideBox = document.createElement("div"); overrideBox.className = "notif-group-override";
-    overrideBox.appendChild(_notifOverrideRow(g, {
-      field: "notify_snooze_until", label: "Ertele", setLabel: "Ertele",
-      activeLabel: "Ertelendi", inactiveLabel: "Ertelenmedi",
-    }));
-    overrideBox.appendChild(_notifOverrideRow(g, {
-      field: "notify_force_until", label: "Manuel Aç", setLabel: "Aç",
-      activeLabel: "Manuel açık", inactiveLabel: "Manuel açık değil",
-    }));
+    const snoozeWrap = _notifOverrideRow(g, {
+      field: "notify_snooze_until", clearField: "notify_force_until",
+      label: "Ertele", setLabel: "Ertele", activeLabel: "Ertelendi",
+    });
+    const forceWrap = _notifOverrideRow(g, {
+      field: "notify_force_until", clearField: "notify_snooze_until",
+      label: "Manuel Aç", setLabel: "Aç", activeLabel: "Manuel açık",
+    });
+    overrideBox.append(snoozeWrap, forceWrap);
     card.appendChild(overrideBox);
+
+    card._tick = () => {
+      const which = _whichOverrideToShow(g);
+      snoozeWrap.classList.toggle("hidden", which !== "snooze");
+      forceWrap.classList.toggle("hidden", which !== "force");
+      snoozeWrap._refreshStatus();
+      forceWrap._refreshStatus();
+    };
+    card._tick();
 
     return card;
   }
 
-  // One "pick a date/time -> set -> cancel" override row, shared by both
-  // the snooze (suppress) and manual-force-on (bypass schedule) controls.
+  // One "pick a time -> set -> cancel" override row, shared by both the
+  // snooze (suppress) and manual-force-on (bypass schedule) controls.
+  // Setting one clears the other so they can never both linger active
+  // at once (force always wins in the backend, but a stale opposing
+  // value left over from an earlier session would be confusing here).
   function _notifOverrideRow(g, opts){
+    const wrap = document.createElement("div"); wrap.className = "notif-override-wrap";
     const row = document.createElement("div"); row.className = "notif-override-row";
     const lbl = document.createElement("span"); lbl.className = "notif-override-label"; lbl.textContent = opts.label;
-    const dt = document.createElement("input"); dt.type = "datetime-local"; dt.className = "dt-input";
+    const timeInput = document.createElement("input"); timeInput.type = "time"; timeInput.className = "dt-input";
     const setBtn = document.createElement("button");
     setBtn.type = "button"; setBtn.className = "btn ghost small"; setBtn.textContent = opts.setLabel;
     const cancelBtn = document.createElement("button");
     cancelBtn.type = "button"; cancelBtn.className = "btn ghost small"; cancelBtn.textContent = "İptal";
-    row.append(lbl, dt, setBtn, cancelBtn);
-
+    row.append(lbl, timeInput, setBtn, cancelBtn);
     const status = document.createElement("div"); status.className = "notif-override-status usage-text";
-    const refresh = () => { status.textContent = _overrideStatusText(g[opts.field], opts.activeLabel, opts.inactiveLabel); };
-    refresh();
+    wrap.append(row, status);
+
+    const refresh = () => {
+      const until = Number(g[opts.field] || 0);
+      status.textContent = (until > Date.now() / 1000)
+        ? `${opts.activeLabel} — ${_fmtHM(until)}'a kadar (${_fmtRemaining(until)})`
+        : "—";
+    };
+    wrap._refreshStatus = refresh;
 
     setBtn.addEventListener("click", async () => {
-      const epoch = _epochFromDtLocal(dt.value);
-      if (!epoch){ toast("Bir tarih/saat seçin", "err"); return; }
+      const epoch = _epochFromTimeOfDay(timeInput.value);
+      if (!epoch){ toast("Bir saat seçin", "err"); return; }
       try {
-        const updated = await api.put("/api/groups/" + g.id, { [opts.field]: epoch });
+        const body = { [opts.field]: epoch };
+        if (opts.clearField) body[opts.clearField] = 0;
+        const updated = await api.put("/api/groups/" + g.id, body);
         Object.assign(g, updated);
-        refresh();
+        wrap.closest(".notif-group-card")._tick();
         toast(`${opts.label} ayarlandı`, "ok");
       } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
     });
@@ -1590,14 +1632,12 @@
       try {
         const updated = await api.put("/api/groups/" + g.id, { [opts.field]: 0 });
         Object.assign(g, updated);
-        dt.value = "";
-        refresh();
+        timeInput.value = "";
+        wrap.closest(".notif-group-card")._tick();
         toast(`${opts.label} iptal edildi`, "ok");
       } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
     });
 
-    const wrap = document.createElement("div");
-    wrap.append(row, status);
     return wrap;
   }
 

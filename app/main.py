@@ -321,29 +321,8 @@ def create_app(config_path: str) -> Flask:
         return jsonify(detector.test_connection(cam))
 
     # ---------- Notifications ----------
-    @app.get("/api/notifications/settings")
-    def api_notif_settings_get():
-        return jsonify(store.get_notifications())
-
-    @app.post("/api/notifications/settings")
-    def api_notif_settings_set():
-        body = request.get_json(force=True) or {}
-        clean = {}
-        if "enabled" in body:
-            clean["enabled"] = bool(body["enabled"])
-        store.update_notifications(clean)
-        return jsonify(store.get_notifications())
-
-    @app.post("/api/notifications/snooze")
-    def api_notif_snooze():
-        body = request.get_json(force=True) or {}
-        try:
-            until = float(body.get("until", 0) or 0)
-        except (TypeError, ValueError):
-            return jsonify({"error": "invalid until"}), 400
-        store.update_notifications({"snooze_until": until})
-        return jsonify(store.get_notifications())
-
+    # No global on/off or global snooze — notification config lives
+    # entirely on groups now (PUT /api/groups/<id>, see above).
     @app.get("/api/notifications")
     def api_notifications_list():
         unread_only = request.args.get("unread_only") in ("1", "true", "yes")

@@ -86,29 +86,22 @@ _PROBE_WSDL_TIMEOUT_SEC = 8
 _PROBE_OPERATION_TIMEOUT_SEC = 20
 
 
-def _notify_window_active(schedule, now=None) -> bool:
-    """Empty schedule = no time restriction (notify any time) — the
-    OPPOSITE of record_schedule's empty=never. An unconfigured group
-    notification schedule should mean "notify whenever detected", not
-    "never notify"; enabled/snooze checks happen separately around this."""
-    if not schedule:
-        return True
-    return _schedule_active(schedule, now)
-
-
 def _group_notify_active(group: dict, ts: float) -> bool:
     """Notification config lives on the GROUP now, not the camera (a
     camera inherits from every group it belongs to). Precedence for a
     single group: an active manual "force on" window wins outright
     (that's the whole point of a manual override), then an active
-    snooze suppresses it, then the normal enabled+schedule check."""
+    snooze suppresses it, then the normal enabled+schedule check —
+    same semantics as record_schedule here: an EMPTY schedule means
+    never, not "any time". _schedule_active already returns False for
+    an empty/falsy schedule."""
     if float(group.get("notify_force_until", 0) or 0) > ts:
         return True
     if float(group.get("notify_snooze_until", 0) or 0) > ts:
         return False
     if not group.get("notify_enabled", True):
         return False
-    return _notify_window_active(group.get("notify_schedule") or [])
+    return _schedule_active(group.get("notify_schedule") or [])
 
 
 class _PerCameraLogCapture(logging.Handler):
@@ -298,11 +291,6 @@ class CameraEventWatcher:
         self.enabled_kinds, built once at construction from
         motion_detection_enabled/person_detection_enabled."""
         try:
-            ncfg = self.config_store.get_notifications()
-            if not ncfg.get("enabled", True):
-                return
-            if float(ncfg.get("snooze_until", 0) or 0) > ts:
-                return
             group_ids = self.cam.get("group_ids") or []
             if not group_ids:
                 # No group = no notifications. Notification config lives

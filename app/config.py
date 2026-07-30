@@ -35,10 +35,6 @@ DEFAULT_CONFIG = {
         "purge_interval_seconds": 60,
         "ffmpeg_path": "ffmpeg",
     },
-    "notifications": {
-        "enabled": True,
-        "snooze_until": 0,  # epoch seconds; 0 or past = not snoozed
-    },
     "cameras": [],
     "groups": [],  # [{"id": "grp_xxxxxxxx", "name": "İç Mekan"}]
 }
@@ -182,14 +178,6 @@ class ConfigStore:
     def update_recording(self, updates: dict):
         with _lock:
             self._data["recording"].update(updates)
-            self._save_locked()
-
-    def get_notifications(self):
-        return self._data["notifications"]
-
-    def update_notifications(self, updates: dict):
-        with _lock:
-            self._data["notifications"].update(updates)
             self._save_locked()
 
     def get_groups(self):

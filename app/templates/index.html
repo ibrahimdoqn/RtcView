@@ -278,19 +278,8 @@
 
       <!-- Bildirimler -->
       <div class="settings-tabpanel modal-body" data-tab="bildirimler">
-        <fieldset>
-          <legend>Ana anahtar</legend>
-          <label class="row"><input id="n-enabled" type="checkbox" /> Bildirimler etkin</label>
-          <div id="n-snooze-status" class="usage-text">—</div>
-          <div class="row" style="gap:.4rem;flex-wrap:wrap;align-items:center;">
-            <input type="datetime-local" id="n-snooze-until" class="dt-input" />
-            <button type="button" id="n-snooze-set" class="btn ghost small">Ertele</button>
-            <button type="button" id="n-snooze-cancel" class="btn ghost small">İptal</button>
-          </div>
-          <small>Bu anahtar kapatıldığında ya da ertelendiğinde hiçbir gruptan bildirim gelmez.</small>
-        </fieldset>
-        <small>Zamanlama, erteleme ve manuel açma her grup için ayrı ayarlanır. Grupsuz kameralar
-          bildirim göndermez.</small>
+        <small>Bildirimler grup bazında ayarlanır. Bir grubun zaman aralığı yoksa o grup hiç bildirim
+          göndermez. Grupsuz kameralar da bildirim göndermez.</small>
         <div id="notif-groups-list"></div>
       </div>
 
