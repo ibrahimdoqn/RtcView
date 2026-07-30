@@ -195,8 +195,6 @@ def create_app(config_path: str) -> Flask:
             "person_detection_enabled": bool(body.get("person_detection_enabled", False)),
             "motion_timeout_seconds": motion_timeout,
             "group_ids": [str(g) for g in (body.get("group_ids") or []) if str(g).strip()],
-            "notify_enabled": bool(body.get("notify_enabled", True)),
-            "notify_schedule": body.get("notify_schedule", []),
         }
         store.add_camera(cam)
         recorder.reload_camera(cam["id"])
@@ -268,10 +266,22 @@ def create_app(config_path: str) -> Flask:
             if not name:
                 return jsonify({"error": "name required"}), 400
             updates["name"] = name
+        if "notify_enabled" in body:
+            updates["notify_enabled"] = bool(body["notify_enabled"])
+        if "notify_schedule" in body:
+            updates["notify_schedule"] = body.get("notify_schedule") or []
+        for field in ("notify_snooze_until", "notify_force_until"):
+            if field in body:
+                try:
+                    updates[field] = float(body.get(field) or 0)
+                except (TypeError, ValueError):
+                    return jsonify({"error": f"invalid {field}"}), 400
+        if not updates:
+            return jsonify({"error": "no valid fields"}), 400
         ok = store.update_group(group_id, updates)
         if not ok:
             return jsonify({"error": "not found"}), 404
-        return jsonify({"ok": True})
+        return jsonify(next((g for g in store.get_groups() if g["id"] == group_id), {"ok": True}))
 
     @app.delete("/api/groups/<group_id>")
     def api_groups_delete(group_id):
@@ -328,10 +338,9 @@ def create_app(config_path: str) -> Flask:
     def api_notif_snooze():
         body = request.get_json(force=True) or {}
         try:
-            minutes = float(body.get("minutes", 0) or 0)
+            until = float(body.get("until", 0) or 0)
         except (TypeError, ValueError):
-            return jsonify({"error": "invalid minutes"}), 400
-        until = (time.time() + minutes * 60) if minutes > 0 else 0
+            return jsonify({"error": "invalid until"}), 400
         store.update_notifications({"snooze_until": until})
         return jsonify(store.get_notifications())
 

@@ -1095,6 +1095,7 @@ kbd{
   display:flex;justify-content:space-between;align-items:center;
   font-size:.82rem;color:var(--muted);font-weight:600;
 }
+#cam-tab-list-rows{display:flex;flex-direction:column;gap:.5rem;}
 .cam-tab-row{
   display:flex;align-items:center;gap:.5rem;
   background:var(--panel-2);border:1px solid var(--border-solid);border-radius:10px;
@@ -1172,6 +1173,41 @@ kbd{
     border-radius:20px 20px 0 0;max-height:75dvh;
     padding-bottom:var(--safe-b);
   }
+}
+
+/* Native date/time picker input, dark-theme by default (same treatment
+   as the existing .pb-header input[type=time]) */
+.dt-input{
+  background:var(--panel-solid);border:1px solid var(--border-solid);border-radius:7px;
+  color:var(--text);padding:.4rem .5rem;font-size:.82rem;min-width:0;
+  color-scheme:dark;
+}
+:root[data-theme="light"] .dt-input{color-scheme:light;}
+label.row.small{font-size:.82rem;gap:.4rem;}
+
+/* ========================================================================
+   BİLDİRİMLER — per-group notification cards (Ayarlar → Bildirimler).
+   Notification config lives on the group, not the camera: enable +
+   schedule + a manual snooze / force-on override, each independently
+   auto-saved.
+   ======================================================================== */
+#notif-groups-list{display:flex;flex-direction:column;gap:.6rem;margin-top:.2rem;}
+.notif-group-card{
+  border:1px solid var(--border-solid);border-radius:12px;padding:.75rem;
+  display:flex;flex-direction:column;gap:.55rem;background:var(--panel-2);
+}
+.notif-group-head{display:flex;justify-content:space-between;align-items:center;gap:.5rem;}
+.notif-group-name{font-weight:600;font-size:.92rem;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.notif-group-override{
+  display:flex;flex-direction:column;gap:.5rem;
+  border-top:1px solid var(--border-solid);padding-top:.55rem;
+}
+.notif-override-row{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;}
+.notif-override-label{font-size:.78rem;color:var(--muted);min-width:70px;flex:0 0 auto;}
+.notif-override-status{margin-top:-.2rem;}
+
+@media (max-width: 480px){
+  .notif-override-label{min-width:100%;}
 }
 
 /* ========================================================================

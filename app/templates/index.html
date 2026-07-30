@@ -241,19 +241,11 @@
                 </div>
               </details>
             </fieldset>
-            <fieldset id="notify-fieldset">
-              <legend>Bildirimler</legend>
-              <label class="row"><input type="checkbox" name="notify_enabled" /> Bu kamera için bildirim gönder</label>
-              <div id="notify-schedule-editor" class="rec-schedule">
-                <div id="notify-schedule-rows"></div>
-                <button type="button" id="notify-schedule-add" class="btn ghost small">+ Zaman aralığı</button>
-              </div>
-              <small>Boş bırakılırsa (hiç zaman aralığı eklenmezse) her saat bildirim gönderilir.</small>
-            </fieldset>
             <fieldset id="group-fieldset">
               <legend>Gruplar</legend>
               <div id="cam-group-chips" class="chip-row"></div>
-              <small>Kamera birden fazla gruba ait olabilir.</small>
+              <small>Kamera birden fazla gruba ait olabilir. Bildirim ayarları (zamanlama, erteleme) artık
+                kamera bazında değil, Ayarlar → Bildirimler sekmesinden grup bazında yapılır.</small>
             </fieldset>
             <fieldset>
               <legend>Kayıt</legend>
@@ -286,17 +278,20 @@
 
       <!-- Bildirimler -->
       <div class="settings-tabpanel modal-body" data-tab="bildirimler">
-        <label class="row"><input id="n-enabled" type="checkbox" /> Bildirimler etkin</label>
-        <div id="n-snooze-status" class="usage-text">—</div>
-        <div class="row" style="gap:.4rem;flex-wrap:wrap;">
-          <button type="button" class="btn ghost small" data-snooze="30">30 dk</button>
-          <button type="button" class="btn ghost small" data-snooze="60">1 sa</button>
-          <button type="button" class="btn ghost small" data-snooze="240">4 sa</button>
-          <button type="button" class="btn ghost small" data-snooze="tomorrow">Yarına kadar</button>
-          <button type="button" class="btn ghost small" data-snooze="0">Ertele iptal</button>
-        </div>
-        <small>Her kameranın kendi bildirim zamanlaması, o kameranın düzenleme ekranındaki
-          "Bildirimler" bölümünden ayarlanır.</small>
+        <fieldset>
+          <legend>Ana anahtar</legend>
+          <label class="row"><input id="n-enabled" type="checkbox" /> Bildirimler etkin</label>
+          <div id="n-snooze-status" class="usage-text">—</div>
+          <div class="row" style="gap:.4rem;flex-wrap:wrap;align-items:center;">
+            <input type="datetime-local" id="n-snooze-until" class="dt-input" />
+            <button type="button" id="n-snooze-set" class="btn ghost small">Ertele</button>
+            <button type="button" id="n-snooze-cancel" class="btn ghost small">İptal</button>
+          </div>
+          <small>Bu anahtar kapatıldığında ya da ertelendiğinde hiçbir gruptan bildirim gelmez.</small>
+        </fieldset>
+        <small>Zamanlama, erteleme ve manuel açma her grup için ayrı ayarlanır. Grupsuz kameralar
+          bildirim göndermez.</small>
+        <div id="notif-groups-list"></div>
       </div>
 
       <!-- Kayıt & Depolama -->

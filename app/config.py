@@ -64,14 +64,20 @@ CAMERA_DETECTION_DEFAULTS = {
     "motion_timeout_seconds": 15,
 }
 
-# Per-camera notification defaults. notify_schedule uses the same shape as
-# record_schedule, but an EMPTY schedule means the OPPOSITE thing here:
-# "no time restriction" (notify any time) rather than record_schedule's
-# "never" — a freshly-enabled camera should just notify immediately, not
-# require the user to configure a schedule first.
-CAMERA_NOTIFICATION_DEFAULTS = {
+# Per-GROUP notification defaults (notifications are configured per group,
+# not per camera — a camera inherits from every group it belongs to, and a
+# camera in no group gets no notifications). notify_schedule uses the same
+# shape as record_schedule, but an EMPTY schedule means the OPPOSITE thing
+# here: "no time restriction" (notify any time) rather than record_
+# schedule's "never" — a freshly-created group should just notify
+# immediately, not require the user to configure a schedule first.
+# notify_snooze_until / notify_force_until are epoch seconds (0/past =
+# inactive); force_until is a manual "on regardless of schedule" override.
+GROUP_NOTIFICATION_DEFAULTS = {
     "notify_enabled": True,
     "notify_schedule": [],
+    "notify_snooze_until": 0,
+    "notify_force_until": 0,
 }
 
 _lock = threading.Lock()
@@ -145,9 +151,10 @@ class ConfigStore:
                 cam.setdefault(k, json.loads(json.dumps(v)))
             for k, v in CAMERA_DETECTION_DEFAULTS.items():
                 cam.setdefault(k, json.loads(json.dumps(v)))
-            for k, v in CAMERA_NOTIFICATION_DEFAULTS.items():
-                cam.setdefault(k, json.loads(json.dumps(v)))
             cam.setdefault("group_ids", [])
+        for g in self._data.get("groups", []):
+            for k, v in GROUP_NOTIFICATION_DEFAULTS.items():
+                g.setdefault(k, json.loads(json.dumps(v)))
 
     def _save_locked(self):
         tmp = self.config_path.with_suffix(".tmp")
@@ -190,6 +197,8 @@ class ConfigStore:
 
     def add_group(self, group: dict):
         with _lock:
+            for k, v in GROUP_NOTIFICATION_DEFAULTS.items():
+                group.setdefault(k, json.loads(json.dumps(v)))
             self._data["groups"].append(group)
             self._save_locked()
 
@@ -233,8 +242,6 @@ class ConfigStore:
             for k, v in CAMERA_RECORDING_DEFAULTS.items():
                 camera.setdefault(k, json.loads(json.dumps(v)))
             for k, v in CAMERA_DETECTION_DEFAULTS.items():
-                camera.setdefault(k, json.loads(json.dumps(v)))
-            for k, v in CAMERA_NOTIFICATION_DEFAULTS.items():
                 camera.setdefault(k, json.loads(json.dumps(v)))
             camera.setdefault("group_ids", [])
             self._data["cameras"].append(camera)

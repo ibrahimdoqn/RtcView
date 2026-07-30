@@ -1010,6 +1010,7 @@
           g.name = name;
           renderGroupFilterRow();
           renderCamTabList();
+          renderNotifGroups();
         } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); input.value = g.name; }
       };
       input.addEventListener("blur", save);
@@ -1024,6 +1025,7 @@
           renderGroupsManageList();
           renderGroupFilterRow();
           renderCamTabList();
+          renderNotifGroups();
           renderSidebar(); renderGrid();
           if (!$("#cam-tab-detail").classList.contains("hidden")) renderCamGroupChips(readGroupChips());
         } catch (e) { toast("Silinemedi: " + e.message, "err"); }
@@ -1039,6 +1041,7 @@
       state.groups.push(g);
       renderGroupsManageList();
       renderGroupFilterRow();
+      renderNotifGroups();
     } catch (e) { toast("Eklenemedi: " + e.message, "err"); }
   });
 
@@ -1084,13 +1087,6 @@
   function readGroupChips(){
     return $$("#cam-group-chips .chip.on").map(c => c.dataset.gid);
   }
-
-  function updateNotifyFieldsetVisibility(){
-    const on = form.motion_detection_enabled.checked || form.person_detection_enabled.checked;
-    $("#notify-fieldset").classList.toggle("hidden", !on);
-  }
-  form.motion_detection_enabled.addEventListener("change", updateNotifyFieldsetVisibility);
-  form.person_detection_enabled.addEventListener("change", updateNotifyFieldsetVisibility);
 
   // ----- Motion/person live status + debug panel -----
   let _motionPollTimer = null;
@@ -1241,9 +1237,6 @@
   $("#rec-schedule-add").addEventListener("click", () => {
     $("#rec-schedule-rows").appendChild(scheduleRow({ days:[], start:"08:00", end:"18:00" }, 0));
   });
-  $("#notify-schedule-add").addEventListener("click", () => {
-    $("#notify-schedule-rows").appendChild(scheduleRow({ days:[], start:"08:00", end:"18:00" }, 0));
-  });
   form.record_mode.addEventListener("change", () => {
     $("#rec-schedule-editor").classList.toggle("hidden", form.record_mode.value !== "schedule");
   });
@@ -1266,9 +1259,7 @@
       form.motion_detection_enabled.checked = !!cam.motion_detection_enabled;
       form.person_detection_enabled.checked = !!cam.person_detection_enabled;
       form.motion_timeout_seconds.value = cam.motion_timeout_seconds || 15;
-      form.notify_enabled.checked = cam.notify_enabled !== false;
       renderScheduleRows($("#rec-schedule-rows"), cam.record_schedule || []);
-      renderScheduleRows($("#notify-schedule-rows"), cam.notify_schedule || [], { defaultRowIfEmpty: false });
       renderCamGroupChips(cam.group_ids || []);
       loadStreamOptions(cam.stream || "");
       startMotionPoll(cam.id);
@@ -1276,16 +1267,13 @@
       delBtn.classList.add("hidden");
       form.record_mode.value = "off";
       form.motion_timeout_seconds.value = 15;
-      form.notify_enabled.checked = true;
       renderScheduleRows($("#rec-schedule-rows"), []);
-      renderScheduleRows($("#notify-schedule-rows"), [], { defaultRowIfEmpty: false });
       renderCamGroupChips([]);
       loadStreamOptions("");
       stopMotionPoll();
       renderMotionPanel(null);
     }
     $("#rec-schedule-editor").classList.toggle("hidden", form.record_mode.value !== "schedule");
-    updateNotifyFieldsetVisibility();
     showCameraDetail();
   }
 
@@ -1303,8 +1291,6 @@
     body.motion_detection_enabled = form.motion_detection_enabled.checked;
     body.person_detection_enabled = form.person_detection_enabled.checked;
     body.motion_timeout_seconds = parseInt(body.motion_timeout_seconds || 15);
-    body.notify_enabled = form.notify_enabled.checked;
-    body.notify_schedule = readScheduleRows($("#notify-schedule-rows"));
     body.group_ids = readGroupChips();
     if (!body.stream){ toast("Bir stream seçin", "err"); return; }
     const id = body.id; delete body.id;
@@ -1441,20 +1427,44 @@
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
   });
 
-  // ----- Bildirimler tab: enable toggle + snooze (auto-save, no Kaydet) -----
+  // ----- Bildirimler tab: master switch + per-group cards (auto-save) -----
+  function _debounce(fn, ms){
+    let t;
+    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+  }
+  // <input type="datetime-local"> uses LOCAL wall-clock time with no
+  // timezone info, so epoch<->string conversion here must go through the
+  // Date constructor's local-time parsing (not Date.UTC).
+  function _dtLocalFromEpoch(ts){
+    const n = Number(ts || 0);
+    if (!n) return "";
+    const d = new Date(n * 1000);
+    const p = (v) => String(v).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+  function _epochFromDtLocal(v){
+    if (!v) return 0;
+    const t = new Date(v).getTime();
+    return isFinite(t) ? t / 1000 : 0;
+  }
+  function _overrideStatusText(ts, activeLabel, inactiveLabel){
+    const until = Number(ts || 0);
+    return (until > Date.now() / 1000)
+      ? `${activeLabel}: ${new Date(until * 1000).toLocaleString("tr-TR")} kadar`
+      : inactiveLabel;
+  }
+
   async function loadNotifSettingsTab(){
     try {
       const n = await api.get("/api/notifications/settings");
       $("#n-enabled").checked = n.enabled !== false;
       renderSnoozeStatus(n.snooze_until);
     } catch {}
+    renderNotifGroups();
   }
   function renderSnoozeStatus(snoozeUntil){
     const el = $("#n-snooze-status"); if (!el) return;
-    const until = Number(snoozeUntil || 0);
-    el.textContent = (until > Date.now() / 1000)
-      ? "Ertelendi: " + new Date(until * 1000).toLocaleString("tr-TR") + " kadar"
-      : "Ertelenmedi";
+    el.textContent = _overrideStatusText(snoozeUntil, "Ertelendi", "Ertelenmedi");
   }
   $("#n-enabled").addEventListener("change", async () => {
     try {
@@ -1462,24 +1472,134 @@
       renderSnoozeStatus(n.snooze_until);
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
   });
-  $$("[data-snooze]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const v = btn.dataset.snooze;
-      let minutes;
-      if (v === "tomorrow"){
-        const now = new Date();
-        const tmr = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 8, 0, 0);
-        minutes = Math.max(1, Math.round((tmr.getTime() - now.getTime()) / 60000));
-      } else {
-        minutes = parseFloat(v) || 0;
-      }
+  $("#n-snooze-set").addEventListener("click", async () => {
+    const epoch = _epochFromDtLocal($("#n-snooze-until").value);
+    if (!epoch){ toast("Bir tarih/saat seçin", "err"); return; }
+    try {
+      const n = await api.post("/api/notifications/snooze", { until: epoch });
+      renderSnoozeStatus(n.snooze_until);
+      toast("Ertelendi", "ok");
+    } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
+  });
+  $("#n-snooze-cancel").addEventListener("click", async () => {
+    try {
+      const n = await api.post("/api/notifications/snooze", { until: 0 });
+      renderSnoozeStatus(n.snooze_until);
+      $("#n-snooze-until").value = "";
+      toast("Erteleme iptal edildi", "ok");
+    } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
+  });
+
+  // Notification config lives entirely on the GROUP now (a camera in no
+  // group gets no notifications; a camera in several groups notifies if
+  // ANY of them is active — see _group_notify_active in detection.py).
+  function renderNotifGroups(){
+    const wrap = $("#notif-groups-list"); if (!wrap) return;
+    wrap.innerHTML = "";
+    if (!state.groups.length){
+      wrap.innerHTML = `<div class="usage-text">Henüz grup yok. Kameralar sekmesinden grup ekleyebilirsiniz.</div>`;
+      return;
+    }
+    state.groups.forEach(g => wrap.appendChild(renderNotifGroupCard(g)));
+  }
+
+  function renderNotifGroupCard(g){
+    const card = document.createElement("div");
+    card.className = "notif-group-card";
+
+    const head = document.createElement("div"); head.className = "notif-group-head";
+    const name = document.createElement("span"); name.className = "notif-group-name";
+    const camCount = state.cameras.filter(c => (c.group_ids || []).includes(g.id)).length;
+    name.textContent = g.name + (camCount ? ` (${camCount} kamera)` : " (kamera yok)");
+    const enabledLabel = document.createElement("label"); enabledLabel.className = "row small";
+    const enabledCb = document.createElement("input");
+    enabledCb.type = "checkbox"; enabledCb.checked = g.notify_enabled !== false;
+    enabledLabel.append(enabledCb, document.createTextNode(" Etkin"));
+    head.append(name, enabledLabel);
+    card.appendChild(head);
+    enabledCb.addEventListener("change", async () => {
       try {
-        const n = await api.post("/api/notifications/snooze", { minutes });
-        renderSnoozeStatus(n.snooze_until);
-        toast(minutes > 0 ? "Ertelendi" : "Erteleme iptal edildi", "ok");
+        const updated = await api.put("/api/groups/" + g.id, { notify_enabled: enabledCb.checked });
+        Object.assign(g, updated);
+      } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); enabledCb.checked = !enabledCb.checked; }
+    });
+
+    const schedWrap = document.createElement("div"); schedWrap.className = "rec-schedule";
+    const schedRows = document.createElement("div");
+    renderScheduleRows(schedRows, g.notify_schedule || [], { defaultRowIfEmpty: false });
+    const schedAdd = document.createElement("button");
+    schedAdd.type = "button"; schedAdd.className = "btn ghost small"; schedAdd.textContent = "+ Zaman aralığı";
+    schedAdd.addEventListener("click", () => schedRows.appendChild(scheduleRow({ days: [], start: "08:00", end: "18:00" })));
+    schedWrap.append(schedRows, schedAdd);
+    card.appendChild(schedWrap);
+    const schedHint = document.createElement("small");
+    schedHint.textContent = "Boş bırakılırsa her saat bildirim gönderilir. Değişiklik otomatik kaydedilir.";
+    card.appendChild(schedHint);
+    const saveSchedule = _debounce(async () => {
+      try {
+        const updated = await api.put("/api/groups/" + g.id, { notify_schedule: readScheduleRows(schedRows) });
+        Object.assign(g, updated);
+      } catch (e) { toast("Zamanlama kaydedilemedi: " + e.message, "err"); }
+    }, 500);
+    schedRows.addEventListener("change", saveSchedule);
+    // Row add (schedAdd click) and row delete (the ✕ inside scheduleRow)
+    // both just mutate schedRows' children — one observer covers both.
+    new MutationObserver(saveSchedule).observe(schedRows, { childList: true });
+
+    const overrideBox = document.createElement("div"); overrideBox.className = "notif-group-override";
+    overrideBox.appendChild(_notifOverrideRow(g, {
+      field: "notify_snooze_until", label: "Ertele", setLabel: "Ertele",
+      activeLabel: "Ertelendi", inactiveLabel: "Ertelenmedi",
+    }));
+    overrideBox.appendChild(_notifOverrideRow(g, {
+      field: "notify_force_until", label: "Manuel Aç", setLabel: "Aç",
+      activeLabel: "Manuel açık", inactiveLabel: "Manuel açık değil",
+    }));
+    card.appendChild(overrideBox);
+
+    return card;
+  }
+
+  // One "pick a date/time -> set -> cancel" override row, shared by both
+  // the snooze (suppress) and manual-force-on (bypass schedule) controls.
+  function _notifOverrideRow(g, opts){
+    const row = document.createElement("div"); row.className = "notif-override-row";
+    const lbl = document.createElement("span"); lbl.className = "notif-override-label"; lbl.textContent = opts.label;
+    const dt = document.createElement("input"); dt.type = "datetime-local"; dt.className = "dt-input";
+    const setBtn = document.createElement("button");
+    setBtn.type = "button"; setBtn.className = "btn ghost small"; setBtn.textContent = opts.setLabel;
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button"; cancelBtn.className = "btn ghost small"; cancelBtn.textContent = "İptal";
+    row.append(lbl, dt, setBtn, cancelBtn);
+
+    const status = document.createElement("div"); status.className = "notif-override-status usage-text";
+    const refresh = () => { status.textContent = _overrideStatusText(g[opts.field], opts.activeLabel, opts.inactiveLabel); };
+    refresh();
+
+    setBtn.addEventListener("click", async () => {
+      const epoch = _epochFromDtLocal(dt.value);
+      if (!epoch){ toast("Bir tarih/saat seçin", "err"); return; }
+      try {
+        const updated = await api.put("/api/groups/" + g.id, { [opts.field]: epoch });
+        Object.assign(g, updated);
+        refresh();
+        toast(`${opts.label} ayarlandı`, "ok");
       } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
     });
-  });
+    cancelBtn.addEventListener("click", async () => {
+      try {
+        const updated = await api.put("/api/groups/" + g.id, { [opts.field]: 0 });
+        Object.assign(g, updated);
+        dt.value = "";
+        refresh();
+        toast(`${opts.label} iptal edildi`, "ok");
+      } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
+    });
+
+    const wrap = document.createElement("div");
+    wrap.append(row, status);
+    return wrap;
+  }
 
   async function refreshUsageBar(){
     try {

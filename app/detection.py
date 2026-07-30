@@ -88,13 +88,27 @@ _PROBE_OPERATION_TIMEOUT_SEC = 20
 
 def _notify_window_active(schedule, now=None) -> bool:
     """Empty schedule = no time restriction (notify any time) — the
-    OPPOSITE of record_schedule's empty=never. An unconfigured per-camera
+    OPPOSITE of record_schedule's empty=never. An unconfigured group
     notification schedule should mean "notify whenever detected", not
-    "never notify"; enabled/snooze/notify_enabled are already checked
-    before this ever runs."""
+    "never notify"; enabled/snooze checks happen separately around this."""
     if not schedule:
         return True
     return _schedule_active(schedule, now)
+
+
+def _group_notify_active(group: dict, ts: float) -> bool:
+    """Notification config lives on the GROUP now, not the camera (a
+    camera inherits from every group it belongs to). Precedence for a
+    single group: an active manual "force on" window wins outright
+    (that's the whole point of a manual override), then an active
+    snooze suppresses it, then the normal enabled+schedule check."""
+    if float(group.get("notify_force_until", 0) or 0) > ts:
+        return True
+    if float(group.get("notify_snooze_until", 0) or 0) > ts:
+        return False
+    if not group.get("notify_enabled", True):
+        return False
+    return _notify_window_active(group.get("notify_schedule") or [])
 
 
 class _PerCameraLogCapture(logging.Handler):
@@ -289,9 +303,16 @@ class CameraEventWatcher:
                 return
             if float(ncfg.get("snooze_until", 0) or 0) > ts:
                 return
-            if not self.cam.get("notify_enabled", True):
+            group_ids = self.cam.get("group_ids") or []
+            if not group_ids:
+                # No group = no notifications. Notification config lives
+                # entirely on groups now; an ungrouped camera has nothing
+                # to inherit from.
                 return
-            if not _notify_window_active(self.cam.get("notify_schedule") or []):
+            groups = {g["id"]: g for g in self.config_store.get_groups()}
+            # A camera notifies if ANY of its groups says "active now" —
+            # membership in one silenced group never mutes another.
+            if not any(_group_notify_active(groups[gid], ts) for gid in group_ids if gid in groups):
                 return
             self.storage.create_notification(self.cam_id, kind, ts)
         except Exception as e:
