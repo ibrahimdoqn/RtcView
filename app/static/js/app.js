@@ -100,17 +100,15 @@
   }
 
   // ?open_cam=<id>&open_at=<unix_ts> jumps straight to that camera/moment
-  // in playback on load — used by the Android companion app's notification
-  // tap (it can't call into page JS directly, so it just navigates here
-  // with these params instead). Harmless/no-op for a normal browser visit.
+  // in playback on load — e.g. a bookmarked/shared link to a specific
+  // moment. Harmless/no-op for a normal visit with no query params.
   //
   // Persisted through sessionStorage, not just read from the URL: on a
-  // completely fresh install (no service worker registered yet — exactly
-  // the Android WebView's very first launch), registerSW()'s
-  // controllerchange handler reloads the page moments after this runs,
-  // which would otherwise silently drop the deep link the instant the
-  // reload wipes the in-memory JS state — sessionStorage survives that
-  // reload within the same tab/session, the URL params don't.
+  // completely fresh install (no service worker registered yet),
+  // registerSW()'s controllerchange handler reloads the page moments
+  // after this runs, which would otherwise silently drop the deep link
+  // the instant the reload wipes the in-memory JS state — sessionStorage
+  // survives that reload within the same tab/session, the URL params don't.
   function handleDeepLink(){
     const params = new URLSearchParams(location.search);
     const camId = params.get("open_cam");

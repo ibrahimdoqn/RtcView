@@ -2,7 +2,7 @@
 
 **Mevcut** bir go2rtc'ye bağlanan, Frigate benzeri, sıfır-gecikmeli (WebRTC) kamera izleme, **kayıt / playback**, **ONVIF hareket & insan algılama** ve **grup bazlı bildirim** arayüzü.
 Kendi başına stream sunmaz; go2rtc'de tanımlı stream'leri WHEP üzerinden alır ve gösterir, kayıt için RTSP çıkışını FFmpeg ile segmentler halinde diske yazar.
-PWA uyumludur, Ubuntu Noble (rk3399, arm64) üzerinde izole Python venv içinde çalışır. Ayrıca `android/` klasöründe, aynı sunucuya bağlanan bir Android istemcisi de bulunur (bkz. [Android Uygulaması](#android-uygulaması)).
+PWA uyumludur, Ubuntu Noble (rk3399, arm64) üzerinde izole Python venv içinde çalışır.
 
 ## Ön koşul
 
@@ -172,7 +172,7 @@ Playback:
 ```
 > Not: go2rtc **bu dizinde değildir**; ağınızdaki mevcut go2rtc kullanılır.
 
-Repo kökünde ayrıca `tapo_detector/` (vendored ONVIF hareket/insan algılama motoru) ve `android/` (Android istemcisi kaynak kodu, sunucuya deploy edilmez) bulunur.
+Repo kökünde ayrıca `tapo_detector/` (vendored ONVIF hareket/insan algılama motoru) bulunur.
 
 ## API özeti (yeni)
 
@@ -212,9 +212,3 @@ systemctl status rtcview
 sudo systemctl restart rtcview
 journalctl -u rtcview -f
 ```
-
-## Android Uygulaması
-
-`android/` klasöründe, aynı sunucuya (Tailscale veya yerel ağ üzerinden, düz HTTP ile) bağlanan bir Android istemcisi bulunur. RtcView'in web arayüzünü tam ekran bir WebView içinde açar — ayrı bir native arayüz değildir, web tarafındaki her geliştirme otomatik yansır. Sadece izleme amaçlıdır; arka planda bildirim kontrolü yapmaz (WorkManager'ın izin verdiği en sık aralık 15 dakikaydı, bu da bildirimleri anlamsız derecede geç bıraktığı için kaldırıldı).
-
-Derleme talimatları ve mimari detaylar için: [`android/README.md`](android/README.md).
