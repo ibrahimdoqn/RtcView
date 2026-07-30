@@ -537,6 +537,13 @@ class CameraEventWatcher:
 
     def _run(self):
         while not self._stop.is_set():
+            # Silence timeouts must keep being evaluated even while the
+            # ONVIF side is broken. Without this, a kind that was active
+            # when the camera dropped would stay "active" forever: the
+            # connect/subscribe failure paths below never reach the pull
+            # loop, so nothing else would ever close it.
+            self._check_timeouts(time.time())
+
             if self._cam is None:
                 if not self._connect():
                     self._sleep_interruptible(CONNECT_RETRY_SLEEP_SEC)
@@ -567,9 +574,16 @@ class CameraEventWatcher:
         benign_errors = 0
 
         while not self._stop.is_set():
+            # Evaluated at the TOP of every lap, deliberately outside the
+            # try below: a pull that raises is exactly when a stuck
+            # "active" kind most needs closing, so this must not depend on
+            # the pull having succeeded.
+            now = time.time()
+            self._check_timeouts(now)
+
             # Proactive renewal (point 6): even a subscription that has
             # never errored may have quietly stopped delivering.
-            age = time.time() - self._subscribed_at
+            age = now - self._subscribed_at
             if age >= MAX_SUBSCRIPTION_AGE_SEC:
                 self._note(f"Abonelik {age:.0f} saniyedir açık, proaktif olarak yenileniyor.")
                 return
@@ -583,20 +597,19 @@ class CameraEventWatcher:
                 unexpected_errors = 0
                 benign_errors = 0
 
-                now = time.time()
                 if response and response.NotificationMessage:
+                    # Re-read the clock: a pull can block for
+                    # PULL_TIMEOUT_SEC, so `now` from the top of the lap
+                    # is stale by the time messages actually arrive.
+                    arrived = time.time()
                     for msg in response.NotificationMessage:
                         # One malformed/unexpected message must never abort
                         # the rest of the batch or trip the error counters.
                         try:
-                            self._handle_message(msg, now)
+                            self._handle_message(msg, arrived)
                         except Exception as msg_err:
                             log.debug("[%s] mesaj işlenemedi (atlandı): %s",
                                       self.cam_id, msg_err)
-
-                # Checked every lap, including empty pulls — an empty pull
-                # IS the signal that the camera has gone quiet.
-                self._check_timeouts(now)
 
             except Exception as e:
                 err = str(e)
@@ -702,11 +715,17 @@ class DetectionManager:
             elif not want and w is not None:
                 self.reload_camera(cam["id"])
 
-    def status(self) -> dict:
+    def status(self, cam_id: Optional[str] = None) -> dict:
+        """Status keyed by camera id. Pass cam_id to get just that one:
+        each entry carries up to LOG_MAXLEN debug lines, and the settings
+        UI polls this every few seconds while showing exactly one camera —
+        so returning all of them is mostly payload the caller discards."""
         with self._lock:
             watchers = dict(self._watchers)
         out = {}
         for c in self.cfg.get_cameras():
+            if cam_id is not None and c["id"] != cam_id:
+                continue
             w = watchers.get(c["id"])
             if w:
                 out[c["id"]] = w.status()

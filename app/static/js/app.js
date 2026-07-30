@@ -1126,7 +1126,9 @@
     stopMotionPoll();
     const tick = async () => {
       try {
-        const all = await api.get("/api/detection/status");
+        // Ask for just this camera: every entry carries a long debug log,
+        // and only the open camera's panel is ever rendered.
+        const all = await api.get(`/api/detection/status?cam=${encodeURIComponent(camId)}`);
         renderMotionPanel(all[camId]);
       } catch { /* keep quiet — this is a background poll */ }
     };

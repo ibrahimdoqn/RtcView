@@ -299,7 +299,11 @@ def create_app(config_path: str) -> Flask:
     # ---------- Motion / person detection (ONVIF) ----------
     @app.get("/api/detection/status")
     def api_detection_status():
-        return jsonify(detector.status())
+        # Optional ?cam=<id> narrows the response to one camera. Each entry
+        # carries a long debug log, so the UI (which shows one camera at a
+        # time) asks for just that one; omitting the arg keeps the original
+        # all-cameras behaviour.
+        return jsonify(detector.status(cam_id=request.args.get("cam") or None))
 
     @app.get("/api/detection/events")
     def api_detection_events():
