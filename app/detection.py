@@ -188,18 +188,16 @@ _TOPIC_TO_FIELD = {
 KIND_LABEL = {"motion": "Hareket", "person": "İnsan"}
 
 
-def _group_notify_active(group: dict, ts: float) -> bool:
+def _group_notify_active(group: dict) -> bool:
     """Notification config lives on the GROUP, not the camera (a camera
-    inherits from every group it belongs to). Precedence for a single
-    group: an active manual "force on" window wins outright (that's the
-    whole point of a manual override), then an active snooze suppresses
-    it, then the normal enabled+schedule check — same semantics as
-    record_schedule here: an EMPTY schedule means never, not "any time".
-    _schedule_active already returns False for an empty/falsy schedule."""
-    if float(group.get("notify_force_until", 0) or 0) > ts:
-        return True
-    if float(group.get("notify_snooze_until", 0) or 0) > ts:
-        return False
+    inherits from every group it belongs to).
+
+    Two gates, both must pass:
+      * notify_enabled — the manual on/off toggle shown in the sidebar.
+      * notify_schedule — same semantics as record_schedule: an EMPTY
+        schedule means NEVER, not "any time" (_schedule_active already
+        returns False for an empty/falsy list).
+    """
     if not group.get("notify_enabled", True):
         return False
     return _schedule_active(group.get("notify_schedule") or [])
@@ -506,7 +504,7 @@ class CameraEventWatcher:
             groups = {g["id"]: g for g in self.config_store.get_groups()}
             # A camera notifies if ANY of its groups says "active now" —
             # membership in one silenced group never mutes another.
-            if not any(_group_notify_active(groups[gid], ts)
+            if not any(_group_notify_active(groups[gid])
                        for gid in group_ids if gid in groups):
                 return
             self.storage.create_notification(self.cam_id, kind, ts)

@@ -17,7 +17,23 @@
     notifications: [],
     notifUnread: 0,
     groupFilter: null,       // active group id in the sidebar/grid filter, or null = all
+    collapsedGroups: new Set(),  // sidebar tree fold state, persisted per device
   };
+
+  // Fold state is a per-device UI preference, not server config — a phone
+  // and a desktop can reasonably want different groups folded.
+  const COLLAPSED_GROUPS_KEY = "rtcview.collapsedGroups";
+  function _loadCollapsedGroups(){
+    try {
+      const raw = JSON.parse(localStorage.getItem(COLLAPSED_GROUPS_KEY) || "[]");
+      if (Array.isArray(raw)) state.collapsedGroups = new Set(raw);
+    } catch {}
+  }
+  function _saveCollapsedGroups(){
+    try {
+      localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify([...state.collapsedGroups]));
+    } catch {}
+  }
   const isMobile = () => window.matchMedia("(max-width: 640px), (orientation: portrait) and (max-width: 900px)").matches;
 
   // How often the notification bell refreshes. This is the dominant term
@@ -83,6 +99,7 @@
       state.recording = cfg.recording || {};
       state.cameras = cfg.cameras || [];
       state.groups = cfg.groups || [];
+      _loadCollapsedGroups();
       applySettings();
       renderSidebar(); renderGrid();
       updateStatus();
@@ -200,28 +217,118 @@
   $("#btn-close-sidebar").addEventListener("click", closeSidebar);
   $("#sidebar-backdrop").addEventListener("click", closeSidebar);
 
+  // One camera row. Shared by the grouped tree and the flat fallback, so
+  // both look and behave identically (drag-reorder, status dot, select).
+  function _camRow(cam){
+    const el = document.createElement("div");
+    el.className = "cam-item" + (cam.id === state.selectedId ? " active" : "");
+    el.dataset.id = cam.id;
+    el.draggable = true;
+    // No group chip and no per-row edit affordance here by design —
+    // editing lives entirely in Ayarlar → Kameralar now, so this row
+    // stays a plain, uncluttered camera picker.
+    el.innerHTML = `<span class="grip">⋮⋮</span>
+      <span class="rec-mini" title="Kayıt aktif"></span>
+      <span class="name">${escapeHtml(cam.name)}</span>
+      <span class="st" data-st></span>`;
+    el.addEventListener("click", () => {
+      selectCamera(cam.id); if (isMobile()) closeSidebar();
+    });
+    wireDrag(el);
+    return el;
+  }
+
+  // A group header + its cameras. The header carries the notification
+  // switch so a group can be silenced without opening Ayarlar at all.
+  function _groupBlock(g, members){
+    const block = document.createElement("div");
+    const collapsed = state.collapsedGroups.has(g.id);
+    const notifyOn = g.notify_enabled !== false;
+    block.className = "grp-block"
+      + (collapsed ? " collapsed" : "")
+      + (notifyOn ? "" : " notif-off");
+
+    const head = document.createElement("div"); head.className = "grp-head";
+    const caret = document.createElement("button");
+    caret.type = "button"; caret.className = "grp-caret";
+    caret.textContent = "▼";
+    caret.title = collapsed ? "Genişlet" : "Daralt";
+    const name = document.createElement("span"); name.className = "grp-name";
+    name.textContent = g.name;
+    const count = document.createElement("span"); count.className = "grp-count";
+    count.textContent = String(members.length);
+    // Title spells out what "on" actually means, since an enabled group
+    // with no time window still never notifies (empty schedule = never).
+    const sw = makeSwitch(notifyOn, notifyOn
+      ? "Bildirimler açık — kapatmak için dokunun"
+      : "Bildirimler kapalı — açmak için dokunun");
+    sw.input.addEventListener("change", () => setGroupNotify(g.id, sw.input.checked));
+    head.append(caret, name, count, sw);
+
+    const toggleCollapse = () => {
+      if (collapsed) state.collapsedGroups.delete(g.id);
+      else state.collapsedGroups.add(g.id);
+      _saveCollapsedGroups();
+      renderSidebar();
+    };
+    caret.addEventListener("click", toggleCollapse);
+    // Clicking the header row collapses too, but never when the tap
+    // landed on the switch — that would toggle notifications AND fold
+    // the group in one gesture.
+    head.addEventListener("click", (e) => {
+      if (e.target.closest(".sw") || e.target.closest(".grp-caret")) return;
+      toggleCollapse();
+    });
+
+    const cams = document.createElement("div"); cams.className = "grp-cams";
+    if (!members.length){
+      const empty = document.createElement("div"); empty.className = "grp-empty";
+      empty.textContent = "Bu grupta kamera yok";
+      cams.appendChild(empty);
+    } else {
+      members.forEach(cam => cams.appendChild(_camRow(cam)));
+    }
+
+    block.append(head, cams);
+    return block;
+  }
+
   function renderSidebar(){
     renderGroupFilterRow();
     const list = $("#camera-list"); list.innerHTML = "";
     const q = ($("#search-input").value || "").toLowerCase();
-    visibleCameras().filter(c => !q || c.name.toLowerCase().includes(q)).forEach(cam => {
-      const el = document.createElement("div");
-      el.className = "cam-item" + (cam.id === state.selectedId ? " active" : "");
-      el.dataset.id = cam.id;
-      el.draggable = true;
-      // No group chip and no per-row edit affordance here by design —
-      // editing lives entirely in Ayarlar → Kameralar now, so this row
-      // stays a plain, uncluttered camera picker.
-      el.innerHTML = `<span class="grip">⋮⋮</span>
-        <span class="rec-mini" title="Kayıt aktif"></span>
-        <span class="name">${escapeHtml(cam.name)}</span>
-        <span class="st" data-st></span>`;
-      el.addEventListener("click", () => {
-        selectCamera(cam.id); if (isMobile()) closeSidebar();
+    const cams = visibleCameras().filter(c => !q || c.name.toLowerCase().includes(q));
+
+    if (!state.groups.length){
+      // No groups configured — plain flat list, exactly as before.
+      cams.forEach(cam => list.appendChild(_camRow(cam)));
+    } else {
+      const shown = state.groups.filter(g => !state.groupFilter || g.id === state.groupFilter);
+      shown.forEach(g => {
+        const members = cams.filter(c => (c.group_ids || []).includes(g.id));
+        // While searching, a group with no hits is just noise — hide it.
+        // With no search active, keep every group visible so its switch
+        // stays reachable even when it holds no cameras yet.
+        if (q && !members.length) return;
+        list.appendChild(_groupBlock(g, members));
       });
-      wireDrag(el);
-      list.appendChild(el);
-    });
+      // Cameras in no group would otherwise be unreachable from the
+      // sidebar entirely. They have no group, so no notification switch.
+      if (!state.groupFilter){
+        const orphans = cams.filter(c => !(c.group_ids || []).length);
+        if (orphans.length){
+          const block = document.createElement("div");
+          block.className = "grp-block";
+          const head = document.createElement("div"); head.className = "grp-head";
+          head.innerHTML = `<span class="grp-name">Gruba ait değil</span>`
+            + `<span class="grp-count">${orphans.length}</span>`;
+          const wrap = document.createElement("div"); wrap.className = "grp-cams";
+          orphans.forEach(cam => wrap.appendChild(_camRow(cam)));
+          block.append(head, wrap);
+          list.appendChild(block);
+        }
+      }
+    }
     refreshStatusDots();
     applyRecUiState();
   }
@@ -1382,13 +1489,11 @@
   function closeSettingsPage(){
     $("#settings-page").classList.add("hidden");
     stopMotionPoll();
-    stopNotifTicker();
   }
   function switchSettingsTab(name){
     _lastSettingsTab = name;
     $$(".settings-tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
     $$(".settings-tabpanel").forEach(p => p.classList.toggle("hidden", p.dataset.tab !== name));
-    if (name !== "bildirimler") stopNotifTicker();
     if (name === "genel") loadGenelTab();
     else if (name === "kameralar") showCameraList();
     else if (name === "bildirimler") loadNotifSettingsTab();
@@ -1483,29 +1588,8 @@
     let t;
     return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
   }
-  // Time-of-day only (no date) — resolves to the NEXT occurrence of that
-  // clock time: today if it hasn't passed yet, otherwise tomorrow.
-  function _epochFromTimeOfDay(v){
-    if (!v) return 0;
-    const [hh, mm] = v.split(":").map(Number);
-    if (!isFinite(hh) || !isFinite(mm)) return 0;
-    const now = new Date();
-    const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
-    if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
-    return target.getTime() / 1000;
-  }
-  function _fmtHM(ts){
-    const d = new Date(ts * 1000);
-    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  }
-  function _fmtRemaining(untilTs){
-    const diff = Math.max(0, untilTs - Date.now() / 1000);
-    const h = Math.floor(diff / 3600), m = Math.round((diff % 3600) / 60);
-    if (h > 0) return m > 0 ? `${h} sa ${m} dk kaldı` : `${h} sa kaldı`;
-    return `${Math.max(1, m)} dk kaldı`;
-  }
-  // Mirrors _group_notify_active in detection.py exactly (force wins,
-  // then snooze, then enabled+schedule; empty schedule = never).
+  // Mirrors the schedule half of _group_notify_active in detection.py:
+  // an EMPTY schedule means never, not "any time".
   function _scheduleActiveNow(schedule){
     if (!schedule || !schedule.length) return false;
     const now = new Date();
@@ -1522,34 +1606,43 @@
     }
     return false;
   }
-  // Which override row to show. A currently-ACTIVE override always wins
-  // display priority (so you can see its countdown / cancel it) even
-  // though snoozing flips the group to "inactive" — otherwise the Ertele
-  // row you just used would vanish the instant it took effect. With no
-  // override running, fall back to the natural (un-overridden) state:
-  // offer Ertele while notifications are flowing, Manuel Aç while quiet.
-  function _whichOverrideToShow(g){
-    const now = Date.now() / 1000;
-    if (Number(g.notify_snooze_until || 0) > now) return "snooze";
-    if (Number(g.notify_force_until || 0) > now) return "force";
-    const naturallyActive = g.notify_enabled !== false && _scheduleActiveNow(g.notify_schedule || []);
-    return naturallyActive ? "snooze" : "force";
+  // ----- Shared iOS-style switch -----
+  // Built here rather than inline so the sidebar tree and the Bildirimler
+  // settings tab use one identical control (see .sw in style.css).
+  function makeSwitch(checked, title){
+    const label = document.createElement("label");
+    label.className = "sw";
+    if (title) label.title = title;
+    const input = document.createElement("input");
+    input.type = "checkbox"; input.checked = !!checked;
+    const track = document.createElement("span"); track.className = "sw-track";
+    const thumb = document.createElement("span"); thumb.className = "sw-thumb";
+    track.appendChild(thumb);
+    label.append(input, track);
+    label.input = input;
+    return label;
   }
 
-  let _notifTickTimer = null;
-  function startNotifTicker(){
-    stopNotifTicker();
-    _notifTickTimer = setInterval(() => {
-      $$(".notif-group-card").forEach(card => { if (card._tick) card._tick(); });
-    }, 15000);
-  }
-  function stopNotifTicker(){
-    if (_notifTickTimer){ clearInterval(_notifTickTimer); _notifTickTimer = null; }
+  // Single place that flips a group's notifications, so the sidebar tree
+  // and the settings tab can never disagree: it writes through the API,
+  // updates the shared state.groups entry, then re-renders both surfaces.
+  // On failure the caller's checkbox is reverted by re-rendering from the
+  // unchanged state.
+  async function setGroupNotify(groupId, enabled){
+    const g = state.groups.find(x => x.id === groupId);
+    if (!g) return;
+    try {
+      const updated = await api.put("/api/groups/" + groupId, { notify_enabled: enabled });
+      Object.assign(g, updated);
+    } catch (e) {
+      toast("Kaydedilemedi: " + e.message, "err");
+    }
+    renderSidebar();
+    if (!$("#settings-page").classList.contains("hidden")) renderNotifGroups();
   }
 
   async function loadNotifSettingsTab(){
     renderNotifGroups();
-    startNotifTicker();
   }
 
   // Notification config lives entirely on the GROUP now (a camera in no
@@ -1573,19 +1666,12 @@
     const name = document.createElement("span"); name.className = "notif-group-name";
     const camCount = state.cameras.filter(c => (c.group_ids || []).includes(g.id)).length;
     name.textContent = g.name + (camCount ? ` (${camCount} kamera)` : " (kamera yok)");
-    const enabledLabel = document.createElement("label"); enabledLabel.className = "row small";
-    const enabledCb = document.createElement("input");
-    enabledCb.type = "checkbox"; enabledCb.checked = g.notify_enabled !== false;
-    enabledLabel.append(enabledCb, document.createTextNode(" Etkin"));
-    head.append(name, enabledLabel);
+    // Same switch component as the sidebar tree, and the same shared
+    // handler, so toggling in either place updates the other.
+    const sw = makeSwitch(g.notify_enabled !== false, "Bildirimleri aç/kapat");
+    sw.input.addEventListener("change", () => setGroupNotify(g.id, sw.input.checked));
+    head.append(name, sw);
     card.appendChild(head);
-    enabledCb.addEventListener("change", async () => {
-      try {
-        const updated = await api.put("/api/groups/" + g.id, { notify_enabled: enabledCb.checked });
-        Object.assign(g, updated);
-        card._tick();
-      } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); enabledCb.checked = !enabledCb.checked; }
-    });
 
     const schedWrap = document.createElement("div"); schedWrap.className = "rec-schedule";
     const schedRows = document.createElement("div");
@@ -1602,7 +1688,7 @@
       try {
         const updated = await api.put("/api/groups/" + g.id, { notify_schedule: readScheduleRows(schedRows) });
         Object.assign(g, updated);
-        card._tick();
+        renderSidebar();          // schedule affects the sidebar's live state dot
       } catch (e) { toast("Zamanlama kaydedilemedi: " + e.message, "err"); }
     }, 500);
     schedRows.addEventListener("change", saveSchedule);
@@ -1610,84 +1696,7 @@
     // both just mutate schedRows' children — one observer covers both.
     new MutationObserver(saveSchedule).observe(schedRows, { childList: true });
 
-    // Exactly ONE override control is relevant at a time: if the group is
-    // currently sending notifications, you'd want to Ertele (snooze) it;
-    // if it's currently quiet, you'd want to Manuel Aç (force it on).
-    // Both rows are built once and toggled by the ticker below, so a live
-    // countdown can update in place without losing in-progress edits.
-    const overrideBox = document.createElement("div"); overrideBox.className = "notif-group-override";
-    const snoozeWrap = _notifOverrideRow(g, {
-      field: "notify_snooze_until", clearField: "notify_force_until",
-      label: "Ertele", setLabel: "Ertele", activeLabel: "Ertelendi",
-    });
-    const forceWrap = _notifOverrideRow(g, {
-      field: "notify_force_until", clearField: "notify_snooze_until",
-      label: "Manuel Aç", setLabel: "Aç", activeLabel: "Manuel açık",
-    });
-    overrideBox.append(snoozeWrap, forceWrap);
-    card.appendChild(overrideBox);
-
-    card._tick = () => {
-      const which = _whichOverrideToShow(g);
-      snoozeWrap.classList.toggle("hidden", which !== "snooze");
-      forceWrap.classList.toggle("hidden", which !== "force");
-      snoozeWrap._refreshStatus();
-      forceWrap._refreshStatus();
-    };
-    card._tick();
-
     return card;
-  }
-
-  // One "pick a time -> set -> cancel" override row, shared by both the
-  // snooze (suppress) and manual-force-on (bypass schedule) controls.
-  // Setting one clears the other so they can never both linger active
-  // at once (force always wins in the backend, but a stale opposing
-  // value left over from an earlier session would be confusing here).
-  function _notifOverrideRow(g, opts){
-    const wrap = document.createElement("div"); wrap.className = "notif-override-wrap";
-    const row = document.createElement("div"); row.className = "notif-override-row";
-    const lbl = document.createElement("span"); lbl.className = "notif-override-label"; lbl.textContent = opts.label;
-    const timeInput = document.createElement("input"); timeInput.type = "time"; timeInput.className = "dt-input";
-    const setBtn = document.createElement("button");
-    setBtn.type = "button"; setBtn.className = "btn ghost small"; setBtn.textContent = opts.setLabel;
-    const cancelBtn = document.createElement("button");
-    cancelBtn.type = "button"; cancelBtn.className = "btn ghost small"; cancelBtn.textContent = "İptal";
-    row.append(lbl, timeInput, setBtn, cancelBtn);
-    const status = document.createElement("div"); status.className = "notif-override-status usage-text";
-    wrap.append(row, status);
-
-    const refresh = () => {
-      const until = Number(g[opts.field] || 0);
-      status.textContent = (until > Date.now() / 1000)
-        ? `${opts.activeLabel} — ${_fmtHM(until)}'a kadar (${_fmtRemaining(until)})`
-        : "—";
-    };
-    wrap._refreshStatus = refresh;
-
-    setBtn.addEventListener("click", async () => {
-      const epoch = _epochFromTimeOfDay(timeInput.value);
-      if (!epoch){ toast("Bir saat seçin", "err"); return; }
-      try {
-        const body = { [opts.field]: epoch };
-        if (opts.clearField) body[opts.clearField] = 0;
-        const updated = await api.put("/api/groups/" + g.id, body);
-        Object.assign(g, updated);
-        wrap.closest(".notif-group-card")._tick();
-        toast(`${opts.label} ayarlandı`, "ok");
-      } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
-    });
-    cancelBtn.addEventListener("click", async () => {
-      try {
-        const updated = await api.put("/api/groups/" + g.id, { [opts.field]: 0 });
-        Object.assign(g, updated);
-        timeInput.value = "";
-        wrap.closest(".notif-group-card")._tick();
-        toast(`${opts.label} iptal edildi`, "ok");
-      } catch (e) { toast("İşlem başarısız: " + e.message, "err"); }
-    });
-
-    return wrap;
   }
 
   async function refreshUsageBar(){

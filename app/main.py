@@ -269,12 +269,6 @@ def create_app(config_path: str) -> Flask:
             updates["notify_enabled"] = bool(body["notify_enabled"])
         if "notify_schedule" in body:
             updates["notify_schedule"] = body.get("notify_schedule") or []
-        for field in ("notify_snooze_until", "notify_force_until"):
-            if field in body:
-                try:
-                    updates[field] = float(body.get(field) or 0)
-                except (TypeError, ValueError):
-                    return jsonify({"error": f"invalid {field}"}), 400
         if not updates:
             return jsonify({"error": "no valid fields"}), 400
         ok = store.update_group(group_id, updates)

@@ -67,14 +67,20 @@ CAMERA_DETECTION_DEFAULTS = {
 # here: "no time restriction" (notify any time) rather than record_
 # schedule's "never" — a freshly-created group should just notify
 # immediately, not require the user to configure a schedule first.
-# notify_snooze_until / notify_force_until are epoch seconds (0/past =
-# inactive); force_until is a manual "on regardless of schedule" override.
+# notify_enabled is the single manual on/off switch (rendered as a toggle
+# in the sidebar and in Ayarlar → Bildirimler). It replaced an earlier
+# pair of timed overrides (notify_snooze_until / notify_force_until):
+# those required picking an expiry time for every action, which was more
+# ceremony than "silence this group" ever needed. Legacy keys are stripped
+# on load — see _merge_defaults.
 GROUP_NOTIFICATION_DEFAULTS = {
     "notify_enabled": True,
     "notify_schedule": [],
-    "notify_snooze_until": 0,
-    "notify_force_until": 0,
 }
+
+# Group keys that older versions wrote and nothing reads any more. Removed
+# on load so a stale value can't sit in config.json looking meaningful.
+GROUP_LEGACY_KEYS = ("notify_snooze_until", "notify_force_until")
 
 _lock = threading.Lock()
 
@@ -151,6 +157,8 @@ class ConfigStore:
         for g in self._data.get("groups", []):
             for k, v in GROUP_NOTIFICATION_DEFAULTS.items():
                 g.setdefault(k, json.loads(json.dumps(v)))
+            for k in GROUP_LEGACY_KEYS:
+                g.pop(k, None)
 
     def _save_locked(self):
         tmp = self.config_path.with_suffix(".tmp")
