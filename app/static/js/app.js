@@ -787,7 +787,6 @@
       const k = e.key.toLowerCase();
       if (k === "escape"){
         if (!$("#settings-page").classList.contains("hidden")){ closeSettingsPage(); return; }
-        if (!$("#notif-panel").classList.contains("hidden")){ closeNotifPanel(); return; }
         if (state.solo) exitSolo(); else if (state.sidebarOpen) closeSidebar();
         return;
       }
@@ -915,14 +914,14 @@
     e.target.value = "";
   });
 
-  // -------- Notifications (bell popover) --------
+  // -------- Notifications (embedded in the sidebar, see #notif-section) --------
   async function updateNotifications(){
     try {
       const list = await api.get("/api/notifications?limit=100");
       state.notifications = list || [];
       state.notifUnread = state.notifications.filter(n => !n.read).length;
       renderNotifBadge();
-      if (!$("#notif-panel").classList.contains("hidden")) renderNotifList();
+      if (!$("#notif-section").classList.contains("hidden")) renderNotifList();
     } catch { /* keep quiet — background poll */ }
   }
   function renderNotifBadge(){
@@ -962,15 +961,18 @@
       row.addEventListener("click", () => {
         const camId = row.dataset.cam;
         const ts = parseFloat(row.dataset.ts);
-        closeNotifPanel();
+        closeSidebar();
         if (state.cameras.some(c => c.id === camId)) openPlayback({ camId, atTime: ts });
         else toast("Bu kamera artık mevcut değil", "err");
       });
     });
   }
-  function openNotifPanel(){
-    $("#notif-panel").classList.remove("hidden");
-    $("#notif-backdrop").classList.remove("hidden");
+  function toggleNotifSection(){
+    const section = $("#notif-section");
+    const opening = section.classList.contains("hidden");
+    section.classList.toggle("hidden", !opening);
+    if (!opening) return;
+    openSidebar();
     renderNotifList();
     api.post("/api/notifications/read-all").then(() => {
       state.notifications.forEach(n => { n.read = 1; });
@@ -978,12 +980,7 @@
       renderNotifBadge();
     }).catch(() => {});
   }
-  function closeNotifPanel(){
-    $("#notif-panel").classList.add("hidden");
-    $("#notif-backdrop").classList.add("hidden");
-  }
-  $("#btn-notif").addEventListener("click", () => { closeSidebar(); openNotifPanel(); });
-  $("#notif-backdrop").addEventListener("click", closeNotifPanel);
+  $("#btn-notif").addEventListener("click", toggleNotifSection);
   $("#notif-clear").addEventListener("click", async () => {
     if (!confirm("Tüm bildirimler silinsin mi?")) return;
     try {
@@ -2697,7 +2694,14 @@
       frag.appendChild(base);
       const addDetectBar = (s0, s1, cls) => {
         const vs0 = Math.max(s0, viewStart), vs1 = Math.min(s1, viewEnd);
-        if (vs1 <= vs0) return;
+        // NOT "<=" — a detection interval can legitimately have
+        // started_at === ended_at (a single ONVIF sample that never got a
+        // second "still active" poke before the silence timeout closed
+        // it — see _check_timeouts in detection.py, which closes using
+        // last_seen, not "now"). That's a real, valid, just very brief
+        // detection, and used to vanish from the timeline entirely here
+        // because a zero-width interval always satisfied "<=".
+        if (vs1 < vs0) return;
         const x = (vs0 - viewStart) * pb.pxPerSec;
         const w = Math.max(1, (vs1 - vs0) * pb.pxPerSec);
         const el = document.createElement("div");

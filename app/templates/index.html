@@ -64,6 +64,13 @@
       <input id="search-input" type="text" placeholder="Kamera ara..." />
     </div>
     <div id="group-filter-row" class="group-filter-row hidden"></div>
+    <div id="notif-section" class="notif-section hidden">
+      <div class="notif-section-head">
+        <span>Bildirimler</span>
+        <button type="button" id="notif-clear" class="btn ghost small">Tümünü sil</button>
+      </div>
+      <div id="notif-list" class="notif-list"></div>
+    </div>
     <div id="camera-list" class="camera-list"></div>
     <div class="sidebar-footer">
       <button id="btn-notif" class="btn ghost" title="Bildirimler">🔔<span id="notif-badge" class="notif-badge hidden">0</span></button>
@@ -114,16 +121,6 @@
       <select id="ptz-preset-select" title="Preset"><option value="">Preset</option></select>
     </div>
     <button id="ptz-close" class="ptz-close" aria-label="Kapat">✕</button>
-  </div>
-
-  <!-- Notification bell popover -->
-  <div id="notif-backdrop" class="notif-backdrop hidden"></div>
-  <div id="notif-panel" class="notif-panel hidden" role="dialog" aria-label="Bildirimler">
-    <div class="notif-panel-head">
-      <span>Bildirimler</span>
-      <button type="button" id="notif-clear" class="btn ghost small">Tümünü sil</button>
-    </div>
-    <div id="notif-list" class="notif-list"></div>
   </div>
 
   <!-- Full-screen settings page: Genel / Kameralar / Bildirimler / Kayıt & Depolama / Sistem -->

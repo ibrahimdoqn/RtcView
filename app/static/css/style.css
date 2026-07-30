@@ -1107,7 +1107,12 @@ kbd{
 .cam-tab-add{width:100%;margin-top:.3rem;}
 
 /* ========================================================================
-   NOTIFICATIONS — sidebar bell badge + popover panel
+   NOTIFICATIONS — sidebar bell badge + embedded section
+   Lives inside the sidebar's own flex-column flow (between the group
+   filter row and the camera list) instead of a separate position:fixed
+   popover — that popover animated/positioned badly on desktop (visible
+   stutter near the taskbar area), and embedding it sidesteps the whole
+   class of problem by reusing the sidebar's already-solid layout.
    ======================================================================== */
 #btn-notif{position:relative;}
 .notif-badge{
@@ -1125,55 +1130,36 @@ kbd{
 }
 .fab-notif-dot.hidden{display:none;}
 
-.notif-backdrop{
-  position:fixed;inset:0;z-index:54;background:rgba(0,0,0,.35);
-  opacity:0;pointer-events:none;transition:opacity .22s var(--ease-out);
-}
-.notif-backdrop:not(.hidden){opacity:1;pointer-events:auto;}
-.notif-panel{
-  position:fixed;z-index:56;
-  bottom:calc(24px + var(--safe-b));left:calc(24px + var(--safe-l));
-  width:340px;max-width:88vw;max-height:min(520px,70vh);
+.notif-section{
   display:flex;flex-direction:column;
-  background:var(--glass);border:1px solid var(--glass-brd);border-radius:18px;
-  backdrop-filter:blur(28px) saturate(1.8);-webkit-backdrop-filter:blur(28px) saturate(1.8);
-  box-shadow:var(--shadow-lg), inset 0 1px 0 var(--glass-hi);
-  animation:glassIn .28s var(--ease-spring);
-  overflow:hidden;
+  flex:0 1 auto;min-height:0;max-height:38vh;
+  border-bottom:1px solid var(--border);
 }
-.notif-panel.hidden{display:none;}
-.notif-panel-head{
+.notif-section.hidden{display:none;}
+.notif-section-head{
   display:flex;justify-content:space-between;align-items:center;
-  padding:.8rem .9rem;border-bottom:1px solid rgba(255,255,255,.1);
-  font-weight:600;color:#fff;flex:0 0 auto;
+  padding:.6rem .8rem;flex:0 0 auto;
+  font-weight:600;font-size:.85rem;color:var(--text);
 }
 .notif-list{
-  flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;
-  padding:.4rem;display:flex;flex-direction:column;gap:.3rem;
+  flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:0 .5rem .5rem;display:flex;flex-direction:column;gap:.3rem;
 }
 .notif-row{
   display:flex;align-items:center;gap:.55rem;
   padding:.6rem .65rem;border-radius:11px;cursor:pointer;
   background:rgba(255,255,255,.04);transition:background .12s var(--ease-out);
 }
-.notif-row:hover{background:rgba(255,255,255,.09);}
+.notif-row:hover{background:rgba(255,255,255,.08);}
 .notif-row.unread{background:rgba(10,132,255,.14);}
 .notif-dot{width:10px;height:10px;border-radius:50%;flex:0 0 auto;}
 .notif-dot.motion{background:#f5a623;box-shadow:0 0 6px rgba(245,166,35,.7);}
 .notif-dot.person{background:#3b82f6;box-shadow:0 0 6px rgba(59,130,246,.7);}
 .notif-body{flex:1;display:flex;flex-direction:column;gap:.05rem;min-width:0;}
-.notif-cam{font-size:.85rem;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.notif-kind{font-size:.75rem;color:rgba(255,255,255,.6);}
-.notif-time{font-size:.7rem;color:rgba(255,255,255,.45);flex:0 0 auto;white-space:nowrap;}
-.notif-empty{padding:2rem 1rem;text-align:center;color:rgba(255,255,255,.4);font-size:.85rem;}
-
-@media (max-width: 640px), (orientation: portrait) and (max-width: 900px){
-  .notif-panel{
-    left:0;right:0;bottom:0;width:100%;max-width:100%;
-    border-radius:20px 20px 0 0;max-height:75dvh;
-    padding-bottom:var(--safe-b);
-  }
-}
+.notif-cam{font-size:.85rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.notif-kind{font-size:.75rem;color:var(--muted);}
+.notif-time{font-size:.7rem;color:var(--muted);flex:0 0 auto;white-space:nowrap;}
+.notif-empty{padding:1.4rem 1rem;text-align:center;color:var(--muted);font-size:.85rem;}
 
 /* Native date/time picker input, dark-theme by default (same treatment
    as the existing .pb-header input[type=time]) */

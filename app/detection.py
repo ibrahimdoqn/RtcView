@@ -186,16 +186,8 @@ class CameraEventWatcher:
                 username=self.cam.get("onvif_user") or "",
                 password=self.cam.get("onvif_pass") or "",
                 pull_timeout=10.0,
-                # Field logs show "Beklenmeyen pull hatasi" arriving in tight
-                # bursts (many within 1-3s) that never self-heal inside the
-                # vendored package's default 15-retry window — every burst
-                # still ends in the same forced resubscribe, just ~4.5s later
-                # (15 * 0.3s) and with 15x the log spam. Resubscribing on the
-                # very first unexpected error cuts both without touching the
-                # separate, intentionally tolerant RemoteDisconnected/
-                # "Connection aborted" path (max_benign_errors, default 300)
-                # — that one really does self-heal on retry and stays as-is.
-                max_unexpected_errors=1,
+                # max_unexpected_errors intentionally left at the vendored
+                # package's own default — see tapo_detector/detector.py.
             )
             self._det.start()
         except Exception as e:

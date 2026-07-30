@@ -89,7 +89,15 @@ class TapoMotionPersonDetector:
         username: str,
         password: str,
         pull_timeout: float = 5.0,
-        max_unexpected_errors: int = 15,
+        # RtcView field logs show "Beklenmeyen pull hatasi" arriving in
+        # tight bursts (many within 1-3s) that never self-heal inside a
+        # larger retry window — every burst still ends in the same forced
+        # resubscribe, just later and with more log spam. Resubscribing on
+        # the very first unexpected error cuts both, without touching the
+        # separate, intentionally tolerant RemoteDisconnected/"Connection
+        # aborted" path (max_benign_errors) — that one really does self-heal
+        # on retry and is left as designed.
+        max_unexpected_errors: int = 1,
         max_benign_errors: int = 300,
     ):
         """
