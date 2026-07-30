@@ -159,30 +159,15 @@
       el.className = "cam-item" + (cam.id === state.selectedId ? " active" : "");
       el.dataset.id = cam.id;
       el.draggable = true;
-      const groupChips = (cam.group_ids || []).map(gid => {
-        const g = state.groups.find(x => x.id === gid);
-        return g ? `<span class="group-chip-mini">${escapeHtml(g.name)}</span>` : "";
-      }).join("");
+      // No group chip and no per-row edit affordance here by design —
+      // editing lives entirely in Ayarlar → Kameralar now, so this row
+      // stays a plain, uncluttered camera picker.
       el.innerHTML = `<span class="grip">⋮⋮</span>
         <span class="rec-mini" title="Kayıt aktif"></span>
         <span class="name">${escapeHtml(cam.name)}</span>
-        <span class="cam-groups">${groupChips}</span>
-        <span class="st" data-st></span>
-        <button class="cam-edit" title="Düzenle" aria-label="Kamerayı düzenle">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
-          </svg>
-        </button>`;
-      el.addEventListener("click", (e) => {
-        if (e.target.closest(".cam-edit")) return;
+        <span class="st" data-st></span>`;
+      el.addEventListener("click", () => {
         selectCamera(cam.id); if (isMobile()) closeSidebar();
-      });
-      el.addEventListener("dblclick", (e) => {
-        if (e.target.closest(".cam-edit")) return;
-        selectCamera(cam.id); openEdit(cam);
-      });
-      el.querySelector(".cam-edit").addEventListener("click", (e) => {
-        e.stopPropagation(); openEdit(cam);
       });
       wireDrag(el);
       list.appendChild(el);
@@ -1189,30 +1174,66 @@
       wrap.appendChild(scheduleRow({ days:[0,1,2,3,4,5,6], start:"08:00", end:"18:00" }, 0));
     }
   }
+  function _daysSummary(days){
+    const set = new Set(days);
+    if (!days.length || DAY_LABELS.every((_, di) => set.has(di))) return "Her gün";
+    return DAY_LABELS.filter((_, di) => set.has(di)).join(", ");
+  }
+  // Compact day picker: a summary button ("Pzt, Sal, ... " / "Her gün")
+  // that opens a small checkbox menu, instead of 7 always-visible toggle
+  // buttons — those wrapped onto 7 separate lines on narrow phone widths
+  // (each ~26px button next to a 1fr grid track squeezed by two time
+  // inputs), making the schedule editor look broken/jumbled.
   function scheduleRow(w, idx){
     const row = document.createElement("div");
     row.className = "sched-row";
-    const days = document.createElement("div"); days.className = "days";
+    const selected = new Set((w.days && w.days.length) ? w.days : [0,1,2,3,4,5,6]);
+
+    const daysWrap = document.createElement("div"); daysWrap.className = "sched-days";
+    const daysBtn = document.createElement("button");
+    daysBtn.type = "button"; daysBtn.className = "sched-days-btn";
+    const menu = document.createElement("div"); menu.className = "sched-days-menu hidden";
     DAY_LABELS.forEach((lbl, di) => {
-      const b = document.createElement("button");
-      b.type = "button"; b.textContent = lbl;
-      const active = (w.days || []).includes(di) || !w.days || w.days.length === 0;
-      if (active) b.classList.add("on");
-      b.addEventListener("click", () => b.classList.toggle("on"));
-      days.appendChild(b);
+      const label = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.checked = selected.has(di);
+      cb.addEventListener("change", () => {
+        if (cb.checked) selected.add(di); else selected.delete(di);
+        daysBtn.textContent = _daysSummary(Array.from(selected));
+      });
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(lbl));
+      menu.appendChild(label);
     });
+    daysBtn.textContent = _daysSummary(Array.from(selected));
+    daysBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      $$(".sched-days-menu").forEach(m => { if (m !== menu) m.classList.add("hidden"); });
+      menu.classList.toggle("hidden");
+    });
+    daysWrap.appendChild(daysBtn); daysWrap.appendChild(menu);
+
+    const times = document.createElement("div"); times.className = "sched-times";
     const st = document.createElement("input"); st.type = "time"; st.value = w.start || "08:00";
-    const et = document.createElement("input"); et.type = "time"; et.value = w.end   || "18:00";
+    const sep = document.createElement("span"); sep.textContent = "–";
+    const et = document.createElement("input"); et.type = "time"; et.value = w.end || "18:00";
+    times.appendChild(st); times.appendChild(sep); times.appendChild(et);
+
     const del = document.createElement("button"); del.type = "button";
     del.className = "sched-del"; del.textContent = "✕"; del.title = "Bu aralığı sil";
     del.addEventListener("click", () => row.remove());
-    row.appendChild(days); row.appendChild(st); row.appendChild(et); row.appendChild(del);
+
+    row.appendChild(daysWrap); row.appendChild(times); row.appendChild(del);
+    row._getDays = () => Array.from(selected).sort((a,b) => a - b);
     return row;
   }
+  // Close any open day-picker menu when clicking elsewhere.
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".sched-days")) $$(".sched-days-menu").forEach(m => m.classList.add("hidden"));
+  });
   function readScheduleRows(wrapEl){
     return Array.from(wrapEl.querySelectorAll(".sched-row")).map(r => {
-      const days = Array.from(r.querySelectorAll(".days button"))
-        .map((b, i) => b.classList.contains("on") ? i : -1).filter(i => i >= 0);
+      const days = (typeof r._getDays === "function") ? r._getDays() : [];
       const times = r.querySelectorAll("input[type=time]");
       return { days, start: times[0].value, end: times[1].value };
     });

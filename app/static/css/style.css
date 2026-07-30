@@ -371,7 +371,9 @@ input,select{font:inherit;color:inherit;}
 .modal-body fieldset legend{color:var(--muted);font-size:.78rem;padding:0 .4rem;font-weight:500;}
 .modal-body details{color:var(--text);font-size:.85rem;}
 .modal-body details summary{cursor:pointer;padding:.3rem 0;color:var(--muted);font-weight:500;}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:.55rem;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:.55rem;min-width:0;}
+.grid2 label{min-width:0;}
+.grid2 input,.grid2 select{min-width:0;width:100%;}
 /* Motion/person live indicator boxes (camera modal) */
 .detect-indicators{display:flex;gap:.6rem;min-width:0;}
 .detect-box{
@@ -692,25 +694,44 @@ kbd{
 }
 .cam-item.rec .rec-mini{background:#ff453a;box-shadow:0 0 6px rgba(255,69,58,.7);}
 
-/* Schedule editor rows */
+/* Schedule editor rows — a day-picker summary button (opens a small
+   checkbox menu) instead of 7 always-visible toggle buttons, which used
+   to wrap onto 7 separate lines on narrow phone widths. */
 .rec-schedule{display:flex;flex-direction:column;gap:.4rem;}
 .rec-schedule.hidden{display:none;}
 .sched-row{
-  display:grid;grid-template-columns:1fr auto auto auto;gap:.35rem;align-items:center;
-  background:var(--panel-2);border:1px solid var(--border-solid);border-radius:9px;padding:.4rem;
+  display:flex;flex-wrap:wrap;align-items:center;gap:.4rem;
+  background:var(--panel-2);border:1px solid var(--border-solid);border-radius:9px;padding:.45rem .5rem;
 }
-.sched-row .days{display:flex;gap:2px;flex-wrap:wrap;}
-.sched-row .days button{
-  width:26px;height:26px;border-radius:6px;font-size:.72rem;font-weight:600;
-  background:rgba(255,255,255,.06);border:1px solid var(--border-solid);color:var(--muted);
+.sched-days{position:relative;flex:1 1 130px;min-width:0;}
+.sched-days-btn{
+  display:flex;align-items:center;justify-content:space-between;gap:.3rem;
+  width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border-solid);
+  border-radius:7px;padding:.4rem .55rem;color:var(--text);font-size:.8rem;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-.sched-row .days button.on{background:var(--accent);color:#fff;border-color:var(--accent);}
-.sched-row input[type=time]{
+.sched-days-btn::after{content:"▾";color:var(--muted);font-size:.65rem;flex:0 0 auto;}
+.sched-days-menu{
+  position:absolute;top:calc(100% + 4px);left:0;z-index:5;
+  background:var(--panel-solid);border:1px solid var(--border-solid);border-radius:9px;
+  padding:.35rem;box-shadow:var(--shadow-md);
+  display:flex;flex-direction:column;gap:.1rem;min-width:130px;
+}
+.sched-days-menu.hidden{display:none;}
+.sched-days-menu label{
+  display:flex;align-items:center;gap:.5rem;padding:.3rem .4rem;border-radius:6px;
+  font-size:.84rem;color:var(--text);cursor:pointer;
+}
+.sched-days-menu label:hover{background:rgba(255,255,255,.06);}
+.sched-days-menu input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto;}
+.sched-times{display:flex;align-items:center;gap:.3rem;flex:0 0 auto;}
+.sched-times input[type=time]{
   background:var(--panel-solid);border:1px solid var(--border-solid);border-radius:7px;
-  color:var(--text);padding:.35rem .4rem;font-size:.85rem;
+  color:var(--text);padding:.35rem .4rem;font-size:.85rem;min-width:0;width:6.5rem;
 }
-.sched-row .sched-del{color:var(--muted);padding:.3rem .5rem;border-radius:7px;}
-.sched-row .sched-del:hover{background:rgba(255,69,58,.15);color:var(--danger);}
+.sched-times span{color:var(--muted);font-size:.8rem;}
+.sched-del{color:var(--muted);padding:.3rem .5rem;border-radius:7px;flex:0 0 auto;}
+.sched-del:hover{background:rgba(255,69,58,.15);color:var(--danger);}
 
 /* Storage usage bar */
 .usage-bar{
@@ -1041,8 +1062,7 @@ kbd{
 .group-filter-chip:hover{background:rgba(255,255,255,.1);}
 .group-filter-chip.active{background:var(--accent);border-color:var(--accent);color:#fff;}
 
-/* Sidebar row group tags */
-.cam-item .cam-groups{display:flex;gap:.25rem;flex:0 0 auto;overflow:hidden;}
+/* Group tag chip (used in the Kameralar-tab camera list, not the sidebar) */
 .group-chip-mini{
   background:rgba(255,255,255,.08);color:var(--muted);
   font-size:.62rem;font-weight:600;padding:.12rem .4rem;border-radius:999px;
@@ -1083,6 +1103,7 @@ kbd{
 .cam-tab-row .name{flex:1;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
 .cam-tab-row-groups{display:flex;gap:.25rem;flex-wrap:wrap;flex:0 0 auto;}
 .cam-tab-back{align-self:flex-start;}
+.cam-tab-add{width:100%;margin-top:.3rem;}
 
 /* ========================================================================
    NOTIFICATIONS — sidebar bell badge + popover panel
