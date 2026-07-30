@@ -153,8 +153,7 @@ def create_app(config_path: str) -> Flask:
             if key in clean:
                 try: clean[key] = int(clean[key])
                 except Exception: return jsonify({"error": f"invalid {key}"}), 400
-        store.data["go2rtc"].update(clean)
-        store.save()
+        store.update_go2rtc(clean)
         recorder.reload_all()  # RTSP port could have changed
         return jsonify(store.get_go2rtc())
 
@@ -861,7 +860,7 @@ def _cpu_percent(pid: int) -> float:
     tick = prev[2]
     dt = now - prev[0]
     d_cpu = (cpu - prev[1]) / tick
-    return round(max(0.0, min(100.0 * os.cpu_count() or 1, d_cpu / dt * 100.0)), 1)
+    return round(max(0.0, min(100.0 * (os.cpu_count() or 1), d_cpu / dt * 100.0)), 1)
 
 
 def _read_meminfo():

@@ -2987,6 +2987,7 @@
     if (k === "4"){ v.playbackRate = 4;   $("#pb-speed").value = "4";   return true; }
     if (k === "5"){ v.playbackRate = 8;   $("#pb-speed").value = "8";   return true; }
     if (k === "6"){ v.playbackRate = 16;  $("#pb-speed").value = "16";  return true; }
+    if (k === "7"){ v.playbackRate = 32;  $("#pb-speed").value = "32";  return true; }
     if (k === "+" || k === "="){ state.playback.pxPerSec = _clampPxPerSec(state.playback.pxPerSec * 1.4); renderTimeline(); _ensureRangeLoaded(); return true; }
     if (k === "-" || k === "_"){ state.playback.pxPerSec = _clampPxPerSec(state.playback.pxPerSec / 1.4); renderTimeline(); _ensureRangeLoaded(); return true; }
     if (k === "0"){ state.playback.pxPerSec = _defaultPxPerSec(); renderTimeline(); _ensureRangeLoaded(); return true; }

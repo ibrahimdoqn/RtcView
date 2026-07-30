@@ -172,6 +172,11 @@ class ConfigStore:
     def get_go2rtc(self):
         return self._data["go2rtc"]
 
+    def update_go2rtc(self, updates: dict):
+        with _lock:
+            self._data["go2rtc"].update(updates)
+            self._save_locked()
+
     def get_recording(self):
         return self._data["recording"]
 
