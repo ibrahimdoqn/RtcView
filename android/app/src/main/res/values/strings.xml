@@ -9,10 +9,14 @@
     <string name="setup_test_ok">✓ Bağlantı başarılı</string>
     <string name="setup_test_fail">✗ Sunucuya ulaşılamadı</string>
     <string name="setup_invalid_url">Geçersiz adres</string>
+    <string name="setup_unreachable_hint">Sunucuya ulaşılamadı — adresi kontrol edin</string>
     <string name="menu_reload">Yenile</string>
     <string name="menu_change_server">Sunucu değiştir</string>
+    <string name="menu_more">Diğer</string>
+    <string name="main_connecting">Bağlanılıyor…</string>
     <string name="notif_channel_name">RtcView Bildirimleri</string>
     <string name="notif_channel_desc">Hareket ve insan algılama bildirimleri</string>
     <string name="notif_kind_motion">Hareket algılandı</string>
     <string name="notif_kind_person">İnsan algılandı</string>
+    <string name="notif_title_fmt">🚨 %1$s %2$s</string>
 </resources>

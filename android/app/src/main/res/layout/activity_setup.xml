@@ -3,7 +3,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:fillViewport="true"
-    android:background="@color/rtcview_bg">
+    android:background="@drawable/bg_app_gradient">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -14,75 +14,102 @@
         android:padding="28dp">
 
         <ImageView
-            android:layout_width="88dp"
-            android:layout_height="88dp"
-            android:layout_marginBottom="20dp"
+            android:layout_width="76dp"
+            android:layout_height="76dp"
+            android:layout_marginBottom="18dp"
             android:src="@mipmap/ic_launcher"
             android:contentDescription="@string/app_name" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/setup_title"
-            android:textColor="@color/rtcview_text"
-            android:textSize="21sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/setup_subtitle"
-            android:textColor="@color/rtcview_muted"
-            android:textSize="14sp"
-            android:gravity="center"
-            android:layout_marginBottom="28dp" />
-
-        <EditText
-            android:id="@+id/serverUrlInput"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="@string/setup_hint"
-            android:inputType="textUri"
-            android:textColor="@color/rtcview_text"
-            android:textColorHint="@color/rtcview_muted"
-            android:maxLines="1"
-            android:imeOptions="actionDone"
-            android:padding="14dp"
-            android:background="@color/rtcview_panel"
-            android:layout_marginBottom="14dp" />
-
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/rtcview_muted"
-            android:textSize="13sp"
-            android:gravity="center"
-            android:minHeight="20dp"
-            android:layout_marginBottom="18dp" />
-
+        <!-- Frosted-glass card: translucent fill + hairline stroke over the
+             glow gradient behind it, standing in for a real blur (not
+             available below API 31, and minSdk here is 24). -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
+            android:orientation="vertical"
+            android:background="@drawable/bg_glass_card"
+            android:padding="24dp">
 
-            <Button
-                android:id="@+id/testButton"
-                android:layout_width="0dp"
+            <TextView
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginEnd="8dp"
-                android:text="@string/setup_test" />
+                android:text="@string/setup_title"
+                android:textColor="@color/rtcview_text"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.01"
+                android:gravity="center"
+                android:layout_marginBottom="6dp" />
 
-            <Button
-                android:id="@+id/saveButton"
-                android:layout_width="0dp"
+            <TextView
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:backgroundTint="@color/rtcview_accent"
-                android:textColor="#FFFFFF"
-                android:text="@string/setup_save" />
+                android:text="@string/setup_subtitle"
+                android:textColor="@color/rtcview_muted"
+                android:textSize="14sp"
+                android:lineSpacingExtra="2dp"
+                android:gravity="center"
+                android:layout_marginBottom="22dp" />
+
+            <EditText
+                android:id="@+id/serverUrlInput"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:hint="@string/setup_hint"
+                android:inputType="textUri"
+                android:textColor="@color/rtcview_text"
+                android:textColorHint="@color/rtcview_muted"
+                android:textSize="15sp"
+                android:maxLines="1"
+                android:imeOptions="actionDone"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:background="@drawable/bg_glass_input" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/rtcview_muted"
+                android:textSize="13sp"
+                android:gravity="center"
+                android:minHeight="20dp"
+                android:layout_marginTop="14dp"
+                android:layout_marginBottom="6dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="10dp">
+
+                <Button
+                    android:id="@+id/testButton"
+                    android:layout_width="0dp"
+                    android:layout_height="50dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="10dp"
+                    android:background="@drawable/bg_pill_secondary"
+                    android:stateListAnimator="@null"
+                    android:textColor="@color/rtcview_text"
+                    android:textAllCaps="false"
+                    android:textSize="15sp"
+                    android:text="@string/setup_test" />
+
+                <Button
+                    android:id="@+id/saveButton"
+                    android:layout_width="0dp"
+                    android:layout_height="50dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill_primary"
+                    android:stateListAnimator="@null"
+                    android:textColor="#FFFFFF"
+                    android:textAllCaps="false"
+                    android:textStyle="bold"
+                    android:textSize="15sp"
+                    android:text="@string/setup_save" />
+            </LinearLayout>
+
         </LinearLayout>
 
     </LinearLayout>

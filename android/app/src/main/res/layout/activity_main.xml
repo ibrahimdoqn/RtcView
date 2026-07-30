@@ -1,31 +1,62 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<!-- Truly full-screen: no native Toolbar. The web app already has its own
+     hamburger menu for in-app navigation, so a full-width native bar just
+     duplicated it while eating vertical space — see MainActivity for the
+     edge-to-edge window setup that makes this layout draw behind the
+     status/navigation bars. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="@color/rtcview_bg">
+    android:background="@color/rtcview_bg"
+    android:fitsSystemWindows="false">
 
-    <androidx.appcompat.widget.Toolbar
-        android:id="@+id/toolbar"
+    <WebView
+        android:id="@+id/webView"
         android:layout_width="match_parent"
-        android:layout_height="?attr/actionBarSize"
-        android:background="@color/rtcview_panel"
-        android:theme="@style/ThemeOverlay.AppCompat.Dark.ActionBar"
-        app:titleTextColor="@color/rtcview_text" />
+        android:layout_height="match_parent" />
 
-    <FrameLayout
-        android:id="@+id/rootLayout"
+    <!-- Minimal glass affordance for the two native-only actions (reload,
+         change server) — replaces the old Toolbar's overflow menu without
+         reintroducing a full-width bar. Position is adjusted for the
+         status bar height at runtime (see MainActivity.applyInsets). -->
+    <ImageButton
+        android:id="@+id/btnMenu"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="14dp"
+        android:padding="8dp"
+        android:background="@drawable/bg_glass_circle_button"
+        android:src="@drawable/ic_more_glass"
+        android:contentDescription="@string/menu_more"
+        android:elevation="4dp" />
+
+    <!-- Shown while the initial server ping is in flight; hidden the
+         instant it succeeds and the WebView starts loading. On failure the
+         activity navigates to SetupActivity instead of leaving this up. -->
+    <LinearLayout
+        android:id="@+id/loadingOverlay"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:background="@color/rtcview_bg">
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:background="@drawable/bg_app_gradient"
+        android:visibility="gone">
 
-        <WebView
-            android:id="@+id/webView"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent" />
+        <ProgressBar
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:indeterminateTint="@color/rtcview_accent"
+            android:layout_marginBottom="14dp" />
 
-    </FrameLayout>
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/main_connecting"
+            android:textColor="@color/rtcview_muted"
+            android:textSize="14sp" />
 
-</LinearLayout>
+    </LinearLayout>
+
+</FrameLayout>

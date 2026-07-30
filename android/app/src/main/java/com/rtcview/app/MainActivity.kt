@@ -9,39 +9,52 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.view.Menu
-import android.view.MenuItem
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.URLUtil
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.PopupMenu
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.Toolbar
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.updateLayoutParams
+import androidx.core.view.updateMargins
 
 /** Full-screen WebView wrapper around the existing RtcView web app — the
  * whole point is to reuse that UI as-is (grid, live view, playback,
  * settings) rather than re-implement it natively. This activity's own job
- * is just: point the WebView at the configured server, make WebRTC/
- * autoplay/fullscreen/downloads work correctly inside a WebView (none of
- * which are on by default), and turn a notification tap into a deep-link
- * URL the web app already knows how to open (see handleDeepLink() in
- * app.js). */
+ * is just: draw truly edge-to-edge (no native Toolbar — the web app has
+ * its own hamburger menu already), verify the server is reachable before
+ * ever showing a WebView error page, make WebRTC/autoplay/fullscreen/
+ * downloads work correctly inside a WebView (none of which are on by
+ * default), and turn a notification tap into a deep-link URL the web app
+ * already knows how to open (see handleDeepLink() in app.js). */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var rootLayout: FrameLayout
+    private lateinit var loadingOverlay: View
+    private lateinit var btnMenu: ImageButton
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var baseUrl: String = ""
+    private var unreachableHandled = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,12 +69,16 @@ class MainActivity : AppCompatActivity() {
         baseUrl = savedUrl
 
         setContentView(R.layout.activity_main)
-        setSupportActionBar(findViewById<Toolbar>(R.id.toolbar))
-        supportActionBar?.title = getString(R.string.app_name)
+        setUpEdgeToEdge()
 
         rootLayout = findViewById(R.id.rootLayout)
         webView = findViewById(R.id.webView)
+        loadingOverlay = findViewById(R.id.loadingOverlay)
+        btnMenu = findViewById(R.id.btnMenu)
         setUpWebView()
+        applyInsetMargins()
+
+        btnMenu.setOnClickListener { showMoreMenu(it) }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -76,10 +93,38 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        webView.loadUrl(urlForIntent(intent))
+        checkConnectionThenLoad(urlForIntent(intent))
 
         NotificationScheduler.schedule(this)
         requestNotificationPermissionIfNeeded()
+        maybeRequestBatteryOptimizationExemption()
+    }
+
+    /** Draw the WebView behind the status/navigation bars instead of
+     * squeezing it into the space below a native Toolbar — the old bar
+     * duplicated the web app's own hamburger menu and just wasted screen. */
+    private fun setUpEdgeToEdge() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        // Dark background throughout -> light (white) system icons.
+        controller.isAppearanceLightStatusBars = false
+        controller.isAppearanceLightNavigationBars = false
+    }
+
+    /** The glass overlay button and the "connecting…" copy must stay clear
+     * of the status bar / camera cutout instead of sliding underneath it —
+     * everything else (WebView content) is allowed to draw full-bleed
+     * since the web app already accounts for env(safe-area-inset-*). */
+    private fun applyInsetMargins() {
+        val baseMarginPx = (14 * resources.displayMetrics.density).toInt()
+        ViewCompat.setOnApplyWindowInsetsListener(rootLayout) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            btnMenu.updateLayoutParams<FrameLayout.LayoutParams> {
+                updateMargins(top = bars.top + baseMarginPx, right = bars.right + baseMarginPx)
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(rootLayout)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -99,6 +144,35 @@ class MainActivity : AppCompatActivity() {
         } else {
             baseUrl
         }
+    }
+
+    /** Ping the server before ever pointing the WebView at it — that way a
+     * wrong/stale/offline address lands the user back on the address entry
+     * screen with a clear reason, instead of WebView's own bare error page. */
+    private fun checkConnectionThenLoad(targetUrl: String) {
+        loadingOverlay.visibility = View.VISIBLE
+        Thread {
+            val ok = NetUtils.pingServer(baseUrl)
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                if (ok) {
+                    loadingOverlay.visibility = View.GONE
+                    webView.loadUrl(targetUrl)
+                } else {
+                    goToSetupUnreachable()
+                }
+            }
+        }.start()
+    }
+
+    private fun goToSetupUnreachable() {
+        if (unreachableHandled) return
+        unreachableHandled = true
+        val i = Intent(this, SetupActivity::class.java)
+        i.putExtra(SetupActivity.EXTRA_FORCE_SETUP, true)
+        i.putExtra(SetupActivity.EXTRA_UNREACHABLE, true)
+        startActivity(i)
+        finish()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -132,6 +206,15 @@ class MainActivity : AppCompatActivity() {
                     false
                 }
             }
+
+            // Belt-and-braces: the ping in checkConnectionThenLoad() covers
+            // the common "wrong/offline address" case, but if the main
+            // document load itself still fails (e.g. the server dropped
+            // between the ping and this request), fall back to Setup
+            // instead of leaving WebView's bare error page on screen.
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                if (request.isForMainFrame) goToSetupUnreachable()
+            }
         }
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -152,8 +235,7 @@ class MainActivity : AppCompatActivity() {
                     )
                 )
                 webView.visibility = View.GONE
-                @Suppress("DEPRECATION")
-                window.decorView.systemUiVisibility = IMMERSIVE_FLAGS
+                btnMenu.visibility = View.GONE
             }
 
             override fun onHideCustomView() {
@@ -163,8 +245,7 @@ class MainActivity : AppCompatActivity() {
                 customViewCallback?.onCustomViewHidden()
                 customViewCallback = null
                 webView.visibility = View.VISIBLE
-                @Suppress("DEPRECATION")
-                window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+                btnMenu.visibility = View.VISIBLE
             }
 
             // This app only ever RECEIVES camera streams (go2rtc handles
@@ -197,40 +278,42 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.main_menu, menu)
-        return true
+    /** Asked once, ever — OEM battery managers (Samsung/Xiaomi/etc.) are a
+     * common reason a 15-minute WorkManager poll silently stops firing;
+     * this is the standard way to ask a device to leave it alone. */
+    private fun maybeRequestBatteryOptimizationExemption() {
+        if (Prefs.getBatteryPromptShown(this)) return
+        Prefs.setBatteryPromptShown(this, true)
+        val pm = getSystemService<PowerManager>() ?: return
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+            })
+        } catch (e: Exception) { /* some OEMs block this intent entirely — nothing more we can do */ }
     }
 
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        return when (item.itemId) {
-            R.id.action_reload -> {
-                webView.reload()
-                true
+    private fun showMoreMenu(anchor: View) {
+        PopupMenu(this, anchor).apply {
+            menuInflater.inflate(R.menu.main_menu, menu)
+            setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    R.id.action_reload -> { webView.reload(); true }
+                    R.id.action_change_server -> {
+                        val i = Intent(this@MainActivity, SetupActivity::class.java)
+                        i.putExtra(SetupActivity.EXTRA_FORCE_SETUP, true)
+                        startActivity(i)
+                        true
+                    }
+                    else -> false
+                }
             }
-            R.id.action_change_server -> {
-                val i = Intent(this, SetupActivity::class.java)
-                i.putExtra(SetupActivity.EXTRA_FORCE_SETUP, true)
-                startActivity(i)
-                true
-            }
-            else -> super.onOptionsItemSelected(item)
-        }
+        }.show()
     }
 
     companion object {
         const val EXTRA_CAM_ID = "cam_id"
         const val EXTRA_EVENT_TS = "event_ts"
         private const val REQ_NOTIF_PERMISSION = 1001
-
-        @Suppress("DEPRECATION")
-        private const val IMMERSIVE_FLAGS = (
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            )
     }
 }

@@ -8,6 +8,10 @@
     <!-- Required on API 33+ to actually show the notifications the
          background poll worker posts. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Lets us ask the user (once) to exempt the app from OEM battery
+         optimization — without it, aggressive battery managers routinely
+         kill WorkManager's periodic poll and notifications just stop. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:allowBackup="true"
