@@ -77,11 +77,6 @@ except Exception as _e:                                   # pragma: no cover
     Transport = None
     log.warning("ONVIF stack import failed: %s", ONVIF_IMPORT_ERROR)
 
-# Reuse the day/time-window matcher from recorder.py rather than
-# reimplementing it — same cross-module-private-import precedent already
-# used by storage.py's rescan() (`from app.recorder import _parse_fname_ts`).
-from app.recorder import _schedule_active
-
 # ---------------------------------------------------------------------------
 # WSDL location
 # ---------------------------------------------------------------------------
@@ -188,35 +183,29 @@ _TOPIC_TO_FIELD = {
 KIND_LABEL = {"motion": "Hareket", "person": "İnsan"}
 
 
-def _notify_rules_active(rules: list, now: Optional[datetime] = None) -> bool:
-    """Evaluate a notification schedule expressed as scheduled ACTIONS.
+def _last_rule_occurrence(rules: list, now: Optional[datetime] = None):
+    """Most recent notification-rule occurrence at or before ``now``.
 
     Each rule is ``{"days": [0..6], "time": "HH:MM", "action": "on"|"off"}``
-    and means "at this time, on these days, switch notifications on/off".
-    An empty ``days`` list means every day.
+    and means "at this time, on these days, flip the group's notification
+    switch". An empty ``days`` list means every day.
 
-    This is deliberately NOT the window model used by record_schedule
-    (``{days, start, end}``). Windows force you to describe a period, which
-    gets awkward the moment one crosses midnight or spans a weekend — the
-    old "20:00-09:00 Mon-Sat plus 00:00-23:59 Sun" pair was really just
-    trying to say "on at 20:00, off at 09:00". Actions say that directly.
+    Returns ``(action, when)`` for the latest occurrence within the past
+    week, or ``None`` when there are no usable rules.
 
-    Evaluation: find the most recent rule occurrence at or before ``now``
-    (looking back up to a week) and take its action. So the state is
-    always "whatever the last switch-flip said", which is exactly how a
-    user reading the list top-to-bottom expects it to behave.
+    Deliberately NOT the window model used by record_schedule
+    ({days, start, end}): windows force you to describe a period, which
+    gets awkward the moment one crosses midnight — "20:00-09:00 Mon-Sat
+    plus 00:00-23:59 Sun" was really just trying to say "on at 20:00, off
+    at 09:00". Actions say that directly.
 
-    Edge cases:
-      * No rules at all -> ON. Nothing has ever switched it off, and the
-        group's manual toggle is the thing that means "off" now.
-      * Two rules landing on the exact same minute -> "off" wins, so the
-        outcome never depends on list order.
+    Two rules landing on the same minute resolve to "off", so the outcome
+    never depends on list order.
     """
     if not rules:
-        return True
+        return None
     now = now or datetime.now()
-    best_delta = None          # seconds since the winning occurrence
-    best_action = None
+    best = None                # (occurrence datetime, action)
     for r in rules:
         try:
             hh, mm = (int(x) for x in str(r.get("time", "")).split(":", 1))
@@ -239,26 +228,63 @@ def _notify_rules_active(rules: list, now: Optional[datetime] = None) -> bool:
                 hour=hh, minute=mm, second=0, microsecond=0)
             if occ > now:                      # today's time hasn't come yet
                 occ -= timedelta(days=7)
-            delta = (now - occ).total_seconds()
-            if best_delta is None or delta < best_delta or (
-                    delta == best_delta and action == "off"):
-                best_delta, best_action = delta, action
-    if best_action is None:
-        return True            # every rule was malformed — fail open
-    return best_action != "off"
+            if best is None or occ > best[0] or (occ == best[0] and action == "off"):
+                best = (occ, action)
+    if best is None:
+        return None
+    return best[1], best[0]
+
+
+def apply_notify_rules(config_store, now: Optional[datetime] = None) -> int:
+    """Let the schedule drive the switch.
+
+    The rules do not sit alongside the group's notification toggle as a
+    second gate — they OPERATE it. When a rule's moment passes, this
+    writes the new value into notify_enabled, so the switch the user sees
+    in the sidebar physically moves and remains the single thing that
+    decides whether notifications are delivered.
+
+    A manual flip is therefore never fought: notify_rule_applied_at
+    records which rule occurrence was last acted on, and only an
+    occurrence NEWER than that is applied. Flip the switch by hand at
+    10:30 and it stays flipped until the next rule comes round.
+
+    That same marker makes downtime self-correcting: a boundary missed
+    while the service was stopped is still newer than the stored marker,
+    so the correct state is applied on the next tick after startup.
+
+    Returns the number of groups whose stored state changed.
+    """
+    changed = 0
+    for g in list(config_store.get_groups()):
+        occ = _last_rule_occurrence(g.get("notify_schedule") or [], now)
+        if occ is None:
+            continue
+        action, when = occ
+        when_ts = when.timestamp()
+        if when_ts <= float(g.get("notify_rule_applied_at", 0) or 0):
+            continue                            # already acted on this one
+        wanted = (action == "on")
+        updates = {"notify_rule_applied_at": when_ts}
+        if bool(g.get("notify_enabled", True)) != wanted:
+            updates["notify_enabled"] = wanted
+            log.info("Grup '%s': %s kuralı uygulandı, bildirimler %s",
+                     g.get("name", g.get("id")), when.strftime("%a %H:%M"),
+                     "açıldı" if wanted else "kapatıldı")
+            changed += 1
+        config_store.update_group(g["id"], updates)
+    return changed
 
 
 def _group_notify_active(group: dict) -> bool:
-    """Notification config lives on the GROUP, not the camera (a camera
-    inherits from every group it belongs to).
+    """Whether this group currently delivers notifications.
 
-    Two gates, both must pass:
-      * notify_enabled — the manual on/off toggle shown in the sidebar.
-      * notify_schedule — the scheduled on/off actions above.
+    Just the switch. The schedule already had its say by moving that
+    switch (see apply_notify_rules), so there is exactly one place the
+    answer can come from — no second gate that could disagree with what
+    the UI is showing.
     """
-    if not group.get("notify_enabled", True):
-        return False
-    return _notify_rules_active(group.get("notify_schedule") or [])
+    return bool(group.get("notify_enabled", True))
 
 
 class CameraEventWatcher:
@@ -761,11 +787,24 @@ class DetectionManager:
             cam.get("motion_detection_enabled") or cam.get("person_detection_enabled"))
 
     def _supervisor_loop(self):
+        # Apply any rule boundary that fell while the service was stopped
+        # before the first tick, so the switch is already correct rather
+        # than catching up SUPERVISOR_INTERVAL seconds later.
+        try:
+            apply_notify_rules(self.cfg)
+        except Exception as e:
+            log.warning("notify rules could not be applied at startup: %s", e)
         while not self._stop.wait(self.SUPERVISOR_INTERVAL):
             try:
                 self._tick()
             except Exception as e:
                 log.exception("detect supervisor tick failed: %s", e)
+            # Separate try: a camera-supervision failure must not stop the
+            # notification switches from being driven, and vice versa.
+            try:
+                apply_notify_rules(self.cfg)
+            except Exception as e:
+                log.exception("notify rule tick failed: %s", e)
 
     def _tick(self):
         cams = self.cfg.get_cameras()

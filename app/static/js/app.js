@@ -121,8 +121,11 @@
     // when it comes back, so a backgrounded tab costs nothing.
     setInterval(() => { if (!document.hidden) updateNotifications(); }, NOTIF_POLL_MS);
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) updateNotifications();
+      if (!document.hidden){ updateNotifications(); refreshGroups(); }
     });
+    // Rule-driven switch flips happen server-side; re-read them so the
+    // sidebar toggle can't sit stale on a long-open page.
+    setInterval(refreshGroups, 15000);
   }
 
   function applySettings(){
@@ -1442,31 +1445,31 @@
       .sort((a, b) => a.time.localeCompare(b.time));
   }
 
-  // Mirrors _notify_rules_active in detection.py so the card can show the
-  // live state without a round trip. Keep the two in step.
-  function _notifyRulesActiveNow(rules){
-    if (!rules || !rules.length) return true;
+  // Next rule that will fire, so the card can say when the switch moves
+  // on its own. Mirrors _last_rule_occurrence in detection.py, but looking
+  // FORWARD instead of back; ties resolve to "off" the same way.
+  function _nextRuleOccurrence(rules){
+    if (!rules || !rules.length) return null;
     const now = new Date();
     const dow = (now.getDay() + 6) % 7;             // JS Sun=0 -> Mon=0
-    let best = null, bestAction = null;
+    let best = null;
     for (const r of rules){
       const [hh, mm] = String(r.time || "").split(":").map(Number);
       if (!isFinite(hh) || !isFinite(mm)) continue;
       const action = r.action === "off" ? "off" : "on";
       const days = (r.days && r.days.length) ? r.days : [0,1,2,3,4,5,6];
       for (const d of days){
-        const back = (dow - d + 7) % 7;
+        const fwd = (d - dow + 7) % 7;
         const occ = new Date(now);
-        occ.setDate(occ.getDate() - back);
+        occ.setDate(occ.getDate() + fwd);
         occ.setHours(hh, mm, 0, 0);
-        if (occ > now) occ.setDate(occ.getDate() - 7);
-        const delta = now - occ;
-        if (best === null || delta < best || (delta === best && action === "off")){
-          best = delta; bestAction = action;
+        if (occ <= now) occ.setDate(occ.getDate() + 7);
+        if (best === null || occ < best.when || (+occ === +best.when && action === "off")){
+          best = { when: occ, action };
         }
       }
     }
-    return bestAction === null ? true : bestAction !== "off";
+    return best;
   }
   // Close any open day-picker menu when clicking elsewhere.
   document.addEventListener("click", (e) => {
@@ -1734,6 +1737,24 @@
     renderNotifGroups();
   }
 
+  // The schedule moves the switches server-side, so a page left open must
+  // re-read them or the sidebar would keep showing a stale position after
+  // a rule fires. Cheap (groups are a handful of small records) and only
+  // re-renders when something actually changed.
+  async function refreshGroups(){
+    if (document.hidden) return;
+    try {
+      const groups = await api.get("/api/groups");
+      const before = JSON.stringify(state.groups.map(g => [g.id, g.notify_enabled]));
+      const after = JSON.stringify((groups || []).map(g => [g.id, g.notify_enabled]));
+      state.groups = groups || [];
+      if (before !== after){
+        renderSidebar();
+        if (!$("#settings-page").classList.contains("hidden")) renderNotifGroups();
+      }
+    } catch { /* keep quiet — background poll */ }
+  }
+
   // Notification config lives entirely on the GROUP now (a camera in no
   // group gets no notifications; a camera in several groups notifies if
   // ANY of them is active — see _group_notify_active in detection.py).
@@ -1762,17 +1783,22 @@
     head.append(name, sw);
     card.appendChild(head);
 
-    // Live read-out of what the rules below currently add up to, so the
-    // user can confirm the timetable does what they meant without waiting
-    // for a real detection.
+    // Current state is simply the switch — the rules move it rather than
+    // gating it separately — so the useful extra information is WHEN it
+    // moves next.
     const stateLine = document.createElement("div");
     stateLine.className = "notif-now";
     const paintState = () => {
-      const on = g.notify_enabled !== false && _notifyRulesActiveNow(g.notify_schedule || []);
+      const on = g.notify_enabled !== false;
       stateLine.classList.toggle("is-off", !on);
-      stateLine.textContent = g.notify_enabled === false
-        ? "Şu an: kapalı (anahtar kapalı)"
-        : (on ? "Şu an: bildirimler açık" : "Şu an: bildirimler kapalı");
+      const next = _nextRuleOccurrence(g.notify_schedule || []);
+      let txt = on ? "Şu an: bildirimler açık" : "Şu an: bildirimler kapalı";
+      if (next){
+        txt += ` · sıradaki: ${DAY_LABELS[(next.when.getDay() + 6) % 7]} `
+             + `${pad2(next.when.getHours())}:${pad2(next.when.getMinutes())} → `
+             + (next.action === "off" ? "kapat" : "aç");
+      }
+      stateLine.textContent = txt;
     };
     card.appendChild(stateLine);
 

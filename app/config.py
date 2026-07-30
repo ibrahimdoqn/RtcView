@@ -76,6 +76,11 @@ CAMERA_DETECTION_DEFAULTS = {
 GROUP_NOTIFICATION_DEFAULTS = {
     "notify_enabled": True,
     "notify_schedule": [],
+    # Epoch of the rule occurrence last acted on. Lets apply_notify_rules
+    # tell "a boundary just passed" from "the user flipped the switch by
+    # hand since then", so a manual override is never fought — and lets a
+    # boundary missed during downtime still be applied at startup.
+    "notify_rule_applied_at": 0,
 }
 
 # Group keys that older versions wrote and nothing reads any more. Removed
