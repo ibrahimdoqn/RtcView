@@ -215,6 +215,6 @@ journalctl -u rtcview -f
 
 ## Android Uygulaması
 
-`android/` klasöründe, aynı sunucuya (Tailscale veya yerel ağ üzerinden, düz HTTP ile) bağlanan bir Android istemcisi bulunur. RtcView'in web arayüzünü bir WebView içinde açar — ayrı bir native arayüz değildir, web tarafındaki her geliştirme otomatik yansır. HTTPS olmadığı için standart Web Push/FCM kullanılamıyor; bunun yerine arka planda periyodik olarak (~15 dk) yeni bildirimler kontrol edilip native Android bildirimi gösterilir, dokunulduğunda ilgili kameranın o anına götürür.
+`android/` klasöründe, aynı sunucuya (Tailscale veya yerel ağ üzerinden, düz HTTP ile) bağlanan bir Android istemcisi bulunur. RtcView'in web arayüzünü tam ekran bir WebView içinde açar — ayrı bir native arayüz değildir, web tarafındaki her geliştirme otomatik yansır. Sadece izleme amaçlıdır; arka planda bildirim kontrolü yapmaz (WorkManager'ın izin verdiği en sık aralık 15 dakikaydı, bu da bildirimleri anlamsız derecede geç bıraktığı için kaldırıldı).
 
 Derleme talimatları ve mimari detaylar için: [`android/README.md`](android/README.md).

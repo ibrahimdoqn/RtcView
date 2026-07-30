@@ -1,16 +1,11 @@
 package com.rtcview.app
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.os.PowerManager
-import android.provider.Settings
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -26,8 +21,6 @@ import android.widget.ImageButton
 import android.widget.PopupMenu
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -38,13 +31,14 @@ import androidx.core.view.updateMargins
 
 /** Full-screen WebView wrapper around the existing RtcView web app — the
  * whole point is to reuse that UI as-is (grid, live view, playback,
- * settings) rather than re-implement it natively. This activity's own job
- * is just: draw truly edge-to-edge (no native Toolbar — the web app has
- * its own hamburger menu already), verify the server is reachable before
- * ever showing a WebView error page, make WebRTC/autoplay/fullscreen/
- * downloads work correctly inside a WebView (none of which are on by
- * default), and turn a notification tap into a deep-link URL the web app
- * already knows how to open (see handleDeepLink() in app.js). */
+ * settings) rather than re-implement it natively. This is a viewing-only
+ * client (no background notification polling — WorkManager's 15-minute
+ * minimum interval was too slow to be useful, see git history). This
+ * activity's own job is just: draw truly edge-to-edge (no native Toolbar
+ * — the web app has its own hamburger menu already), verify the server is
+ * reachable before ever showing a WebView error page, and make WebRTC/
+ * autoplay/fullscreen/downloads work correctly inside a WebView (none of
+ * which are on by default). */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
@@ -93,11 +87,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        checkConnectionThenLoad(urlForIntent(intent))
-
-        NotificationScheduler.schedule(this)
-        requestNotificationPermissionIfNeeded()
-        maybeRequestBatteryOptimizationExemption()
+        checkConnectionThenLoad()
     }
 
     /** Draw the WebView behind the status/navigation bars instead of
@@ -127,29 +117,10 @@ class MainActivity : AppCompatActivity() {
         ViewCompat.requestApplyInsets(rootLayout)
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        webView.loadUrl(urlForIntent(intent))
-    }
-
-    /** A notification tap arrives as extras on the launch intent — turn
-     * those into the ?open_cam=&open_at= query params app.js already
-     * looks for (see handleDeepLink() there). No extras -> plain root URL. */
-    private fun urlForIntent(intent: Intent?): String {
-        val camId = intent?.getStringExtra(EXTRA_CAM_ID)
-        val eventTs = intent?.getDoubleExtra(EXTRA_EVENT_TS, -1.0) ?: -1.0
-        return if (camId != null && eventTs >= 0) {
-            "$baseUrl/?open_cam=${Uri.encode(camId)}&open_at=$eventTs"
-        } else {
-            baseUrl
-        }
-    }
-
     /** Ping the server before ever pointing the WebView at it — that way a
      * wrong/stale/offline address lands the user back on the address entry
      * screen with a clear reason, instead of WebView's own bare error page. */
-    private fun checkConnectionThenLoad(targetUrl: String) {
+    private fun checkConnectionThenLoad() {
         loadingOverlay.visibility = View.VISIBLE
         Thread {
             val ok = NetUtils.pingServer(baseUrl)
@@ -157,7 +128,7 @@ class MainActivity : AppCompatActivity() {
                 if (isFinishing) return@runOnUiThread
                 if (ok) {
                     loadingOverlay.visibility = View.GONE
-                    webView.loadUrl(targetUrl)
+                    webView.loadUrl(baseUrl)
                 } else {
                     goToSetupUnreachable()
                 }
@@ -267,32 +238,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF_PERMISSION
-            )
-        }
-    }
-
-    /** Asked once, ever — OEM battery managers (Samsung/Xiaomi/etc.) are a
-     * common reason a 15-minute WorkManager poll silently stops firing;
-     * this is the standard way to ask a device to leave it alone. */
-    private fun maybeRequestBatteryOptimizationExemption() {
-        if (Prefs.getBatteryPromptShown(this)) return
-        Prefs.setBatteryPromptShown(this, true)
-        val pm = getSystemService<PowerManager>() ?: return
-        if (pm.isIgnoringBatteryOptimizations(packageName)) return
-        try {
-            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = Uri.parse("package:$packageName")
-            })
-        } catch (e: Exception) { /* some OEMs block this intent entirely — nothing more we can do */ }
-    }
-
     private fun showMoreMenu(anchor: View) {
         PopupMenu(this, anchor).apply {
             menuInflater.inflate(R.menu.main_menu, menu)
@@ -309,11 +254,5 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }.show()
-    }
-
-    companion object {
-        const val EXTRA_CAM_ID = "cam_id"
-        const val EXTRA_EVENT_TS = "event_ts"
-        private const val REQ_NOTIF_PERMISSION = 1001
     }
 }

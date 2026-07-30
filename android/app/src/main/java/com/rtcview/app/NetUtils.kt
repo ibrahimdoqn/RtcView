@@ -44,25 +44,4 @@ object NetUtils {
             false
         }
     }
-
-    /** GETs a URL and returns the response body as text, or null on any
-     * failure (non-2xx status, timeout, DNS, etc). Runs network I/O —
-     * callers must invoke this off the main thread. */
-    fun getJson(urlStr: String): String? {
-        return try {
-            val conn = URL(urlStr).openConnection() as HttpURLConnection
-            conn.connectTimeout = 8000
-            conn.readTimeout = 8000
-            conn.requestMethod = "GET"
-            if (conn.responseCode !in 200..299) {
-                conn.disconnect()
-                return null
-            }
-            val text = conn.inputStream.bufferedReader().use { it.readText() }
-            conn.disconnect()
-            text
-        } catch (e: Exception) {
-            null
-        }
-    }
 }

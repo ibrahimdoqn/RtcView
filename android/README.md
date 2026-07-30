@@ -4,10 +4,9 @@ RtcView web arayüzünü saran, kendi sunucunuza (Tailscale veya yerel ağ üzer
 
 ## Nasıl çalışır
 
-- **Arayüz**: Ayrı bir native ekran seti değil — telefonda bir `WebView` içinde doğrudan RtcView'in kendi web arayüzü açılır (grid, canlı izleme, playback, ayarlar — hepsi). Web tarafında yapılan her geliştirme otomatik olarak Android uygulamasına da yansır, ayrı bir bakım yükü yoktur.
-- **Sunucu adresi**: İlk açılışta bir kere sorulur (`Ayarlar` menüsünden sonradan değiştirilebilir), cihazda yerel olarak saklanır.
-- **Bildirimler**: Sunucuda **HTTPS olmadığı için** standart Web Push / FCM çalışmıyor. Bunun yerine uygulama arka planda **~15 dakikada bir** (Android'in `WorkManager` ile izin verdiği en sık aralık) `/api/notifications` uç noktasını kontrol eder ve yeni bildirimler için normal Android bildirimi gösterir. Bildirime dokunmak, RtcView'i doğrudan ilgili kameranın o anındaki kayda götürür.
-  - Bilinçli tercih: sürekli açık bağlantı (anlık bildirim) yerine periyodik kontrol seçildi — bunun bedeli 0-15 dakikalık gecikme, karşılığında bildirim çubuğunda sabit/kapatılamaz bir "servis çalışıyor" simgesi olmuyor ve pil kullanımı çok daha düşük oluyor.
+- **Arayüz**: Ayrı bir native ekran seti değil — telefonda tam ekran bir `WebView` içinde doğrudan RtcView'in kendi web arayüzü açılır (grid, canlı izleme, playback, ayarlar — hepsi). Web tarafında yapılan her geliştirme otomatik olarak Android uygulamasına da yansır, ayrı bir bakım yükü yoktur. Native bir Toolbar yok — web arayüzünün kendi hamburger menüsü zaten var; yenile/sunucu değiştir gibi iki native aksiyon sağ üstteki küçük cam butonda.
+- **Sunucu adresi**: İlk açılışta bir kere sorulur (uygulama içi menüden sonradan değiştirilebilir), cihazda yerel olarak saklanır. Bağlanılamazsa (yanlış adres, sunucu kapalı) otomatik olarak bu ekrana geri döner.
+- **Bildirimler yok — sadece izleme**: Uygulama arka planda hiçbir şey kontrol etmez, bildirim göndermez. Bunun sebebi denenip vazgeçildi: sunucuda HTTPS olmadığı için standart Web Push/FCM zaten mümkün değildi; alternatif olarak denenen `WorkManager` tabanlı periyodik kontrol de Android'in izin verdiği en sık aralık olan ~15 dakikada bir çalışabiliyordu, bu da bildirimleri pratikte işe yaramayacak kadar geç bırakıyordu. Anlık bildirim isteyen kullanıcılar web arayüzünün kendi bildirim zilini (tarayıcıdan açık tutarak) kullanabilir.
 
 ## Gereksinimler
 
@@ -32,23 +31,19 @@ gradle wrapper --gradle-version 8.7   # bir kerelik: wrapper jar'ını oluşturu
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-> **Not:** Bu proje bu ortamda (Android SDK/emülatör bulunmayan bir sandbox) derlenip test **edilemedi**. Kod standart, iyi bilinen AndroidX API'leri kullanıyor ve mimarisi basit tutuldu, ama ilk derlemede bir hata çıkarsa (ör. bir bağımlılık sürümü güncel Maven'de bulunamazsa) hata mesajını paylaşın, birlikte düzeltelim.
-
 ## Proje yapısı
 
 ```
 android/
   app/src/main/java/com/rtcview/app/
-    SetupActivity.kt        — sunucu adresi girme ekranı (ilk açılış / "Sunucu değiştir")
-    MainActivity.kt         — WebView sarmalayıcı (autoplay, fullscreen, indirme, geri tuşu)
-    NotificationScheduler.kt — WorkManager periyodik iş kaydı
-    NotificationWorker.kt    — arka plan bildirim kontrolü + native bildirim gösterimi
-    Prefs.kt                 — SharedPreferences (sunucu adresi, son görülen bildirim id'si)
-    NetUtils.kt               — küçük HTTP yardımcıları (harici kütüphane yok)
+    SetupActivity.kt   — sunucu adresi girme ekranı (ilk açılış / "Sunucu değiştir" / bağlanılamazsa)
+    MainActivity.kt    — tam ekran WebView sarmalayıcı (autoplay, fullscreen, indirme, geri tuşu)
+    Prefs.kt           — SharedPreferences (yalnızca sunucu adresi)
+    NetUtils.kt        — küçük HTTP yardımcıları (harici kütüphane yok)
 ```
 
 ## Bilinçli sınırlamalar
 
-- Bildirimler gerçek zamanlı değil, ~15 dakikaya kadar gecikebilir (yukarıda açıklandı).
+- Bildirim yok, sadece izleme — yukarıda açıklandı.
 - Uygulama kendi kamera/mikrofon erişimi istemez — go2rtc zaten sunucu tarafında yayını sağlıyor, telefonun donanımına ihtiyaç yok.
 - Sunucu adresi cihaz yedeklerine dahil edilmez (farklı bir cihaz/ağda anlamsız olurdu) — yeni cihazda tekrar girilmesi gerekir.

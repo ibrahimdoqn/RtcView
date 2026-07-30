@@ -76,7 +76,6 @@ class SetupActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             Prefs.setServerUrl(this, url)
-            NotificationScheduler.schedule(this)
             openMain()
         }
     }
