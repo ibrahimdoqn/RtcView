@@ -23,6 +23,10 @@ bakin):
   4. "RemoteDisconnected / Connection aborted" hatasi bu kamerada NORMAL bir
      davranistir (TP-Link firmware quirk'i), fatal degildir ve ayri, yuksek
      toleransli bir sayacla ele alinmalidir.
+  5. Bir PullPoint aboneligi, hicbir pull hatasi olusmadan da kamera
+     tarafinda sessizce event gondermeyi birakabilir (abonelik "bayatlar").
+     Bu yuzden abonelik sadece hata sonrasi degil, belirli bir yastan
+     sonra da proaktif olarak yenilenir (bkz. max_subscription_age).
 
 Kullanim:
     from tapo_detector import TapoMotionPersonDetector
@@ -99,6 +103,25 @@ class TapoMotionPersonDetector:
         # on retry and is left as designed.
         max_unexpected_errors: int = 1,
         max_benign_errors: int = 300,
+        # ONVIF's proper way to keep a PullPoint subscription alive
+        # indefinitely is an explicit Renew call against the endpoint the
+        # camera reports in CreatePullPointSubscriptionResponse's
+        # SubscriptionReference.Address — a DIFFERENT SOAP binding
+        # (SubscriptionManager) than the one used for PullMessages. Not
+        # implemented here: that address comes from the exact same
+        # self-reporting mechanism already known to be unreliable on this
+        # firmware (see the xaddr workaround in _create_pullpoint below),
+        # so wiring up Renew against it risks hitting the identical bug in
+        # a second, harder-to-debug place. Instead, the subscription is
+        # simply torn down and recreated from scratch — via the same
+        # CreatePullPointSubscription path already proven reliable — once
+        # it reaches this age, whether or not a pull error has happened.
+        # Field logs show events silently stop arriving for a while before
+        # any pull error ever surfaces (the subscription going quiet
+        # camera-side, not the connection itself failing); bounding how
+        # long any one subscription is trusted closes that window instead
+        # of only reacting after it's already caused a detection gap.
+        max_subscription_age: float = 300.0,
     ):
         """
         Args:
@@ -114,6 +137,10 @@ class TapoMotionPersonDetector:
                 normal) hatasindan sonra abonelik yenilenir. Bu deger
                 yuksek tutulmalidir cunku testlerde event'ler gelmeden once
                 30-40 kadar bu hata gorulebiliyor.
+            max_subscription_age: Bir abonelik, hic hata olmasa bile bu
+                sureden (saniye) daha eski oldugunda proaktif olarak
+                yenilenir — kameranin sessizce event gondermeyi birakmasi
+                (henuz bir pull hatasi olusmadan) ihtimaline karsi.
         """
         self.ip = ip
         self.port = port
@@ -122,10 +149,12 @@ class TapoMotionPersonDetector:
         self.pull_timeout = pull_timeout
         self.max_unexpected_errors = max_unexpected_errors
         self.max_benign_errors = max_benign_errors
+        self.max_subscription_age = max_subscription_age
 
         self._cam: Optional[ONVIFCamera] = None
         self._pullpoint = None
         self._pull_messages_type = None
+        self._subscribed_at: float = 0.0
 
         self._lock = threading.Lock()
         self._state: Dict = {
@@ -340,19 +369,38 @@ class TapoMotionPersonDetector:
                     self._sleep_interruptible(5.0)
                     continue
                 self._connected_event.set()
+                self._subscribed_at = time.time()
 
             self._listen_until_resubscribe_needed()
 
-            # Buraya donulduyse abonelik/baglanti yenilenmeli
+            # Buraya donulduyse abonelik/baglanti yenilenmeli. Kisa bir
+            # ara yeterli — _create_pullpoint zaten guvenilir ve hizli;
+            # burada uzun bir bekleme sadece aboneliksiz gecen, hicbir
+            # event'in yakalanamayacagi sureyi uzatir. (Gercekten
+            # basarisiz olursa yukaridaki "if not self._create_pullpoint()"
+            # dali zaten kendi 5 saniyelik bekleme suresini uygular.)
             self._pullpoint = None
             if not self._stop_event.is_set():
-                self._sleep_interruptible(2.0)
+                self._sleep_interruptible(0.5)
 
     def _listen_until_resubscribe_needed(self) -> None:
         unexpected_errors = 0
         benign_errors = 0
 
         while not self._stop_event.is_set():
+            # Proaktif yenileme: bu abonelik hic hata vermemis olsa bile,
+            # kamera event gondermeyi sessizce birakmis olabilir (bkz.
+            # max_subscription_age'in yukaridaki aciklamasi). Bir pull
+            # hatasi olusmasini beklemek yerine, belirli bir yastan sonra
+            # kendiliginden cikip abonelik yenilemeye zorluyoruz.
+            age = time.time() - self._subscribed_at
+            if age >= self.max_subscription_age:
+                logger.info(
+                    "Abonelik %.0f saniyedir acik, proaktif olarak yenileniyor.",
+                    age,
+                )
+                return
+
             try:
                 req = self._pull_messages_type(
                     Timeout=timedelta(seconds=self.pull_timeout),
