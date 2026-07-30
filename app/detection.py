@@ -188,19 +188,77 @@ _TOPIC_TO_FIELD = {
 KIND_LABEL = {"motion": "Hareket", "person": "İnsan"}
 
 
+def _notify_rules_active(rules: list, now: Optional[datetime] = None) -> bool:
+    """Evaluate a notification schedule expressed as scheduled ACTIONS.
+
+    Each rule is ``{"days": [0..6], "time": "HH:MM", "action": "on"|"off"}``
+    and means "at this time, on these days, switch notifications on/off".
+    An empty ``days`` list means every day.
+
+    This is deliberately NOT the window model used by record_schedule
+    (``{days, start, end}``). Windows force you to describe a period, which
+    gets awkward the moment one crosses midnight or spans a weekend — the
+    old "20:00-09:00 Mon-Sat plus 00:00-23:59 Sun" pair was really just
+    trying to say "on at 20:00, off at 09:00". Actions say that directly.
+
+    Evaluation: find the most recent rule occurrence at or before ``now``
+    (looking back up to a week) and take its action. So the state is
+    always "whatever the last switch-flip said", which is exactly how a
+    user reading the list top-to-bottom expects it to behave.
+
+    Edge cases:
+      * No rules at all -> ON. Nothing has ever switched it off, and the
+        group's manual toggle is the thing that means "off" now.
+      * Two rules landing on the exact same minute -> "off" wins, so the
+        outcome never depends on list order.
+    """
+    if not rules:
+        return True
+    now = now or datetime.now()
+    best_delta = None          # seconds since the winning occurrence
+    best_action = None
+    for r in rules:
+        try:
+            hh, mm = (int(x) for x in str(r.get("time", "")).split(":", 1))
+        except (TypeError, ValueError):
+            continue           # malformed row — ignore rather than crash
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            continue
+        action = "off" if str(r.get("action", "on")).lower() == "off" else "on"
+        days = r.get("days") or list(range(7))
+        for d in days:
+            try:
+                d = int(d)
+            except (TypeError, ValueError):
+                continue
+            if not 0 <= d <= 6:
+                continue
+            # Most recent occurrence of this weekday at this clock time.
+            back = (now.weekday() - d) % 7
+            occ = (now - timedelta(days=back)).replace(
+                hour=hh, minute=mm, second=0, microsecond=0)
+            if occ > now:                      # today's time hasn't come yet
+                occ -= timedelta(days=7)
+            delta = (now - occ).total_seconds()
+            if best_delta is None or delta < best_delta or (
+                    delta == best_delta and action == "off"):
+                best_delta, best_action = delta, action
+    if best_action is None:
+        return True            # every rule was malformed — fail open
+    return best_action != "off"
+
+
 def _group_notify_active(group: dict) -> bool:
     """Notification config lives on the GROUP, not the camera (a camera
     inherits from every group it belongs to).
 
     Two gates, both must pass:
       * notify_enabled — the manual on/off toggle shown in the sidebar.
-      * notify_schedule — same semantics as record_schedule: an EMPTY
-        schedule means NEVER, not "any time" (_schedule_active already
-        returns False for an empty/falsy list).
+      * notify_schedule — the scheduled on/off actions above.
     """
     if not group.get("notify_enabled", True):
         return False
-    return _schedule_active(group.get("notify_schedule") or [])
+    return _notify_rules_active(group.get("notify_schedule") or [])
 
 
 class CameraEventWatcher:

@@ -268,7 +268,37 @@ def create_app(config_path: str) -> Flask:
         if "notify_enabled" in body:
             updates["notify_enabled"] = bool(body["notify_enabled"])
         if "notify_schedule" in body:
-            updates["notify_schedule"] = body.get("notify_schedule") or []
+            # Scheduled on/off ACTIONS (not windows) — see
+            # _notify_rules_active in detection.py. Normalised here so a
+            # malformed row can never reach the evaluator or the config
+            # file: bad times are rejected outright rather than silently
+            # ignored later, since a dropped rule changes when the user
+            # actually gets notified.
+            rules = []
+            for r in (body.get("notify_schedule") or []):
+                if not isinstance(r, dict):
+                    return jsonify({"error": "invalid notify_schedule row"}), 400
+                try:
+                    hh, mm = (int(x) for x in str(r.get("time", "")).split(":", 1))
+                except (TypeError, ValueError):
+                    return jsonify({"error": "invalid notify_schedule time"}), 400
+                if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                    return jsonify({"error": "invalid notify_schedule time"}), 400
+                days = []
+                for d in (r.get("days") or []):
+                    try:
+                        d = int(d)
+                    except (TypeError, ValueError):
+                        return jsonify({"error": "invalid notify_schedule day"}), 400
+                    if not 0 <= d <= 6:
+                        return jsonify({"error": "invalid notify_schedule day"}), 400
+                    days.append(d)
+                rules.append({
+                    "days": sorted(set(days)),
+                    "time": f"{hh:02d}:{mm:02d}",
+                    "action": "off" if str(r.get("action", "on")).lower() == "off" else "on",
+                })
+            updates["notify_schedule"] = rules
         if not updates:
             return jsonify({"error": "no valid fields"}), 400
         ok = store.update_group(group_id, updates)

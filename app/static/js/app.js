@@ -1336,11 +1336,11 @@
   // buttons — those wrapped onto 7 separate lines on narrow phone widths
   // (each ~26px button next to a 1fr grid track squeezed by two time
   // inputs), making the schedule editor look broken/jumbled.
-  function scheduleRow(w, idx){
-    const row = document.createElement("div");
-    row.className = "sched-row";
-    const selected = new Set((w.days && w.days.length) ? w.days : [0,1,2,3,4,5,6]);
-
+  // Day picker shared by the recording-window editor and the notification
+  // rule editor. Returns the element plus a getter, so each row type can
+  // lay out the rest of its controls however it likes.
+  function _dayPicker(days){
+    const selected = new Set((days && days.length) ? days : [0,1,2,3,4,5,6]);
     const daysWrap = document.createElement("div"); daysWrap.className = "sched-days";
     const daysBtn = document.createElement("button");
     daysBtn.type = "button"; daysBtn.className = "sched-days-btn";
@@ -1352,6 +1352,7 @@
       cb.addEventListener("change", () => {
         if (cb.checked) selected.add(di); else selected.delete(di);
         daysBtn.textContent = _daysSummary(Array.from(selected));
+        daysWrap.dispatchEvent(new Event("change", { bubbles: true }));
       });
       label.appendChild(cb);
       label.appendChild(document.createTextNode(lbl));
@@ -1364,6 +1365,14 @@
       menu.classList.toggle("hidden");
     });
     daysWrap.appendChild(daysBtn); daysWrap.appendChild(menu);
+    daysWrap.getDays = () => Array.from(selected).sort((a, b) => a - b);
+    return daysWrap;
+  }
+
+  function scheduleRow(w, idx){
+    const row = document.createElement("div");
+    row.className = "sched-row";
+    const daysWrap = _dayPicker(w.days);
 
     const times = document.createElement("div"); times.className = "sched-times";
     const st = document.createElement("input"); st.type = "time"; st.value = w.start || "08:00";
@@ -1376,8 +1385,88 @@
     del.addEventListener("click", () => row.remove());
 
     row.appendChild(daysWrap); row.appendChild(times); row.appendChild(del);
-    row._getDays = () => Array.from(selected).sort((a,b) => a - b);
+    row._getDays = daysWrap.getDays;
     return row;
+  }
+
+  // ----- Notification rule editor (scheduled ON/OFF actions) -----
+  // Deliberately NOT the window editor above: recording still describes
+  // periods (record from X to Y), whereas notifications are now a list of
+  // "at this time, switch on/off" moments — see _notify_rules_active in
+  // detection.py for why. Same day picker, different payload.
+  function notifyRuleRow(r){
+    const row = document.createElement("div");
+    row.className = "sched-row notify-rule-row";
+    const daysWrap = _dayPicker(r && r.days);
+
+    const time = document.createElement("input");
+    time.type = "time"; time.className = "notify-rule-time";
+    time.value = (r && r.time) || "09:00";
+
+    const arrow = document.createElement("span");
+    arrow.className = "notify-rule-arrow"; arrow.textContent = "→";
+
+    const action = document.createElement("select");
+    action.className = "notify-rule-action";
+    action.innerHTML = `<option value="on">Bildirimleri Aç</option>`
+                     + `<option value="off">Bildirimleri Kapat</option>`;
+    action.value = (r && r.action === "off") ? "off" : "on";
+    // Colour-code the row so a long list reads at a glance.
+    const paint = () => row.classList.toggle("is-off", action.value === "off");
+    action.addEventListener("change", paint);
+    paint();
+
+    const del = document.createElement("button"); del.type = "button";
+    del.className = "sched-del"; del.textContent = "✕"; del.title = "Bu kuralı sil";
+    del.addEventListener("click", () => row.remove());
+
+    row.append(daysWrap, time, arrow, action, del);
+    row._getRule = () => ({
+      days: daysWrap.getDays(),
+      time: time.value || "00:00",
+      action: action.value,
+    });
+    return row;
+  }
+
+  function renderNotifyRules(wrapEl, rules){
+    wrapEl.innerHTML = "";
+    (rules || []).forEach(r => wrapEl.appendChild(notifyRuleRow(r)));
+  }
+
+  function readNotifyRules(wrapEl){
+    return Array.from(wrapEl.querySelectorAll(".notify-rule-row"))
+      .map(r => r._getRule())
+      // Rows are shown in chronological order so the list reads like a
+      // timetable; the backend is order-independent either way.
+      .sort((a, b) => a.time.localeCompare(b.time));
+  }
+
+  // Mirrors _notify_rules_active in detection.py so the card can show the
+  // live state without a round trip. Keep the two in step.
+  function _notifyRulesActiveNow(rules){
+    if (!rules || !rules.length) return true;
+    const now = new Date();
+    const dow = (now.getDay() + 6) % 7;             // JS Sun=0 -> Mon=0
+    let best = null, bestAction = null;
+    for (const r of rules){
+      const [hh, mm] = String(r.time || "").split(":").map(Number);
+      if (!isFinite(hh) || !isFinite(mm)) continue;
+      const action = r.action === "off" ? "off" : "on";
+      const days = (r.days && r.days.length) ? r.days : [0,1,2,3,4,5,6];
+      for (const d of days){
+        const back = (dow - d + 7) % 7;
+        const occ = new Date(now);
+        occ.setDate(occ.getDate() - back);
+        occ.setHours(hh, mm, 0, 0);
+        if (occ > now) occ.setDate(occ.getDate() - 7);
+        const delta = now - occ;
+        if (best === null || delta < best || (delta === best && action === "off")){
+          best = delta; bestAction = action;
+        }
+      }
+    }
+    return bestAction === null ? true : bestAction !== "off";
   }
   // Close any open day-picker menu when clicking elsewhere.
   document.addEventListener("click", (e) => {
@@ -1673,29 +1762,50 @@
     head.append(name, sw);
     card.appendChild(head);
 
+    // Live read-out of what the rules below currently add up to, so the
+    // user can confirm the timetable does what they meant without waiting
+    // for a real detection.
+    const stateLine = document.createElement("div");
+    stateLine.className = "notif-now";
+    const paintState = () => {
+      const on = g.notify_enabled !== false && _notifyRulesActiveNow(g.notify_schedule || []);
+      stateLine.classList.toggle("is-off", !on);
+      stateLine.textContent = g.notify_enabled === false
+        ? "Şu an: kapalı (anahtar kapalı)"
+        : (on ? "Şu an: bildirimler açık" : "Şu an: bildirimler kapalı");
+    };
+    card.appendChild(stateLine);
+
     const schedWrap = document.createElement("div"); schedWrap.className = "rec-schedule";
     const schedRows = document.createElement("div");
-    renderScheduleRows(schedRows, g.notify_schedule || [], { defaultRowIfEmpty: false });
+    renderNotifyRules(schedRows, g.notify_schedule || []);
     const schedAdd = document.createElement("button");
-    schedAdd.type = "button"; schedAdd.className = "btn ghost small"; schedAdd.textContent = "+ Zaman aralığı";
-    schedAdd.addEventListener("click", () => schedRows.appendChild(scheduleRow({ days: [], start: "08:00", end: "18:00" })));
+    schedAdd.type = "button"; schedAdd.className = "btn ghost small";
+    schedAdd.textContent = "+ Kural";
+    schedAdd.addEventListener("click", () =>
+      schedRows.appendChild(notifyRuleRow({ days: [], time: "09:00", action: "off" })));
     schedWrap.append(schedRows, schedAdd);
     card.appendChild(schedWrap);
     const schedHint = document.createElement("small");
-    schedHint.textContent = "Zaman aralığı eklenmezse bu grup hiç bildirim göndermez. Değişiklik otomatik kaydedilir.";
+    schedHint.textContent = "Her kural, belirtilen gün ve saatte bildirimleri açar veya kapatır. "
+      + "O an geçerli olan, en son gerçekleşen kuraldır. Hiç kural yoksa bildirimler açıktır. "
+      + "Değişiklik otomatik kaydedilir.";
     card.appendChild(schedHint);
     const saveSchedule = _debounce(async () => {
       try {
-        const updated = await api.put("/api/groups/" + g.id, { notify_schedule: readScheduleRows(schedRows) });
+        const updated = await api.put("/api/groups/" + g.id,
+                                      { notify_schedule: readNotifyRules(schedRows) });
         Object.assign(g, updated);
-        renderSidebar();          // schedule affects the sidebar's live state dot
+        paintState();
       } catch (e) { toast("Zamanlama kaydedilemedi: " + e.message, "err"); }
     }, 500);
     schedRows.addEventListener("change", saveSchedule);
-    // Row add (schedAdd click) and row delete (the ✕ inside scheduleRow)
-    // both just mutate schedRows' children — one observer covers both.
+    // Row add (schedAdd click) and row delete (the ✕ inside the row) both
+    // just mutate schedRows' children — one observer covers both.
     new MutationObserver(saveSchedule).observe(schedRows, { childList: true });
 
+    paintState();
+    card._paintState = paintState;
     return card;
   }
 

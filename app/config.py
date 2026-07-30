@@ -82,6 +82,58 @@ GROUP_NOTIFICATION_DEFAULTS = {
 # on load so a stale value can't sit in config.json looking meaningful.
 GROUP_LEGACY_KEYS = ("notify_snooze_until", "notify_force_until")
 
+
+def _migrate_notify_schedule(schedule):
+    """Convert a legacy notify_schedule from time WINDOWS to time ACTIONS.
+
+    Old shape (same as record_schedule): {"days", "start", "end"} — a
+    period during which notifications are on.
+    New shape: {"days", "time", "action"} — a moment at which they are
+    switched on or off. See _notify_rules_active in detection.py.
+
+    A NON-wrapping window (end > start) converts exactly: ON at `start`,
+    OFF at `end`, same days.
+
+    A wrapping window (end <= start, e.g. 20:00-09:00) needs three
+    actions, because the old evaluator did NOT read it as "Monday evening
+    through Tuesday morning". Its test was `dow in days AND (hm >= start
+    OR hm < end)`, i.e. for each listed day it covered that day's EARLY
+    MORNING *and* that day's evening. Reproducing that means: ON at
+    00:00, OFF at `end`, ON at `start` — all on the same days.
+
+    Caveat, deliberately accepted: on a day NOT in `days` that follows one
+    that is, the old model went quiet at midnight whereas the action model
+    simply carries the last state forward. Emitting a synthetic midnight
+    OFF for every such day would bloat the list the user is about to read
+    and edit, so the conversion is a faithful-but-simple starting point.
+    """
+    out = []
+    for w in schedule or []:
+        if not isinstance(w, dict):
+            continue
+        if "time" in w or "action" in w:
+            out.append(w)                     # already migrated
+            continue
+        if "start" not in w and "end" not in w:
+            continue                          # unrecognisable — drop it
+        days = sorted({int(d) for d in (w.get("days") or [])
+                       if isinstance(d, (int, float))})
+        start = str(w.get("start") or "00:00")
+        end = str(w.get("end") or "23:59")
+        if start == end:
+            # Degenerate "all day" window — just switch on and never off.
+            out.append({"days": days, "time": "00:00", "action": "on"})
+            continue
+        if end > start:                       # "HH:MM" strings compare correctly
+            out.append({"days": days, "time": start, "action": "on"})
+            out.append({"days": days, "time": end, "action": "off"})
+        else:
+            if end != "00:00":
+                out.append({"days": days, "time": "00:00", "action": "on"})
+                out.append({"days": days, "time": end, "action": "off"})
+            out.append({"days": days, "time": start, "action": "on"})
+    return out
+
 _lock = threading.Lock()
 
 
@@ -159,6 +211,7 @@ class ConfigStore:
                 g.setdefault(k, json.loads(json.dumps(v)))
             for k in GROUP_LEGACY_KEYS:
                 g.pop(k, None)
+            g["notify_schedule"] = _migrate_notify_schedule(g.get("notify_schedule"))
 
     def _save_locked(self):
         tmp = self.config_path.with_suffix(".tmp")
