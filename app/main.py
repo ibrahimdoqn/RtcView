@@ -528,6 +528,55 @@ def create_app(config_path: str) -> Flask:
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
 
+    # ---------- Self-update (GitHub) ----------
+    # The running app can't do this itself — it's an unprivileged process
+    # and update.sh needs root (stops/restarts the service, may touch
+    # apt). scripts/update.sh installs a NOPASSWD sudoers rule scoped to
+    # exactly scripts/trigger_update.sh, which launches self_update.sh as
+    # an independent systemd transient unit (systemd-run) so it survives
+    # rtcview.service being stopped mid-update (KillMode=control-group
+    # would otherwise kill it too, since it'd still be in that cgroup).
+    @app.get("/api/system/update/status")
+    def api_system_update_status():
+        install_dir, _ = resolve_paths()
+        src_dir = install_dir.rstrip("/") + "-src"
+        info = {
+            "src_available": os.path.isdir(os.path.join(src_dir, ".git")),
+            "trigger_available": os.path.isfile(os.path.join(install_dir, "scripts", "trigger_update.sh")),
+        }
+        if info["src_available"]:
+            try:
+                r = subprocess.run(
+                    ["git", "-C", src_dir, "log", "-1", "--format=%h|%ci|%s"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    sha, date, msg = r.stdout.strip().split("|", 2)
+                    info.update({"commit": sha, "date": date, "message": msg})
+            except Exception as e:
+                info["error"] = str(e)
+        return jsonify(info)
+
+    @app.post("/api/system/update")
+    def api_system_update():
+        install_dir, _ = resolve_paths()
+        trigger = os.path.join(install_dir, "scripts", "trigger_update.sh")
+        if not os.path.isfile(trigger):
+            return jsonify({
+                "error": "Güncelleme betiği bulunamadı. Sunucuda bir kez `sudo bash scripts/update.sh` çalıştırılması gerekiyor."
+            }), 400
+        try:
+            r = subprocess.run(["sudo", "-n", trigger], capture_output=True, text=True, timeout=15)
+        except FileNotFoundError:
+            return jsonify({"error": "sudo bulunamadı"}), 500
+        except subprocess.TimeoutExpired:
+            return jsonify({"error": "Güncelleme başlatma zaman aşımına uğradı"}), 500
+        if r.returncode != 0:
+            return jsonify({"error": (r.stderr or r.stdout or "bilinmeyen hata").strip()}), 500
+        # The service (including this very request's process) may be
+        # restarted moments after this returns — that's expected.
+        return jsonify({"ok": True})
+
     @app.post("/api/cameras/<camera_id>/record/start")
     def api_rec_manual_start(camera_id):
         body = request.get_json(silent=True) or {}

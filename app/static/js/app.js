@@ -1935,6 +1935,83 @@
     });
   }
 
+  // ---------- Self-update (GitHub) ----------
+  async function refreshUpdateInfo(){
+    const el = $("#s-update-info"); if (!el) return;
+    const btn = $("#s-update-now");
+    try {
+      const v = await api.get("/api/system/update/status");
+      if (v.commit){
+        const when = (v.date || "").slice(0, 16).replace("T", " ");
+        el.textContent = `Mevcut sürüm: ${v.commit} — ${v.message || ""} (${when})`;
+      } else {
+        el.textContent = "Sürüm bilgisi yok — ilk güncellemede oluşturulacak.";
+      }
+      if (!v.trigger_available){
+        el.textContent += " Güncelleme betiği kurulu değil — sunucuda bir kez "
+          + "“sudo bash scripts/update.sh” çalıştırılması gerekiyor.";
+      }
+      if (btn) btn.disabled = !v.trigger_available;
+    } catch (e) {
+      el.textContent = "Hata: " + e.message;
+    }
+  }
+  $("#s-update-refresh").addEventListener("click", refreshUpdateInfo);
+  const updateDetails = $("#update-details");
+  if (updateDetails){
+    updateDetails.addEventListener("toggle", () => { if (updateDetails.open) refreshUpdateInfo(); });
+  }
+
+  // Once the update starts, the service (including this very page's
+  // backend) gets stopped and restarted — poll /api/status until it
+  // responds again rather than waiting on the triggering request itself.
+  async function _pollServerBackUp(){
+    await new Promise(r => setTimeout(r, 4000));
+    const deadline = Date.now() + 5 * 60000;
+    let sawDown = false;
+    while (Date.now() < deadline){
+      try {
+        await api.get("/api/status");
+        if (sawDown) return;
+      } catch { sawDown = true; }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+    throw new Error("zaman aşımı — sunucu geri gelmedi");
+  }
+  let _updateInFlight = false;
+  $("#s-update-now").addEventListener("click", async () => {
+    if (_updateInFlight) return;
+    if (!confirm("Uygulama GitHub'daki en son sürüme güncellenecek ve servis yeniden başlatılacak. "
+      + "Bu sırada birkaç dakika erişim kesilebilir. Devam edilsin mi?")) return;
+    const btn = $("#s-update-now"), el = $("#s-update-info");
+    let beforeCommit = null;
+    try { beforeCommit = (await api.get("/api/system/update/status")).commit || null; } catch {}
+    _updateInFlight = true;
+    btn.disabled = true;
+    try {
+      el.textContent = "Güncelleme başlatılıyor…";
+      await api.post("/api/system/update", {});
+      el.textContent = "Güncelleniyor… sunucu birkaç dakika içinde geri gelecek.";
+      await _pollServerBackUp();
+      const after = await api.get("/api/system/update/status").catch(() => null);
+      if (after && after.commit && after.commit !== beforeCommit){
+        el.textContent = `Güncellendi: ${after.commit} — ${after.message || ""}`;
+        toast("Güncelleme tamamlandı", "ok");
+      } else if (after && after.commit === beforeCommit){
+        el.textContent = `Servis yeniden başladı, sürüm zaten güncel: ${after.commit}`;
+        toast("Zaten güncel", "ok");
+      } else {
+        el.textContent = "Servis geri geldi.";
+        toast("Servis geri geldi", "ok");
+      }
+    } catch (e) {
+      toast("Güncelleme başarısız: " + e.message, "err");
+      el.textContent = "Hata: " + e.message;
+    } finally {
+      btn.disabled = false;
+      _updateInFlight = false;
+    }
+  });
 
   $("#search-input").addEventListener("input", renderSidebar);
 
