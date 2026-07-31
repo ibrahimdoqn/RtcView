@@ -2474,7 +2474,7 @@
     v.addEventListener("pause", updatePlayPauseIcon);
     $("#pb-back").addEventListener("click", (e) => { e.preventDefault(); seekRelative(-10); });
     $("#pb-fwd").addEventListener("click",  (e) => { e.preventDefault(); seekRelative(10);  });
-    $("#pb-speed").addEventListener("change", (e) => { v.playbackRate = parseFloat(e.target.value); });
+    $("#pb-speed").addEventListener("change", (e) => applyPlaybackSpeed(e.target.value));
     $("#pb-snap").addEventListener("click", playbackSnapshot);
     $("#pb-dl").addEventListener("click", () => {
       const a = state.playback.active; if (!a) return;
@@ -3104,7 +3104,7 @@
       const dur = bestDuration(seg, v) || 3600;
       const off = Math.max(0, Math.min(Math.max(0.1, dur - 0.05), offset || 0));
       try { v.currentTime = off; } catch (e) { console.warn("seek failed:", e); }
-      v.playbackRate = rate;
+      applyPlaybackSpeed(rate);
       if (!opts.keepPlaying || wasPlaying) v.play().catch(()=>{});
       // Anchor timeline centre on the new wall-clock instant
       pb.centerTime = seg.started_at + off;
@@ -3186,6 +3186,19 @@
     const idx = pb.segs.findIndex(s => s.id === pb.active.id);
     const next = pb.segs[idx + 1];
     if (next) loadSegment(next, 0);
+  }
+
+  // Browsers cap HTMLMediaElement.playbackRate — Chrome's ceiling is 16 and
+  // it THROWS NotSupportedError above it, leaving the rate at 1. The speed
+  // menu stops at 16 for that reason; clamp anyway so a stale value in the
+  // <select> can never silently drop playback back to normal speed.
+  const MAX_PLAYBACK_RATE = 16;
+
+  function applyPlaybackSpeed(rate){
+    const v = $("#pb-video");
+    rate = Math.min(parseFloat(rate) || 1, MAX_PLAYBACK_RATE);
+    try { v.playbackRate = rate; }
+    catch (e) { v.playbackRate = 1; console.warn("playbackRate rejected:", e); }
   }
 
   let _tlLastRender = 0;
@@ -3274,13 +3287,8 @@
     if (k === "arrowright"){ e.preventDefault(); seekRelative(10);  return true; }
     if (k === ","){ if (v.paused) v.currentTime = Math.max(0, v.currentTime - 1/25); return true; }
     if (k === "."){ if (v.paused) v.currentTime = Math.min(v.duration||0, v.currentTime + 1/25); return true; }
-    if (k === "1"){ v.playbackRate = 0.5; $("#pb-speed").value = "0.5"; return true; }
-    if (k === "2"){ v.playbackRate = 1;   $("#pb-speed").value = "1";   return true; }
-    if (k === "3"){ v.playbackRate = 2;   $("#pb-speed").value = "2";   return true; }
-    if (k === "4"){ v.playbackRate = 4;   $("#pb-speed").value = "4";   return true; }
-    if (k === "5"){ v.playbackRate = 8;   $("#pb-speed").value = "8";   return true; }
-    if (k === "6"){ v.playbackRate = 16;  $("#pb-speed").value = "16";  return true; }
-    if (k === "7"){ v.playbackRate = 32;  $("#pb-speed").value = "32";  return true; }
+    const speedKeys = { "1": "0.5", "2": "1", "3": "2", "4": "4", "5": "8", "6": "16" };
+    if (speedKeys[k]){ $("#pb-speed").value = speedKeys[k]; applyPlaybackSpeed(speedKeys[k]); return true; }
     if (k === "+" || k === "="){ state.playback.pxPerSec = _clampPxPerSec(state.playback.pxPerSec * 1.4); renderTimeline(); _ensureRangeLoaded(); return true; }
     if (k === "-" || k === "_"){ state.playback.pxPerSec = _clampPxPerSec(state.playback.pxPerSec / 1.4); renderTimeline(); _ensureRangeLoaded(); return true; }
     if (k === "0"){ state.playback.pxPerSec = _defaultPxPerSec(); renderTimeline(); _ensureRangeLoaded(); return true; }
