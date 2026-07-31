@@ -2041,7 +2041,7 @@
   $("#s-rec-rescan").addEventListener("click", async () => {
     try {
       const r = await api.post("/api/recording/rescan");
-      toast(`Tarama: ${r.scanned} dosya, ${r.added} yeni indexe eklendi`, "ok");
+      toast(`Tarama: ${r.scanned} dosya, ${r.added} yeni eklendi, ${r.removed} silinmiş kayıt DB'den temizlendi`, "ok");
       refreshUsageBar();
     } catch (e) { toast("Rescan başarısız: " + e.message, "err"); }
   });

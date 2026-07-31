@@ -860,7 +860,11 @@ class Storage:
     # ---------- Rescan (index rebuild from disk) ----------
     def rescan(self) -> dict:
         """Walk every configured root and register any MP4 not already
-        in the index."""
+        in the index, then drop any indexed row whose file no longer
+        exists on disk (deleted outside the app — manual rm, an external
+        script, a swapped disk). This is the manual "silinen dosyaları
+        DB'den temizle" action from Ayarlar; nothing else currently
+        reconciles a file removed that way."""
         from app.recorder import _parse_fname_ts   # local import to avoid cycle
         snap_root = self.snapshots_root().resolve()
         found = 0; added = 0
@@ -890,7 +894,18 @@ class Storage:
                 started = fts if fts is not None else max(0.0, st.st_mtime - 1)
                 self.register_segment(cam_id, abs_p, started, st.st_mtime, trigger="rescan")
                 added += 1
-        return {"scanned": found, "added": added}
+
+        with self._lock:
+            all_paths = self._db.execute("SELECT id, path FROM segments").fetchall()
+        orphaned = [sid for sid, p in all_paths if not os.path.exists(p)]
+        if orphaned:
+            with self._lock:
+                self._db.executemany("DELETE FROM segments WHERE id = ?",
+                                     [(sid,) for sid in orphaned])
+            self._invalidate_caches()
+            log.info("rescan: dropped %d segment row(s) whose file no longer exists",
+                     len(orphaned))
+        return {"scanned": found, "added": added, "removed": len(orphaned)}
 
 
 def _try_prune_empty(dir_path: Path, root: Path):
