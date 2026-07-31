@@ -5,8 +5,14 @@ Design
 * Each camera with an eligible mode gets its own FFmpeg subprocess that reads
   from go2rtc's RTSP output (``rtsp://<host>:<rtsp_port>/<stream>``) and writes
   numbered segments to disk (``-f segment -segment_time N -reset_timestamps 1``).
-* A watcher thread per camera scans that camera's day directory for freshly
-  closed segments and registers them into the SQLite index.
+* A single shared watcher thread ticks every WATCHER_INTERVAL, but only
+  actually scans a camera's day directory when that camera's segment is
+  expected to be closing (each CameraRecorder tracks its own
+  ``segment_seconds`` — whatever it's configured to, not a hardcoded
+  default — and computes when its current segment should roll over).
+  Outside that window the tick is a free in-memory time check, no I/O at
+  all; near/at the expected close it polls every tick until the rollover
+  is actually observed, so a slow/jittery ffmpeg is still caught quickly.
 * A supervisor thread evaluates each camera every few seconds — starts/stops
   processes according to ``record_mode`` (off/always/schedule/manual) and the
   weekly ``record_schedule``, and revives processes that died.
@@ -28,7 +34,8 @@ log = logging.getLogger("recorder")
 
 MANUAL_DEFAULT_SECONDS = 600  # 10 minutes
 SUPERVISOR_INTERVAL = 3
-WATCHER_INTERVAL = 2
+WATCHER_INTERVAL = 2  # cheap in-memory tick; see _watcher_loop — real I/O only happens near a due segment close
+TRACK_MARGIN_SEC = 5  # start polling a recorder's directory this many seconds before its segment is expected to close
 
 
 def _cam_dir(root: Path, cam_id: str) -> Path:
@@ -119,6 +126,12 @@ class CameraRecorder:
         self._stderr_tail: deque[str] = deque(maxlen=200)
         self._stderr_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        # Adaptive watcher scheduling — see module docstring and
+        # _watcher_loop. Both reset on every start(); segment_seconds is
+        # THIS recorder's own configured value, so a non-default duration
+        # (or a different value per camera) is respected automatically.
+        self._next_check_at: float = 0.0
+        self._last_latest_started: Optional[float] = None
 
     def is_running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -179,6 +192,10 @@ class CameraRecorder:
                 return
             self.started_at = time.time()
             self.trigger = trigger
+            self._last_latest_started = None
+            # First segment can't possibly close before segment_seconds
+            # has elapsed — no point checking the directory before then.
+            self._next_check_at = self.started_at + self.segment_seconds - TRACK_MARGIN_SEC
             self._stderr_tail.clear()
             self._stderr_thread = threading.Thread(
                 target=self._drain_stderr, daemon=True, name=f"rec-err-{self.cam_id}")
@@ -226,7 +243,7 @@ class CameraRecorder:
             self._scan_and_register(final=True)
             self.started_at = None
 
-    def _scan_and_register(self, final: bool = False):
+    def _scan_and_register(self, final: bool = False) -> bool:
         """Register newly-closed segments.
 
         Filenames encode each segment's own wall-clock start time (ffmpeg
@@ -235,9 +252,14 @@ class CameraRecorder:
         to the second — no watcher-polling drift). Only files that were
         opened by THIS recorder instance are considered, so leftover files
         from a previous crashed process are never double-registered.
+
+        Returns True if the latest segment file changed since the last
+        call (i.e. ffmpeg rolled over to a new one) — the watcher uses
+        this to know when to jump back to sleeping until the NEXT
+        expected close instead of retrying on every tick.
         """
         if not self.day_dir or not self.started_at:
-            return
+            return False
         # Only pick up files whose parsed start is >= this session's spawn
         # time — everything else belongs to a previous run and is already
         # (or will be) recorded through its own recorder or via rescan.
@@ -245,7 +267,7 @@ class CameraRecorder:
         try:
             candidates = sorted(self.day_dir.glob(f"{self.cam_id}_*.{self.ext}"))
         except Exception:
-            return
+            return False
         files: list[tuple[Path, float]] = []
         for p in candidates:
             ts = _parse_fname_ts(p)
@@ -253,7 +275,11 @@ class CameraRecorder:
                 continue
             files.append((p, ts))
         if not files:
-            return
+            return False
+
+        latest_started = files[-1][1]
+        rolled = (self._last_latest_started is not None and latest_started > self._last_latest_started)
+        self._last_latest_started = latest_started
 
         get_by_path = getattr(self.storage, "get_segment_by_path", None)
         for i, (f, started) in enumerate(files):
@@ -275,6 +301,7 @@ class CameraRecorder:
             if ended <= started:
                 ended = started + max(1.0, st.st_size / 500_000.0)
             self.storage.register_segment(self.cam_id, path, started, ended, trigger=self.trigger)
+        return rolled
 
     def status(self) -> dict:
         return {
@@ -484,10 +511,22 @@ class RecordingManager:
 
     def _watcher_loop(self):
         while not self._stop.wait(WATCHER_INTERVAL):
+            now = time.time()
             with self._lock:
                 recs = list(self._recs.values())
             for r in recs:
                 try:
-                    if r.is_running(): r._scan_and_register(final=False)
+                    if not r.is_running():
+                        continue
+                    if now < r._next_check_at:
+                        continue  # this recorder's segment can't have closed yet
+                    rolled = r._scan_and_register(final=False)
+                    # Confirmed rollover: this recorder's own segment_seconds
+                    # (whatever it's configured to) sets when to check again.
+                    # No rollover yet (ffmpeg running a bit behind, or we
+                    # landed slightly early): retry on the next cheap tick
+                    # instead of waiting a full segment — self-corrects
+                    # without ever drifting permanently off schedule.
+                    r._next_check_at = (now + r.segment_seconds - TRACK_MARGIN_SEC) if rolled else (now + WATCHER_INTERVAL)
                 except Exception as e:
                     log.debug("watcher %s: %s", r.cam_id, e)
