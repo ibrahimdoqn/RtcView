@@ -216,8 +216,15 @@ class CameraRecorder:
                         try: p.kill(); p.wait(timeout=1)
                         except Exception: pass
             self.proc = None
+            # Register the final segment BEFORE forgetting started_at:
+            # _scan_and_register's very first line is a guard on that field,
+            # so calling it after clearing started_at made every stop/reload
+            # silently drop the in-progress segment — never indexed, invisible
+            # in playback and in retention/quota accounting, until a manual
+            # rescan. The process is already confirmed dead at this point
+            # (terminate/wait above), so the file's final flush is on disk.
+            self._scan_and_register(final=True)
             self.started_at = None
-        self._scan_and_register(final=True)
 
     def _scan_and_register(self, final: bool = False):
         """Register newly-closed segments.
@@ -320,12 +327,23 @@ class RecordingManager:
         if self._watch_thread: self._watch_thread.join(timeout=3)
 
     def reload_camera(self, cam_id: str):
-        """Called when a camera's config changed; kill and re-evaluate."""
+        """Called when a camera's config changed; kill and re-evaluate.
+
+        Holds the manager lock across both the pop AND the stop, not just
+        the pop. _tick() also takes this lock to read/write self._recs; if
+        the pop released it before r.stop() (which can take up to ~7s to
+        walk terminate -> SIGINT -> SIGKILL) finished, a tick landing in
+        that window sees cam_id as absent, wants it running, and starts a
+        brand-new CameraRecorder while the old ffmpeg process is still
+        alive — two processes writing the exact same second-resolution
+        filename. A few seconds of the supervisor waiting for this lock is
+        a fair trade for that never happening.
+        """
         with self._lock:
             r = self._recs.pop(cam_id, None)
-        if r:
-            try: r.stop()
-            except Exception: pass
+            if r:
+                try: r.stop()
+                except Exception: pass
 
     def reload_all(self):
         """Debounced full reload. Called from several settings endpoints

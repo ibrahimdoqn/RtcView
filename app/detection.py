@@ -774,12 +774,22 @@ class DetectionManager:
 
     def reload_camera(self, cam_id: str):
         """Called when a camera's config changed (or it was deleted); the
-        supervisor tick will rebuild a watcher for it if still wanted."""
+        supervisor tick will rebuild a watcher for it if still wanted.
+
+        Holds the manager lock across both the pop AND the stop, not just
+        the pop — w.stop() joins with a timeout of PULL_TIMEOUT_SEC + 5s,
+        and _tick() also takes this lock to read/write self._watchers. If
+        the pop released the lock before stop() finished, a tick landing
+        in that window sees cam_id as absent and builds a second watcher
+        for the same camera while the first's thread is still winding
+        down — duplicate open_detection rows and duplicate notifications
+        for one motion edge.
+        """
         with self._lock:
             w = self._watchers.pop(cam_id, None)
-        if w:
-            try: w.stop()
-            except Exception as e: log.warning("watcher stop failed for %s: %s", cam_id, e)
+            if w:
+                try: w.stop()
+                except Exception as e: log.warning("watcher stop failed for %s: %s", cam_id, e)
 
     @staticmethod
     def _wants_watcher(cam: dict) -> bool:
@@ -822,6 +832,15 @@ class DetectionManager:
                 nw.start()
                 with self._lock:
                     self._watchers[cam["id"]] = nw
+            elif want and w is not None and not w.is_running():
+                # The watcher's thread has exited — an unexpected exception
+                # escaped _run(), or start() no-op'd earlier because ONVIF
+                # wasn't importable yet at construction time. Without this
+                # branch _tick only ever checks `w is None`, never liveness,
+                # so once a watcher's thread dies detection for that camera
+                # stays dead forever. Mirrors recorder.py's supervisor
+                # ("if not r.is_running(): r.start()") for the same reason.
+                w.start()
             elif not want and w is not None:
                 self.reload_camera(cam["id"])
 

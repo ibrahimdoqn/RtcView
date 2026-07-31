@@ -36,6 +36,15 @@ def resolve_paths():
     return install_dir, config_dir
 
 
+def _int_arg(args, name: str, default: int) -> int:
+    """int(request.args.get(name, default)) without turning a malformed
+    query string (?limit=abc) into an unhandled 500."""
+    try:
+        return int(args.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def create_app(config_path: str) -> Flask:
     app = Flask(__name__, static_folder="static", template_folder="templates")
     # Cap request bodies at 2 MB so a stray/malicious POST can't OOM the
@@ -43,6 +52,11 @@ def create_app(config_path: str) -> Flask:
     # are far below this.
     app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
     CORS(app)
+
+    # A camera id becomes a directory name under every storage root and a
+    # dict key several subsystems index workers by, so it's validated
+    # everywhere one can originate from user input, not just here.
+    _CAM_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
     store = ConfigStore(config_path)
     go2rtc = Go2RtcClient(store)
@@ -177,8 +191,18 @@ def create_app(config_path: str) -> Flask:
             motion_timeout = max(5, min(300, int(body.get("motion_timeout_seconds", 15) or 15)))
         except (TypeError, ValueError):
             motion_timeout = 15
+        # cam_id becomes a directory name under every storage root
+        # (_cam_dir in recorder.py) and a dict key workers are indexed by —
+        # an unvalidated id from the client is a path-traversal vector
+        # ("../../etc") and a duplicate id would silently desync in-memory
+        # recorder/detector state from the config list.
+        cam_id = body.get("id") or "cam_" + uuid.uuid4().hex[:8]
+        if not _CAM_ID_RE.match(cam_id):
+            return jsonify({"error": "invalid camera id"}), 400
+        if any(c["id"] == cam_id for c in store.get_cameras()):
+            return jsonify({"error": "camera id already exists"}), 400
         cam = {
-            "id": body.get("id") or "cam_" + uuid.uuid4().hex[:8],
+            "id": cam_id,
             "name": name,
             "stream": stream,
             "ptz_enabled": bool(body.get("ptz_enabled", False)),
@@ -299,6 +323,18 @@ def create_app(config_path: str) -> Flask:
                     "action": "off" if str(r.get("action", "on")).lower() == "off" else "on",
                 })
             updates["notify_schedule"] = rules
+            # notify_rule_applied_at is a monotone high-water mark on the
+            # timestamp of the last-applied occurrence (see
+            # apply_notify_rules in detection.py) — it only ever compares
+            # against occurrences of the CURRENT schedule. Editing the
+            # schedule (e.g. moving a rule earlier in the day, or adding
+            # one) can make "most recent occurrence <= now" compute to a
+            # timestamp at or before that stale mark, and it would then be
+            # silently treated as "already applied" for up to a week.
+            # Resetting the mark makes the next tick recompute from
+            # scratch — the same self-correcting path already used for a
+            # boundary missed while the service was stopped.
+            updates["notify_rule_applied_at"] = 0
         if not updates:
             return jsonify({"error": "no valid fields"}), 400
         ok = store.update_group(group_id, updates)
@@ -337,7 +373,7 @@ def create_app(config_path: str) -> Flask:
             t_to = float(request.args.get("to")) if request.args.get("to") else None
         except ValueError:
             return jsonify({"error": "invalid time range"}), 400
-        limit = int(request.args.get("limit", 5000))
+        limit = _int_arg(request.args, "limit", 5000)
         return jsonify(storage.list_detections(cam_id=cam, t_from=t_from, t_to=t_to, limit=limit))
 
     @app.post("/api/cameras/<camera_id>/detection/test")
@@ -447,6 +483,11 @@ def create_app(config_path: str) -> Flask:
             if key in clean:
                 try: clean[key] = int(clean[key])
                 except Exception: return jsonify({"error": f"invalid {key}"}), 400
+        if "purge_interval_seconds" in clean:
+            # The purge loop does self._stop.wait(purge_interval_seconds)
+            # between full-table retention/quota scans; 0 (or negative)
+            # makes it a busy loop pegging a core forever.
+            clean["purge_interval_seconds"] = max(5, clean["purge_interval_seconds"])
         if "enabled" in clean: clean["enabled"] = bool(clean["enabled"])
         # Storage-list change is atomic + recorder-safe: stop cleanly, swap,
         # start again. Current segment is finalised via the graceful stop.
@@ -631,7 +672,7 @@ def create_app(config_path: str) -> Flask:
             t_to = float(request.args.get("to")) if request.args.get("to") else None
         except ValueError:
             return jsonify({"error": "invalid time range"}), 400
-        limit = int(request.args.get("limit", 2000))
+        limit = _int_arg(request.args, "limit", 2000)
         segs = storage.list_segments(cam_id=cam, t_from=t_from, t_to=t_to, limit=limit)
         # Strip absolute path from response — expose only id-referenced URLs.
         for s in segs:
@@ -677,8 +718,6 @@ def create_app(config_path: str) -> Flask:
         return jsonify({"ok": True, "locked": locked})
 
     # ---------- Snapshots ----------
-    _CAM_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-
     @app.post("/api/snapshot/<camera_id>")
     def api_snapshot(camera_id):
         if not _CAM_ID_RE.match(camera_id or ""):
@@ -714,7 +753,7 @@ def create_app(config_path: str) -> Flask:
     @app.get("/api/snapshots")
     def api_snapshots_list():
         cam = request.args.get("cam")
-        rows = storage.list_snapshots(cam_id=cam, limit=int(request.args.get("limit", 200)))
+        rows = storage.list_snapshots(cam_id=cam, limit=_int_arg(request.args, "limit", 200))
         for s in rows:
             s["url"] = f"/api/snapshots/{s['id']}"
             del s["path"]

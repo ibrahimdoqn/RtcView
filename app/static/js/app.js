@@ -537,7 +537,12 @@
     tile.addEventListener("wheel", (e) => {
       e.preventDefault();
       const p = state.players.get(cam.id); if (!p) return;
-      selectCamera(cam.id);
+      // selectCamera() unconditionally calls updatePtzPanel(), which fetches
+      // presets when the PTZ panel is open — calling it on every wheel tick
+      // (many per second during a continuous zoom gesture) turned zooming a
+      // PTZ tile into a preset-fetch storm. Only (re)select when it's
+      // actually a change.
+      if (state.selectedId !== cam.id) selectCamera(cam.id);
       const rect = tile.getBoundingClientRect();
       applyZoom(p, e.clientX - rect.left, e.clientY - rect.top,
                 e.deltaY < 0 ? 1.15 : 1/1.15, rect);
@@ -1597,6 +1602,13 @@
   $("#btn-settings").addEventListener("click", () => openSettingsPage("genel"));
   $("#settings-close").addEventListener("click", closeSettingsPage);
 
+  // Tracks whether the go2rtc fields actually loaded from the server. If a
+  // transient fetch failure leaves them at their empty HTML defaults, the
+  // save handler below must NOT re-post them — "||" fallbacks would send
+  // 127.0.0.1:1984/8554 and silently reset a custom go2rtc host/port,
+  // killing every camera stream, just because the user happened to change
+  // the theme in the same visit to this tab.
+  let _g2rtcLoaded = false;
   async function loadGenelTab(){
     $("#s-grid-cols").value = state.settings.grid_columns || 3;
     $("#s-theme").value = state.settings.theme || "dark";
@@ -1610,7 +1622,11 @@
       $("#s-g2-host").value = g.host || "127.0.0.1";
       $("#s-g2-port").value = g.api_port || 1984;
       $("#s-g2-rtsp").value = g.rtsp_port || 8554;
-    } catch {}
+      _g2rtcLoaded = true;
+    } catch {
+      _g2rtcLoaded = false;
+      toast("go2rtc ayarları yüklenemedi — bu sekmeyi tekrar açmadan kaydetmeyin", "err");
+    }
   }
   $("#s-save-genel").addEventListener("click", async () => {
     const body = {
@@ -1628,11 +1644,13 @@
       if (newTransport !== prevTransport) setDeviceTransport(newTransport);
 
       state.settings = await api.post("/api/settings", body);
-      await api.post("/api/go2rtc/settings", {
-        host: ($("#s-g2-host").value || "127.0.0.1").trim(),
-        api_port: parseInt($("#s-g2-port").value || 1984),
-        rtsp_port: parseInt($("#s-g2-rtsp").value || 8554),
-      });
+      if (_g2rtcLoaded){
+        await api.post("/api/go2rtc/settings", {
+          host: ($("#s-g2-host").value || "127.0.0.1").trim(),
+          api_port: parseInt($("#s-g2-port").value || 1984),
+          rtsp_port: parseInt($("#s-g2-rtsp").value || 8554),
+        });
+      }
       applySettings();
       renderGrid();                     // pulls in new transport on restart
       toast(newTransport !== prevTransport ? "Yayın modu değiştirildi" : "Ayarlar kaydedildi", "ok");
@@ -1965,7 +1983,12 @@
         const q   = Math.max(0, parseInt(row.querySelector(".rp-quota").value || 0) || 0);
         if (!val){ toast("Boş yol", "err"); return; }
         try {
-          const others = _readRecPaths().filter((_,i) => i !== idx);
+          // Index into the UNFILTERED row list (idx is a DOM position),
+          // then drop blanks only from what's kept. Indexing into the
+          // blank-dropped list here silently excluded the wrong disk root
+          // whenever an earlier row was empty — the request could end up
+          // duplicating one root and dropping another.
+          const others = _readRecPathsAll().filter((_, i) => i !== idx).filter(e => e.path);
           await api.post("/api/recording/settings", {
             storage_paths: [{ path: val, max_gb: q }, ...others],
           });
@@ -1982,20 +2005,35 @@
         }
       });
       row.querySelector(".rp-del").addEventListener("click", () => {
-        const cur = _readRecPaths();
-        if (cur.length <= 1){ toast("En az bir yol olmalı", "err"); return; }
-        cur.splice(idx, 1);
-        _renderRecPaths(cur, storageStatus);
+        // Same index hazard as the ✓ handler above: splice into the
+        // unfiltered per-row list (idx is a DOM position), and only count
+        // REAL paths toward the "keep at least one" rule — a blank
+        // placeholder row shouldn't be able to block itself from deletion.
+        const all = _readRecPathsAll();
+        const realCount = all.filter(e => e.path).length;
+        const deletingReal = !!(all[idx] && all[idx].path);
+        if (deletingReal && realCount <= 1){ toast("En az bir yol olmalı", "err"); return; }
+        all.splice(idx, 1);
+        _renderRecPaths(all, storageStatus);
       });
       wrap.appendChild(row);
     });
   }
-  function _readRecPaths(){
-    // Returns list of {path, max_gb} in row order, dropping blank paths.
+  function _readRecPathsAll(){
+    // Every row, including ones the user hasn't filled a path into yet.
+    // Callers that need to exclude "this row" by its DOM position (idx)
+    // must index into this, not the blank-dropped list below — an earlier
+    // blank row would otherwise shift every following index and the wrong
+    // disk root gets dropped or kept.
     return $$("#s-rec-paths .rec-path-row").map(row => ({
       path:   (row.querySelector(".rp-path")  || {value: ""}).value.trim(),
       max_gb: Math.max(0, parseInt((row.querySelector(".rp-quota") || {value: 0}).value || 0) || 0),
-    })).filter(e => e.path);
+    }));
+  }
+  function _readRecPaths(){
+    // Returns list of {path, max_gb} in row order, dropping blank paths —
+    // the shape actually sent to /api/recording/settings on Kaydet.
+    return _readRecPathsAll().filter(e => e.path);
   }
   $("#s-rec-path-add").addEventListener("click", () => {
     _renderRecPaths([..._readRecPaths(), { path: "", max_gb: 0 }]);
@@ -2271,15 +2309,29 @@
     // don't burn API calls.
     const [todayStart] = dayRangeUnix(todayLocal());
     if (pb.loadedTo < todayStart || document.hidden) return;
+    const camId = pb.camId;
     try {
       // Re-fetch the whole currently-loaded range (not just "today") so an
       // extension into yesterday/tomorrow made via scrolling isn't dropped
       // by this periodic refresh.
       const from = pb.loadedFrom, to = pb.loadedTo;
       const [segs] = await Promise.all([
-        api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${from}&to=${to}`),
+        api.get(`/api/recordings?cam=${encodeURIComponent(camId)}&from=${from}&to=${to}`),
         loadDetections(from, to),
       ]);
+      // If the camera changed, or _ensureRangeLoaded widened
+      // loadedFrom/loadedTo, while this was in flight, this response only
+      // covers a range NARROWER than what's now considered loaded.
+      // Replacing pb.segs with it would silently drop the wider data
+      // while loadedFrom/loadedTo keep claiming it's still there — and
+      // since _ensureRangeLoaded only fetches what it thinks is missing,
+      // that dropped range would never come back on its own. A merge
+      // isn't a safe alternative here either: unlike _ensureRangeLoaded's
+      // top-up, this call's whole job is to pick up server-side deletes,
+      // and _mergeById is add/update-only. Simplest correct answer: skip
+      // this refresh entirely — the next 20s tick will cover the current
+      // range with the real replace-based semantics below.
+      if (camId !== pb.camId || pb.loadedFrom !== from || pb.loadedTo !== to) return;
       const oldActiveId = pb.active ? pb.active.id : null;
       pb.segs = segs || [];
       if (oldActiveId) pb.active = pb.segs.find(s => s.id === oldActiveId) || pb.active;
@@ -2297,16 +2349,25 @@
   // separate strip, so there's exactly one bar in the timeline.
   async function loadDetections(from, to){
     const pb = state.playback;
-    const cam = state.cameras.find(c => c.id === pb.camId);
+    const camId = pb.camId;
+    const cam = state.cameras.find(c => c.id === camId);
     const enabled = !!(cam && (cam.motion_detection_enabled || cam.person_detection_enabled));
     pb.detectionEnabled = enabled;
     const legend = $("#pb-detect-legend");
     if (legend) legend.classList.toggle("hidden", !enabled);
     if (!enabled){ pb.detections = []; return; }
     try {
-      const evs = await api.get(`/api/detection/events?cam=${encodeURIComponent(pb.camId)}&from=${from}&to=${to}`);
+      const evs = await api.get(`/api/detection/events?cam=${encodeURIComponent(camId)}&from=${from}&to=${to}`);
+      // Called from loadDay() alongside the segments fetch; if the camera
+      // was switched again before this resolves, loadDay's own guard
+      // discards the stale segments, but this write happens BEFORE that
+      // guard runs (loadDetections is awaited inside loadDay's
+      // Promise.all) — without checking here too, the drawer/legend could
+      // end up showing the PREVIOUS camera's detections against the
+      // CURRENT camera's segments.
+      if (camId !== pb.camId) return;
       pb.detections = evs || [];
-    } catch { pb.detections = []; }
+    } catch { if (camId === pb.camId) pb.detections = []; }
   }
 
   // ---------- Detected-events drawer ----------
@@ -2865,8 +2926,9 @@
 
     // Double-click resets zoom (nice to have)
     stage.addEventListener("dblclick", (e) => {
-      // Ignore double-clicks that originate on controls (none currently
-      // overlap the stage, but keep the guard).
+      // The events drawer overlaps the stage; double-clicking an event row
+      // to jump to it shouldn't also reset the zoom underneath it.
+      if (fromDrawer(e)) return;
       if (state.playback.videoZoom > 1) state.playback._resetVideoZoom();
     });
   }
@@ -2916,6 +2978,16 @@
 
   async function loadDay(){
     const pb = state.playback;
+    // Captured up front: if the user switches camera or date again before
+    // this call's fetch resolves, a second loadDay() runs concurrently and
+    // its own synchronous prefix (below) already overwrites
+    // dayStart/loadedFrom/etc for the new selection. Without checking
+    // these against pb.camId/pb.date once THIS call's fetch finally
+    // resolves, whichever response lands last would win regardless of
+    // which one is actually current — a slower response for a camera the
+    // user has already navigated away from could silently overwrite the
+    // segments/video on screen with the wrong camera's footage.
+    const camId = pb.camId, date = pb.date;
     const [t0, t1] = dayRangeUnix(pb.date);
     pb.dayStart = t0; pb.dayEnd = t1;
     // loadedFrom/loadedTo tracks the actual range currently held in
@@ -2927,9 +2999,10 @@
     $("#pb-status").textContent = "Yükleniyor…";
     try {
       const [segs] = await Promise.all([
-        api.get(`/api/recordings?cam=${encodeURIComponent(pb.camId)}&from=${t0}&to=${t1}`),
+        api.get(`/api/recordings?cam=${encodeURIComponent(camId)}&from=${t0}&to=${t1}`),
         loadDetections(t0, t1),
       ]);
+      if (camId !== pb.camId || date !== pb.date) return;  // superseded — discard
       pb.segs = segs || [];
       $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
       renderPbEvents();
@@ -3098,14 +3171,23 @@
     const v = $("#pb-video");
     const changing = !pb.active || pb.active.id !== seg.id;
     pb.active = seg;
-    const rate = parseFloat($("#pb-speed").value || "1");
     const wasPlaying = !v.paused;
+    // loadedmetadata/loadeddata fire asynchronously after v.load(). If the
+    // user picks a second point inside the SAME segment before that load
+    // settles (changing=false next call, so it applies immediately), a
+    // plain closure over offset/rate would let the pending listener from
+    // the FIRST click fire later with its stale target and snap the
+    // playhead back to where they started. Routing the target through
+    // pb.segSeek means whichever call resolves last — the immediate apply
+    // below, or the still-pending listener — always reads the latest one.
+    pb.segSeek = { offset, rate: parseFloat($("#pb-speed").value || "1"), keepPlaying: opts.keepPlaying };
     const applyOffset = () => {
+      const target = pb.segSeek;
       const dur = bestDuration(seg, v) || 3600;
-      const off = Math.max(0, Math.min(Math.max(0.1, dur - 0.05), offset || 0));
+      const off = Math.max(0, Math.min(Math.max(0.1, dur - 0.05), target.offset || 0));
       try { v.currentTime = off; } catch (e) { console.warn("seek failed:", e); }
-      applyPlaybackSpeed(rate);
-      if (!opts.keepPlaying || wasPlaying) v.play().catch(()=>{});
+      applyPlaybackSpeed(target.rate);
+      if (!target.keepPlaying || wasPlaying) v.play().catch(()=>{});
       // Anchor timeline centre on the new wall-clock instant
       pb.centerTime = seg.started_at + off;
       renderTimeline();
@@ -3114,12 +3196,21 @@
       v.src = seg.url;
       v.load();
       if (pb._resetVideoZoom) pb._resetVideoZoom();
-      const onMeta = () => { v.removeEventListener("loadedmetadata", onMeta); applyOffset(); };
-      v.addEventListener("loadedmetadata", onMeta);
+      // loadedmetadata normally fires before loadeddata for the same load,
+      // so without this mutual cleanup both ran applyOffset (double seek,
+      // double play()) every time a segment changed.
+      let fired = false;
+      const onMeta = () => {
+        v.removeEventListener("loadedmetadata", onMeta);
+        v.removeEventListener("loadeddata", onData);
+        if (!fired){ fired = true; applyOffset(); }
+      };
       const onData = () => {
         v.removeEventListener("loadeddata", onData);
-        if (v.readyState >= 1) applyOffset();
+        v.removeEventListener("loadedmetadata", onMeta);
+        if (!fired && v.readyState >= 1){ fired = true; applyOffset(); }
       };
+      v.addEventListener("loadedmetadata", onMeta);
       v.addEventListener("loadeddata", onData);
     } else {
       applyOffset();
