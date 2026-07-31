@@ -75,6 +75,17 @@ class Storage:
     All paths are stored absolute. The storage root can change at runtime
     (see `set_root`) — new segments go under the new root; the index still
     resolves old segments by their stored absolute path.
+
+    index.sqlite itself lives in the app's config directory (next to
+    config.json), NOT under a recording storage root. It used to live at
+    primary_root()/index.sqlite, which meant reordering storage_paths in
+    Kayıt & Depolama settings — an ordinary thing to do when a disk fills
+    up and another should take over — opened a brand-new empty database
+    at the new primary's location: every previously indexed segment
+    vanished from the UI (playback, stats, health) even though every
+    video file was untouched on every disk. The index is app STATE, not
+    recording data, and its location must not depend on which disk the
+    admin currently prefers.
     """
 
     def __init__(self, config_store):
@@ -136,6 +147,36 @@ class Storage:
     def snapshots_root(self) -> Path:
         return self.primary_root() / "_snapshots"
 
+    @staticmethod
+    def _like_escape(s: str) -> str:
+        """Escape % / _ / \\ so a path can be used as a literal prefix in
+        a SQL LIKE pattern (paired with ESCAPE '\\' at the call site). A
+        root path containing either wildcard character — not exotic,
+        e.g. /mnt/disk_1 or /media/usb_drive — would otherwise silently
+        widen the match to unrelated paths that merely share the same
+        prefix up to that character."""
+        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    def _bytes_used_under(self, root_path: str) -> int:
+        """SUM(bytes) for segments whose path is under root_path.
+
+        Computed in SQL — a LIKE 'prefix%' pattern lets SQLite range-scan
+        the UNIQUE index already on path — rather than pulling every
+        segment row into Python and filtering with str.startswith, which
+        is what pick_write_root/health/stats used to each do independently
+        on every call. That full scan grows linearly with the whole
+        segments table (every segment ever recorded, not just this root's)
+        and ran under self._lock, so it also serialized every other DB
+        operation for however long it took.
+        """
+        pattern = self._like_escape(root_path + os.sep) + "%"
+        with self._lock:
+            row = self._db.execute(
+                "SELECT COALESCE(SUM(bytes), 0) FROM segments WHERE path LIKE ? ESCAPE '\\'",
+                (pattern,)
+            ).fetchone()
+        return int(row[0] or 0)
+
     def pick_write_root(self) -> Path:
         """Sequential fill: try each configured root in order.
 
@@ -153,13 +194,6 @@ class Storage:
         purge path in there deletes the globally-oldest segments until
         at least one root becomes writable again.
         """
-        try:
-            with self._lock:
-                usage_rows = self._db.execute(
-                    "SELECT path, bytes FROM segments"
-                ).fetchall()
-        except Exception:
-            usage_rows = []
         fallback = None
         for entry in self.roots_with_quota():
             r = Path(entry["path"])
@@ -174,9 +208,7 @@ class Storage:
             if du.free < SAFETY_MARGIN_BYTES:
                 continue                    # physically no room
             if entry["max_bytes"] > 0:
-                prefix = entry["path"] + os.sep
-                used = sum(int(b or 0) for p, b in usage_rows if p.startswith(prefix))
-                if used >= entry["max_bytes"]:
+                if self._bytes_used_under(entry["path"]) >= entry["max_bytes"]:
                     continue                # per-disk quota hit
             return r                        # first eligible wins
         return fallback if fallback else self.primary_root()
@@ -189,14 +221,38 @@ class Storage:
         except Exception as e:
             log.warning("Cannot create storage root: %s", e)
             return
-        db_path = self.primary_root() / "index.sqlite"
+        # Stable regardless of storage_paths order/content — see the class
+        # docstring. config_path's parent is guaranteed to exist already
+        # (ConfigStore creates it), mkdir here is just defensive.
+        index_dir = self.config_store.config_path.parent
+        index_dir.mkdir(parents=True, exist_ok=True)
+        db_path = index_dir / "index.sqlite"
         with self._lock:
             if self._db_path == db_path and self._db is not None:
                 return
             if self._db is not None:
                 try: self._db.close()
                 except Exception: pass
+            is_fresh = not db_path.exists()
+            if is_fresh:
+                # One-time upgrade path: installs from before the index
+                # moved out of the recording roots have their real history
+                # sitting at <some root>/index.sqlite. Move it (with its
+                # WAL/SHM sidecars) to the new stable location instead of
+                # starting over. Best-effort — a failure here just means a
+                # fresh (empty) index opens below, same as any other
+                # first-run; it must never block startup.
+                self._migrate_legacy_index(db_path)
+                is_fresh = not db_path.exists()
             self._db = sqlite3.connect(str(db_path), check_same_thread=False, isolation_level=None)
+            if is_fresh:
+                # Must be set before the schema below creates any table —
+                # auto_vacuum only takes effect on a database that doesn't
+                # have one yet (changing it later needs a full VACUUM,
+                # which would block startup on an existing, possibly large,
+                # file for no clear win — so existing databases just keep
+                # whatever mode they already have).
+                self._db.execute("PRAGMA auto_vacuum = INCREMENTAL")
             self._db.executescript(SCHEMA)
             # PRAGMA tuning — WAL for concurrency, mmap for cheap reads,
             # 4 MB page cache (default 2 MB), temp tables in RAM.
@@ -206,7 +262,22 @@ class Storage:
             self._db.execute("PRAGMA mmap_size=67108864")
             self._db.execute("PRAGMA temp_store=MEMORY")
             self._db_path = db_path
-            log.info("Storage index open: %s (primary root)", db_path)
+            log.info("Storage index open: %s", db_path)
+
+    def _migrate_legacy_index(self, new_path: Path):
+        for root in self.roots():
+            old_path = root / "index.sqlite"
+            if old_path == new_path or not old_path.exists():
+                continue
+            try:
+                for suffix in ("", "-wal", "-shm"):
+                    src = Path(str(old_path) + suffix)
+                    if src.exists():
+                        shutil.move(str(src), str(new_path) + suffix)
+                log.info("Migrated recording index from %s to %s", old_path, new_path)
+            except Exception as e:
+                log.warning("Could not migrate legacy index from %s: %s", old_path, e)
+            return  # only one legacy location is ever plausible; stop either way
 
     def set_roots(self, new_paths) -> tuple[bool, str]:
         """Replace the entire storage_paths list.
@@ -488,14 +559,6 @@ class Storage:
         warnings: list[str] = []
         per_root = []
         overall = "ok"
-        # Per-root recording usage for quota display.
-        try:
-            with self._lock:
-                usage_rows = self._db.execute(
-                    "SELECT path, bytes FROM segments"
-                ).fetchall()
-        except Exception:
-            usage_rows = []
         for entry in self.roots_with_quota():
             r = Path(entry["path"])
             r_errs = []; r_warns = []
@@ -522,8 +585,7 @@ class Storage:
                         r_warns.append(f"%{100 - free_pct:.0f} dolu")
                 except Exception as e:
                     r_errs.append(f"Disk okunamadı: {e}")
-            key = entry["path"] + os.sep
-            used_by_rec = sum(int(b or 0) for p, b in usage_rows if p.startswith(key))
+            used_by_rec = self._bytes_used_under(entry["path"])
             if entry["max_bytes"] > 0:
                 q_pct = round((used_by_rec / entry["max_bytes"]) * 100, 1)
                 if q_pct >= 100 and overall != "error":
@@ -595,16 +657,7 @@ class Storage:
 
         # Per-root usage from the segment index (root prefix match).
         roots_q = self.roots_with_quota()
-        with self._lock:
-            root_use_rows = self._db.execute(
-                "SELECT path, bytes FROM segments"
-            ).fetchall()
-        per_root_used: dict[str, int] = {r["path"]: 0 for r in roots_q}
-        for p, b in root_use_rows:
-            for r in roots_q:
-                if p.startswith(r["path"] + os.sep):
-                    per_root_used[r["path"]] += int(b or 0)
-                    break
+        per_root_used: dict[str, int] = {r["path"]: self._bytes_used_under(r["path"]) for r in roots_q}
 
         # disk usage per configured root, cached individually (5 s)
         roots_stats = []
@@ -713,28 +766,26 @@ class Storage:
         # is left alone here (they'd be picked up by rescan or delete).
         roots_q = self.roots_with_quota()
         capped = [r for r in roots_q if r["max_bytes"] > 0]
-        if capped:
+        for r in capped:
+            # Scoped to this root via an indexed LIKE prefix scan instead of
+            # fetching every segment on every configured root and bucketing
+            # in Python — this used to run a full table scan per purge tick
+            # regardless of how many roots were actually over quota.
+            pattern = self._like_escape(r["path"] + os.sep) + "%"
             with self._lock:
                 rows = self._db.execute(
-                    "SELECT id, path, bytes FROM segments WHERE locked = 0 ORDER BY started_at ASC"
+                    "SELECT id, bytes FROM segments"
+                    " WHERE locked = 0 AND path LIKE ? ESCAPE '\\'"
+                    " ORDER BY started_at ASC",
+                    (pattern,)
                 ).fetchall()
-            by_root: dict[str, list[tuple[int, str, int]]] = {}
-            totals: dict[str, int] = {}
-            for sid, p, b in rows:
-                key = next(
-                    (r["path"] for r in capped if p.startswith(r["path"] + os.sep)),
-                    None,
-                )
-                if key is None: continue
-                by_root.setdefault(key, []).append((sid, p, int(b or 0)))
-                totals[key] = totals.get(key, 0) + int(b or 0)
-            for r in capped:
-                over = totals.get(r["path"], 0) - r["max_bytes"]
-                if over <= 0: continue
-                for sid, p, b in by_root.get(r["path"], []):
-                    if over <= 0: break
-                    if self.delete_segment(sid):
-                        over -= b; freed += b; removed += 1
+            over = sum(int(b or 0) for _, b in rows) - r["max_bytes"]
+            if over <= 0: continue
+            for sid, b in rows:
+                if over <= 0: break
+                b = int(b or 0)
+                if self.delete_segment(sid):
+                    over -= b; freed += b; removed += 1
 
         # Emergency global purge: when NO writable root has room, delete
         # globally-oldest UNLOCKED segments (regardless of which disk
@@ -751,13 +802,7 @@ class Storage:
                 if du.free < SAFETY_MARGIN_BYTES:
                     continue
                 if entry["max_bytes"] > 0:
-                    prefix = entry["path"] + os.sep
-                    with self._lock:
-                        used = self._db.execute(
-                            "SELECT COALESCE(SUM(bytes),0) FROM segments WHERE path LIKE ?",
-                            (prefix + "%",)
-                        ).fetchone()[0] or 0
-                    if used >= entry["max_bytes"]:
+                    if self._bytes_used_under(entry["path"]) >= entry["max_bytes"]:
                         continue
                 return True
             return False
@@ -794,6 +839,19 @@ class Storage:
                 except Exception: pass
                 with self._lock:
                     self._db.execute("DELETE FROM snapshots WHERE id = ?", (sid,))
+
+        # No-op unless auto_vacuum=INCREMENTAL was set at creation time
+        # (_ensure_roots only does that for a brand-new database — an
+        # existing one keeps whatever mode it already had, see there for
+        # why). Harmless to always call: SQLite documents incremental_
+        # vacuum as a no-op when auto_vacuum isn't enabled. A small batch
+        # every purge tick reclaims space from all the deletes above
+        # without the latency spike a full VACUUM would cause.
+        try:
+            with self._lock:
+                self._db.execute("PRAGMA incremental_vacuum(200)")
+        except Exception as e:
+            log.debug("incremental_vacuum failed: %s", e)
 
         if removed:
             log.info("purged %d segments (%.2f MB freed)", removed, freed / 1e6)
