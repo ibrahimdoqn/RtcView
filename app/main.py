@@ -465,7 +465,8 @@ def create_app(config_path: str) -> Flask:
     def api_rec_settings_set():
         body = request.get_json(force=True) or {}
         allowed = {"enabled", "storage_path", "storage_paths", "segment_seconds",
-                   "retention_days", "max_gb", "purge_interval_seconds", "ffmpeg_path"}
+                   "retention_days", "max_gb", "purge_interval_seconds", "ffmpeg_path",
+                   "mem_rss_ceiling_mb"}
         clean = {k: v for k, v in body.items() if k in allowed}
         # Accept both new list and legacy scalar; normalize to a list.
         new_paths = clean.pop("storage_paths", None)
@@ -483,6 +484,12 @@ def create_app(config_path: str) -> Flask:
             if key in clean:
                 try: clean[key] = int(clean[key])
                 except Exception: return jsonify({"error": f"invalid {key}"}), 400
+        if "mem_rss_ceiling_mb" in clean:
+            try:
+                m = int(clean["mem_rss_ceiling_mb"])
+                if m < 32 or m > 4096: return jsonify({"error": "mem_rss_ceiling_mb 32-4096"}), 400
+                clean["mem_rss_ceiling_mb"] = m
+            except Exception: return jsonify({"error": "invalid mem_rss_ceiling_mb"}), 400
         if "purge_interval_seconds" in clean:
             # The purge loop does self._stop.wait(purge_interval_seconds)
             # between full-table retention/quota scans; 0 (or negative)

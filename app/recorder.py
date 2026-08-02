@@ -42,17 +42,20 @@ SUPERVISOR_INTERVAL = 3
 WATCHER_INTERVAL = 2  # cheap in-memory tick; see _watcher_loop — real I/O only happens near a due segment close
 TRACK_MARGIN_SEC = 5  # start polling a recorder's directory this many seconds before its segment is expected to close
 
-# Memory watchdog — see module docstring. A healthy stream-copy ffmpeg
-# process (this app never re-encodes video) has been observed sitting at
-# 50-90 MB RSS indefinitely. Set tight (128 MB, ~1.5-2.5x that baseline)
-# for RAM-constrained boards like the NanoPi R4S, where several cameras'
-# worth of headroom matters more than a wide false-positive margin — a
-# real leak (one camera's ffmpeg was seen at 1.4 GB after growing
-# unbounded over ~24h) gets caught fast, at the cost of possibly
-# restarting a healthy recorder during a legitimate transient bump
-# (e.g. the faststart moov rewrite on a large segment) more often than a
-# looser ceiling would. A restart here is cheap (a few seconds of
-# reconnect), so that trade-off favors protecting total system RAM.
+# Memory watchdog — see module docstring. Fallback default only; the
+# real value each CameraRecorder uses is per-instance (self.mem_ceiling_mb,
+# set from recording.mem_rss_ceiling_mb — Ayarlar > Sistem) since the
+# right ceiling depends on the host's total RAM budget, not something one
+# constant fits for both an SBC and a beefy NAS. A healthy stream-copy
+# ffmpeg process (this app never re-encodes video) has been observed
+# sitting at 50-90 MB RSS indefinitely; 128 MB (~1.5-2.5x that) is tight
+# enough to matter on a small board — a real leak (one camera's ffmpeg
+# was seen at 1.4 GB after growing unbounded over ~24h) gets caught fast,
+# at the cost of possibly restarting a healthy recorder during a
+# legitimate transient bump (e.g. the faststart moov rewrite on a large
+# segment) more often than a looser ceiling would. A restart here is
+# cheap (a few seconds of reconnect), so that trade-off favors protecting
+# total system RAM.
 MEM_RSS_CEILING_MB = 128
 # Don't restart the same camera more than once per cooldown window even if
 # it keeps re-leaking quickly — avoids a thrash loop; the camera's stream
@@ -138,10 +141,16 @@ class CameraRecorder:
     """State + subprocess for a single camera."""
 
     def __init__(self, cam: dict, ffmpeg_path: str, segment_seconds: int,
-                 rtsp_url: str, storage, container: str = "mp4"):
+                 rtsp_url: str, storage, container: str = "mp4",
+                 mem_ceiling_mb: int = MEM_RSS_CEILING_MB):
         self.cam = cam
         self.cam_id = cam["id"]
         self.ffmpeg_path = ffmpeg_path
+        # See MEM_RSS_CEILING_MB / _check_memory() — configurable via
+        # recording.mem_rss_ceiling_mb (Ayarlar > Sistem) since the right
+        # value depends on the host's total RAM budget, not something one
+        # hardcoded default fits for both an SBC and a beefy NAS.
+        self.mem_ceiling_mb = max(32, int(mem_ceiling_mb))
         self.segment_seconds = max(30, int(segment_seconds))
         self.rtsp_url = rtsp_url
         self.storage = storage
@@ -351,19 +360,20 @@ class CameraRecorder:
         return rolled
 
     def _check_memory(self) -> bool:
-        """True if this recorder's ffmpeg has grown past MEM_RSS_CEILING_MB
-        and should be restarted. Cooldown-gated so a fast-re-leaking stream
-        can't thrash restarts — see MEM_CHECK_COOLDOWN_SEC."""
+        """True if this recorder's ffmpeg has grown past self.mem_ceiling_mb
+        (Ayarlar > Sistem, per-instance — see __init__) and should be
+        restarted. Cooldown-gated so a fast-re-leaking stream can't thrash
+        restarts — see MEM_CHECK_COOLDOWN_SEC."""
         if not self.proc:
             return False
         now = time.time()
         if now - self._last_mem_restart_at < MEM_CHECK_COOLDOWN_SEC:
             return False
         rss = _proc_rss_mb(self.proc.pid)
-        if rss is None or rss < MEM_RSS_CEILING_MB:
+        if rss is None or rss < self.mem_ceiling_mb:
             return False
         log.warning("[%s] ffmpeg RSS at %.0f MB (ceiling %d MB) — restarting to prevent OOM",
-                   self.cam_id, rss, MEM_RSS_CEILING_MB)
+                   self.cam_id, rss, self.mem_ceiling_mb)
         self._last_mem_restart_at = now
         return True
 
@@ -520,6 +530,7 @@ class RecordingManager:
             cam=cam, ffmpeg_path=ffmpeg,
             segment_seconds=int(rc.get("segment_seconds", 300)),
             rtsp_url=self._rtsp_url(cam), storage=self.storage,
+            mem_ceiling_mb=int(rc.get("mem_rss_ceiling_mb", MEM_RSS_CEILING_MB)),
         )
 
     def _wants_run(self, cam: dict, now: float) -> tuple[bool, str]:

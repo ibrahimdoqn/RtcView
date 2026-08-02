@@ -1597,6 +1597,7 @@
     else if (name === "kameralar") showCameraList();
     else if (name === "bildirimler") loadNotifSettingsTab();
     else if (name === "kayit") loadKayitTab();
+    else if (name === "sistem") loadMemCeiling();
   }
   $$(".settings-tab-btn").forEach(btn => btn.addEventListener("click", () => switchSettingsTab(btn.dataset.tab)));
   $("#btn-settings").addEventListener("click", () => openSettingsPage("genel"));
@@ -1692,6 +1693,20 @@
       toast("Ayarlar kaydedildi", "ok");
       updateRecStatus();
       refreshUsageBar();
+    } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
+  });
+
+  async function loadMemCeiling(){
+    try {
+      const r = await api.get("/api/recording/settings");
+      $("#s-sys-mem-ceiling").value = r.mem_rss_ceiling_mb || 128;
+    } catch {}
+  }
+  $("#s-save-mem-ceiling").addEventListener("click", async () => {
+    const v = parseInt($("#s-sys-mem-ceiling").value || 128);
+    try {
+      await api.post("/api/recording/settings", { mem_rss_ceiling_mb: v });
+      toast("Bellek sınırı kaydedildi", "ok");
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
   });
 

@@ -34,6 +34,14 @@ DEFAULT_CONFIG = {
         "max_gb": 0,
         "purge_interval_seconds": 60,
         "ffmpeg_path": "ffmpeg",
+        # A healthy stream-copy ffmpeg process (this app never re-encodes
+        # video) sits at 50-90 MB RSS indefinitely in normal operation.
+        # If a recorder's ffmpeg grows past this ceiling, the supervisor
+        # restarts it rather than let a leak run toward OOM. Tune down on
+        # RAM-constrained boards (SBCs) where headroom across several
+        # concurrent camera recorders matters; tune up if you'd rather
+        # tolerate bigger legitimate bumps before restarting.
+        "mem_rss_ceiling_mb": 128,
     },
     "cameras": [],
     "groups": [],  # [{"id": "grp_xxxxxxxx", "name": "İç Mekan"}]
