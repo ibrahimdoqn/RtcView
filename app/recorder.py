@@ -44,13 +44,16 @@ TRACK_MARGIN_SEC = 5  # start polling a recorder's directory this many seconds b
 
 # Memory watchdog — see module docstring. A healthy stream-copy ffmpeg
 # process (this app never re-encodes video) has been observed sitting at
-# 50-90 MB RSS indefinitely; this ceiling gives a wide margin above that
-# (4-8x) so a legitimate transient bump (e.g. the faststart moov rewrite
-# on a large segment) never trips it, while a real leak — one specific
-# camera's ffmpeg was seen at 1.4 GB after growing unbounded over ~24h —
-# gets caught and restarted long before it threatens the whole box (other
-# services share this RAM: go2rtc, Home Assistant, etc.).
-MEM_RSS_CEILING_MB = 400
+# 50-90 MB RSS indefinitely. Set tight (128 MB, ~1.5-2.5x that baseline)
+# for RAM-constrained boards like the NanoPi R4S, where several cameras'
+# worth of headroom matters more than a wide false-positive margin — a
+# real leak (one camera's ffmpeg was seen at 1.4 GB after growing
+# unbounded over ~24h) gets caught fast, at the cost of possibly
+# restarting a healthy recorder during a legitimate transient bump
+# (e.g. the faststart moov rewrite on a large segment) more often than a
+# looser ceiling would. A restart here is cheap (a few seconds of
+# reconnect), so that trade-off favors protecting total system RAM.
+MEM_RSS_CEILING_MB = 128
 # Don't restart the same camera more than once per cooldown window even if
 # it keeps re-leaking quickly — avoids a thrash loop; the camera's stream
 # itself likely needs attention if this keeps firing (check its network
