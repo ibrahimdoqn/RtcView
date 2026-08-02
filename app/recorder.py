@@ -15,7 +15,12 @@ Design
   is actually observed, so a slow/jittery ffmpeg is still caught quickly.
 * A supervisor thread evaluates each camera every few seconds — starts/stops
   processes according to ``record_mode`` (off/always/schedule/manual) and the
-  weekly ``record_schedule``, and revives processes that died.
+  weekly ``record_schedule``, and revives processes that died. It also
+  restarts a recorder whose ffmpeg process has grown well past its normal
+  memory footprint (stream-copy ffmpeg observed in the field: tens of MB,
+  stable) — a defensive net against ffmpeg-level memory growth on a
+  particular camera's stream that a plain is-it-still-running check can't
+  see, since the process stays "running" the whole time it's leaking.
 """
 import logging
 import os
@@ -36,6 +41,35 @@ MANUAL_DEFAULT_SECONDS = 600  # 10 minutes
 SUPERVISOR_INTERVAL = 3
 WATCHER_INTERVAL = 2  # cheap in-memory tick; see _watcher_loop — real I/O only happens near a due segment close
 TRACK_MARGIN_SEC = 5  # start polling a recorder's directory this many seconds before its segment is expected to close
+
+# Memory watchdog — see module docstring. A healthy stream-copy ffmpeg
+# process (this app never re-encodes video) has been observed sitting at
+# 50-90 MB RSS indefinitely; this ceiling gives a wide margin above that
+# (4-8x) so a legitimate transient bump (e.g. the faststart moov rewrite
+# on a large segment) never trips it, while a real leak — one specific
+# camera's ffmpeg was seen at 1.4 GB after growing unbounded over ~24h —
+# gets caught and restarted long before it threatens the whole box (other
+# services share this RAM: go2rtc, Home Assistant, etc.).
+MEM_RSS_CEILING_MB = 400
+# Don't restart the same camera more than once per cooldown window even if
+# it keeps re-leaking quickly — avoids a thrash loop; the camera's stream
+# itself likely needs attention if this keeps firing (check its network
+# path/firmware), which is exactly why every trigger is logged clearly.
+MEM_CHECK_COOLDOWN_SEC = 300
+
+
+def _proc_rss_mb(pid: int) -> Optional[float]:
+    """Resident set size of a PID in MB, straight from /proc — no extra
+    dependency (psutil, etc.) for a single-line read."""
+    try:
+        with open(f"/proc/{pid}/status", "r") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    kb = int(line.split()[1])
+                    return kb / 1024.0
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
 
 
 def _cam_dir(root: Path, cam_id: str) -> Path:
@@ -132,6 +166,8 @@ class CameraRecorder:
         # (or a different value per camera) is respected automatically.
         self._next_check_at: float = 0.0
         self._last_latest_started: Optional[float] = None
+        # Memory watchdog state — see MEM_RSS_CEILING_MB / _check_memory().
+        self._last_mem_restart_at: float = 0.0
 
     def is_running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -159,6 +195,14 @@ class CameraRecorder:
                 "-analyzeduration", "500000", "-probesize", "500000",
                 "-fflags", "+genpts",
                 "-rtsp_transport", "tcp",
+                # Explicit cap on ffmpeg's real-time input buffer. ffmpeg
+                # already defaults to a small cap here, so this is a
+                # defensive belt-and-suspenders measure (not a proven fix
+                # for any specific leak) against one known category of
+                # RTSP-source memory growth under packet jitter/loss — the
+                # memory watchdog below is the actual guaranteed backstop
+                # regardless of root cause.
+                "-rtbufsize", "16M",
                 "-i", self.rtsp_url,
                 "-map", "0:v:0",
             ]
@@ -303,6 +347,23 @@ class CameraRecorder:
             self.storage.register_segment(self.cam_id, path, started, ended, trigger=self.trigger)
         return rolled
 
+    def _check_memory(self) -> bool:
+        """True if this recorder's ffmpeg has grown past MEM_RSS_CEILING_MB
+        and should be restarted. Cooldown-gated so a fast-re-leaking stream
+        can't thrash restarts — see MEM_CHECK_COOLDOWN_SEC."""
+        if not self.proc:
+            return False
+        now = time.time()
+        if now - self._last_mem_restart_at < MEM_CHECK_COOLDOWN_SEC:
+            return False
+        rss = _proc_rss_mb(self.proc.pid)
+        if rss is None or rss < MEM_RSS_CEILING_MB:
+            return False
+        log.warning("[%s] ffmpeg RSS at %.0f MB (ceiling %d MB) — restarting to prevent OOM",
+                   self.cam_id, rss, MEM_RSS_CEILING_MB)
+        self._last_mem_restart_at = now
+        return True
+
     def status(self) -> dict:
         return {
             "cam_id": self.cam_id,
@@ -311,6 +372,7 @@ class CameraRecorder:
             "trigger": self.trigger,
             "manual_until": self.manual_until,
             "last_error": (self._stderr_tail[-1] if self._stderr_tail else ""),
+            "rss_mb": (round(_proc_rss_mb(self.proc.pid), 1) if self.proc else None),
         }
 
 
@@ -505,7 +567,11 @@ class RecordingManager:
                     if not r: continue
                     with self._lock: self._recs[cam["id"]] = r
                 if not r.is_running(): r.start(trigger=trigger)
-                else: r.trigger = trigger
+                else:
+                    r.trigger = trigger
+                    if r._check_memory():
+                        r.stop()
+                        r.start(trigger=trigger)
             else:
                 if r and r.is_running(): r.stop()
 
