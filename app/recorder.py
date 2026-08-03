@@ -63,6 +63,14 @@ MEM_RSS_CEILING_MB = 128
 # path/firmware), which is exactly why every trigger is logged clearly.
 MEM_CHECK_COOLDOWN_SEC = 300
 
+# Staleness watchdog — backstop for a stuck ffmpeg the -timeout flag
+# didn't catch (any other blocking call, not just the RTSP socket read).
+# A segment overdue by this many multiples of segment_seconds — with a
+# flat floor so a short segment_seconds doesn't make this trigger-happy —
+# means the recorder is "running" but not actually producing anything.
+STALE_MULTIPLIER = 3
+STALE_FLOOR_SEC = 180
+
 
 def _proc_rss_mb(pid: int) -> Optional[float]:
     """Resident set size of a PID in MB, straight from /proc — no extra
@@ -178,6 +186,12 @@ class CameraRecorder:
         # (or a different value per camera) is respected automatically.
         self._next_check_at: float = 0.0
         self._last_latest_started: Optional[float] = None
+        # Set the first time the watcher notices a segment is overdue
+        # (past its expected close with no rollover seen yet); cleared the
+        # moment a rollover IS observed. None means "not currently
+        # overdue". Backstop for a stuck ffmpeg that -timeout didn't
+        # catch — see _is_stale().
+        self._stale_since: Optional[float] = None
         # Memory watchdog state — see MEM_RSS_CEILING_MB / _check_memory().
         self._last_mem_restart_at: float = 0.0
 
@@ -207,6 +221,18 @@ class CameraRecorder:
                 "-analyzeduration", "500000", "-probesize", "500000",
                 "-fflags", "+genpts",
                 "-rtsp_transport", "tcp",
+                # Bounds how long a blocking socket read can wait (µs) on
+                # the underlying tcp:// connection. Without this, a camera
+                # that drops the connection uncleanly (reboot, brief
+                # network loss) leaves ffmpeg blocked in read() forever —
+                # the process never exits, so is_running() keeps reporting
+                # healthy while zero new segments ever get produced. 20s
+                # is generous for a real hiccup; a genuinely dead
+                # connection now surfaces as an ffmpeg exit within a
+                # bounded time, which the existing supervisor tick already
+                # knows how to restart.
+                "-timeout", "20000000",
+
                 # Explicit cap on ffmpeg's real-time input buffer. ffmpeg
                 # already defaults to a small cap here, so this is a
                 # defensive belt-and-suspenders measure (not a proven fix
@@ -249,6 +275,7 @@ class CameraRecorder:
             self.started_at = time.time()
             self.trigger = trigger
             self._last_latest_started = None
+            self._stale_since = None
             # First segment can't possibly close before segment_seconds
             # has elapsed — no point checking the directory before then.
             self._next_check_at = self.started_at + self.segment_seconds - TRACK_MARGIN_SEC
@@ -376,6 +403,40 @@ class CameraRecorder:
                    self.cam_id, rss, self.mem_ceiling_mb)
         self._last_mem_restart_at = now
         return True
+
+    def _is_stale(self) -> bool:
+        """True if a segment has been overdue for long enough that ffmpeg
+        is almost certainly stuck rather than just running a bit behind —
+        e.g. the camera dropped the connection uncleanly and ffmpeg is
+        blocked in a read() the -timeout flag didn't cover. is_running()
+        can't see this: the process never exited, it's just not doing
+        anything."""
+        if self._stale_since is None:
+            return False
+        overdue_for = time.time() - self._stale_since
+        threshold = max(STALE_FLOOR_SEC, self.segment_seconds * STALE_MULTIPLIER)
+        if overdue_for < threshold:
+            return False
+        log.warning("[%s] no new segment for %.0fs (expected every ~%ds) — "
+                   "ffmpeg looks stuck, restarting", self.cam_id, overdue_for, self.segment_seconds)
+        return True
+
+    def _check_day_rollover(self) -> bool:
+        """True if the calendar day has changed since this recorder's
+        day_dir was computed in start(). ffmpeg's segment output pattern
+        has the DIRECTORY baked in as a fixed string at spawn time —
+        -strftime 1 only re-evaluates the filename's own %Y%m%d_%H%M%S,
+        not which folder it's writing into — so a long-running
+        (record_mode=always) session never notices midnight on its own:
+        segments keep landing in the day it started in, misdated relative
+        to their own filenames, until something restarts it."""
+        if not self.day_dir or not self.root:
+            return False
+        stale = _cam_dir(self.root, self.cam_id) != self.day_dir
+        if stale:
+            log.info("[%s] calendar day changed since this session started — "
+                    "restarting to pick up today's folder", self.cam_id)
+        return stale
 
     def status(self) -> dict:
         return {
@@ -583,7 +644,7 @@ class RecordingManager:
                 if not r.is_running(): r.start(trigger=trigger)
                 else:
                     r.trigger = trigger
-                    if r._check_memory():
+                    if r._check_memory() or r._is_stale() or r._check_day_rollover():
                         r.stop()
                         r.start(trigger=trigger)
             else:
@@ -601,6 +662,15 @@ class RecordingManager:
                     if now < r._next_check_at:
                         continue  # this recorder's segment can't have closed yet
                     rolled = r._scan_and_register(final=False)
+                    if rolled:
+                        r._stale_since = None
+                    elif r._stale_since is None:
+                        # First tick to find us past the expected close
+                        # with no rollover yet — mark when the overdue
+                        # window started. _is_stale() (checked from the
+                        # supervisor) uses this to tell "ffmpeg running a
+                        # bit behind" apart from "actually stuck".
+                        r._stale_since = now
                     # Confirmed rollover: this recorder's own segment_seconds
                     # (whatever it's configured to) sets when to check again.
                     # No rollover yet (ffmpeg running a bit behind, or we
