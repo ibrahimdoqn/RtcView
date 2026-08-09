@@ -857,7 +857,15 @@
       const video = p.video;
       const msg = tile.querySelector("[data-msg]");
       video.srcObject = null;
-      const url = `/go2rtc/api/stream.mp4?src=${encodeURIComponent(cam.stream || cam.id)}`;
+      // mp4=all is required to get audio at all here: go2rtc's stream.mp4
+      // handler (pkg/mp4/helpers.go ParseQuery) only applies its
+      // codec-aware audio filter when a 'mp4' query param is present at
+      // all — with none (the previous URL), it falls through to the
+      // generic parser and audio silently never makes it into the fMP4
+      // output. mp4=all requests the broadest codec set (AAC + the PCMA/
+      // PCMU/PCM family most cheap IP cameras actually send + Opus/MP3),
+      // vs. plain mp4 (AAC only) or mp4=flac (AAC + PCM family only).
+      const url = `/go2rtc/api/stream.mp4?src=${encodeURIComponent(cam.stream || cam.id)}&mp4=all`;
       console.log(`[${cam.id}] MSE HTTP fMP4:`, url);
       video.src = url; video.load();
       let settled = false;
