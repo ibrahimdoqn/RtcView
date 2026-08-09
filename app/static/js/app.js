@@ -91,9 +91,37 @@
   }
 
   // -------- Init --------
+  // The very first /api/config fetch is a hard dependency for everything
+  // else in init() (sidebar, grid, ...) — if it fails once, nothing ever
+  // retried it: the polling loops set up further down only refresh
+  // status/notifications, none of them re-render the camera list. That
+  // left the whole app blank forever after a single failed request —
+  // exactly what a phone/tunnel reconnecting after being idle for hours
+  // is prone to on its first try. Retries with a capped backoff instead
+  // of throwing until the server actually answers.
+  async function _loadConfigWithRetry(){
+    const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];  // caps at 15s, then repeats
+    let attempt = 0;
+    while (true){
+      try {
+        return await api.get("/api/config");
+      } catch (e) {
+        if (attempt === 0){
+          // Only announce the first failure — repeating the toast every
+          // few seconds while genuinely offline would just be noise.
+          toast("Sunucuya bağlanılamıyor, yeniden deneniyor…", "err");
+        }
+        const el = $("#status-indicator"), txt = $("#status-text");
+        if (el){ el.classList.add("err"); el.classList.remove("ok"); }
+        if (txt) txt.textContent = "Sunucuya bağlanılamıyor, yeniden deneniyor…";
+        await new Promise(r => setTimeout(r, BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]));
+        attempt++;
+      }
+    }
+  }
   async function init(){
     try {
-      const cfg = await api.get("/api/config");
+      const cfg = await _loadConfigWithRetry();
       state.settings = cfg.app;
       state.go2rtc  = cfg.go2rtc || {};
       state.recording = cfg.recording || {};
@@ -3005,44 +3033,64 @@
     const camId = pb.camId, date = pb.date;
     const [t0, t1] = dayRangeUnix(pb.date);
     pb.dayStart = t0; pb.dayEnd = t1;
-    // loadedFrom/loadedTo tracks the actual range currently held in
-    // pb.segs/pb.detections (which _ensureRangeLoaded grows incrementally
-    // as the view nears its edge) — distinct from dayStart/dayEnd, which
-    // stays "the calendar day the date picker shows".
-    pb.loadedFrom = t0; pb.loadedTo = t1;
     if (!pb.pxPerSec) pb.pxPerSec = _defaultPxPerSec();
     $("#pb-status").textContent = "Yükleniyor…";
-    try {
-      const [segs] = await Promise.all([
-        api.get(`/api/recordings?cam=${encodeURIComponent(camId)}&from=${t0}&to=${t1}`),
-        loadDetections(t0, t1),
-      ]);
-      if (camId !== pb.camId || date !== pb.date) return;  // superseded — discard
-      pb.segs = segs || [];
-      $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
-      renderPbEvents();
-      const t = (pb.pendingSeek != null) ? pb.pendingSeek : _pickInitialTime(pb);
-      pb.pendingSeek = null;
-      pb.centerTime = t;
-      if (pb.segs.length){
-        const seg = pb.segs.find(s => s.started_at <= t && t <= s.ended_at)
-                 || pb.segs[pb.segs.length - 1];
-        const offset = Math.max(0, t - seg.started_at);
-        loadSegment(seg, offset);
-      } else {
-        pb.active = null;
-        const v = $("#pb-video"); v.pause(); v.removeAttribute("src"); v.load();
-        updateActiveButtons();
-        renderTimeline();
+    // A few retries with a short backoff before giving up — this call
+    // tends to land right when the app is first opened, which is exactly
+    // when a phone/tunnel that's been idle for hours is most likely to
+    // fail its first request while reconnecting. loadedFrom/loadedTo (see
+    // below) are only ever set on a SUCCESSFUL fetch: setting them
+    // upfront used to mean a failed attempt still told _ensureRangeLoaded
+    // "this day is already loaded", so nothing ever retried it again
+    // until the user manually switched camera/date.
+    const RETRY_DELAYS_MS = [1500, 3000, 6000];
+    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++){
+      if (camId !== pb.camId || date !== pb.date) return;  // superseded while retrying
+      try {
+        const [segs] = await Promise.all([
+          api.get(`/api/recordings?cam=${encodeURIComponent(camId)}&from=${t0}&to=${t1}`),
+          loadDetections(t0, t1),
+        ]);
+        if (camId !== pb.camId || date !== pb.date) return;  // superseded — discard
+        // loadedFrom/loadedTo tracks the actual range currently held in
+        // pb.segs/pb.detections (which _ensureRangeLoaded grows
+        // incrementally as the view nears its edge) — distinct from
+        // dayStart/dayEnd, which stays "the calendar day the date picker
+        // shows". Only set once the fetch above has actually succeeded.
+        pb.loadedFrom = t0; pb.loadedTo = t1;
+        pb.segs = segs || [];
+        $("#pb-status").textContent = `${pb.segs.length} segment · toplam ${fmtDuration(pb.segs.reduce((a,s)=>a+s.duration,0))}`;
+        renderPbEvents();
+        const t = (pb.pendingSeek != null) ? pb.pendingSeek : _pickInitialTime(pb);
+        pb.pendingSeek = null;
+        pb.centerTime = t;
+        if (pb.segs.length){
+          const seg = pb.segs.find(s => s.started_at <= t && t <= s.ended_at)
+                   || pb.segs[pb.segs.length - 1];
+          const offset = Math.max(0, t - seg.started_at);
+          loadSegment(seg, offset);
+        } else {
+          pb.active = null;
+          const v = $("#pb-video"); v.pause(); v.removeAttribute("src"); v.load();
+          updateActiveButtons();
+          renderTimeline();
+        }
+        // The initial view (e.g. a deep-link far from centerTime, or zoom
+        // retained from a previous session) may already need more than
+        // this one calendar day — top it up right away instead of
+        // waiting for a drag/zoom to trigger it.
+        _ensureRangeLoaded();
+        return;
+      } catch (e) {
+        if (attempt < RETRY_DELAYS_MS.length){
+          $("#pb-status").textContent = `Yeniden deneniyor… (${attempt + 1}/${RETRY_DELAYS_MS.length})`;
+          await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+          continue;
+        }
+        if (camId !== pb.camId || date !== pb.date) return;
+        $("#pb-status").textContent = "Hata";
+        toast("Kayıtlar yüklenemedi: " + e.message, "err");
       }
-      // The initial view (e.g. a deep-link far from centerTime, or zoom
-      // retained from a previous session) may already need more than this
-      // one calendar day — top it up right away instead of waiting for a
-      // drag/zoom to trigger it.
-      _ensureRangeLoaded();
-    } catch (e) {
-      $("#pb-status").textContent = "Hata";
-      toast("Kayıtlar yüklenemedi: " + e.message, "err");
     }
   }
 
@@ -3218,18 +3266,46 @@
       // so without this mutual cleanup both ran applyOffset (double seek,
       // double play()) every time a segment changed.
       let fired = false;
-      const onMeta = () => {
+      let erroredOnce = false;
+      const cleanup = () => {
         v.removeEventListener("loadedmetadata", onMeta);
         v.removeEventListener("loadeddata", onData);
-        if (!fired){ fired = true; applyOffset(); }
+        v.removeEventListener("error", onErr);
+      };
+      const onMeta = () => {
+        if (!fired){ fired = true; cleanup(); applyOffset(); }
       };
       const onData = () => {
-        v.removeEventListener("loadeddata", onData);
-        v.removeEventListener("loadedmetadata", onMeta);
-        if (!fired && v.readyState >= 1){ fired = true; applyOffset(); }
+        if (!fired && v.readyState >= 1){ fired = true; cleanup(); applyOffset(); }
+      };
+      // Without this, a failed load (network hiccup right as the app
+      // reconnects after being backgrounded for hours, or a genuinely
+      // corrupted segment — see recorder.py's playable flag) left the
+      // player silently stuck forever: neither loadedmetadata nor
+      // loadeddata ever fires, so nothing ever told the user playback
+      // wasn't coming.
+      const onErr = () => {
+        if (fired) return;
+        if (seg.playable === 0){
+          // Known-corrupted segment (no valid trailer) — retrying won't
+          // help, say so plainly instead of spinning forever.
+          cleanup();
+          toast("Bu kayıt bozuk görünüyor, oynatılamıyor", "err");
+          return;
+        }
+        if (!erroredOnce){
+          // Most likely transient (network blip) — one silent retry
+          // before bothering the user with an error.
+          erroredOnce = true;
+          setTimeout(() => { if (!fired && pb.active === seg) v.load(); }, 1500);
+          return;
+        }
+        cleanup();
+        toast("Video yüklenemedi, bağlantıyı kontrol edin", "err");
       };
       v.addEventListener("loadedmetadata", onMeta);
       v.addEventListener("loadeddata", onData);
+      v.addEventListener("error", onErr);
     } else {
       applyOffset();
     }
