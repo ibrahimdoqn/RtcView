@@ -55,8 +55,15 @@ def create_app(config_path: str) -> Flask:
 
     # A camera id becomes a directory name under every storage root and a
     # dict key several subsystems index workers by, so it's validated
-    # everywhere one can originate from user input, not just here.
+    # everywhere one can originate from user input, not just here. The
+    # character class alone lets "." and ".." (both otherwise-legal
+    # matches) through as literal path-traversal segments once handed to
+    # Path.__truediv__ (root / cam_id / ...) — _valid_cam_id below closes
+    # that off explicitly rather than relying on a cleverer regex.
     _CAM_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+    def _valid_cam_id(cam_id) -> bool:
+        return bool(cam_id) and bool(_CAM_ID_RE.match(cam_id)) and cam_id not in (".", "..")
 
     store = ConfigStore(config_path)
     go2rtc = Go2RtcClient(store)
@@ -197,7 +204,7 @@ def create_app(config_path: str) -> Flask:
         # ("../../etc") and a duplicate id would silently desync in-memory
         # recorder/detector state from the config list.
         cam_id = body.get("id") or "cam_" + uuid.uuid4().hex[:8]
-        if not _CAM_ID_RE.match(cam_id):
+        if not _valid_cam_id(cam_id):
             return jsonify({"error": "invalid camera id"}), 400
         if any(c["id"] == cam_id for c in store.get_cameras()):
             return jsonify({"error": "camera id already exists"}), 400
@@ -231,6 +238,16 @@ def create_app(config_path: str) -> Flask:
         # transport is now a device-scoped localStorage preference, so drop
         # any incoming stream_mode value.
         body.pop("stream_mode", None)
+        # The camera id is a path component in every stored segment/
+        # snapshot filename and the key every subsystem (recorder,
+        # detector, storage rows) indexes by. It's immutable after
+        # creation — the frontend never sends it in a PUT body (only as
+        # the URL route param), so unconditionally dropping it here closes
+        # off what would otherwise be an unvalidated dict.update() straight
+        # into cam["id"] (no regex check on this path, unlike POST), and
+        # avoids orphaning that camera's existing DB rows/on-disk files
+        # from a renamed id even if a caller did send a well-formed one.
+        body.pop("id", None)
         if "motion_timeout_seconds" in body:
             try:
                 body["motion_timeout_seconds"] = max(5, min(300, int(body["motion_timeout_seconds"] or 15)))
@@ -727,7 +744,7 @@ def create_app(config_path: str) -> Flask:
     # ---------- Snapshots ----------
     @app.post("/api/snapshot/<camera_id>")
     def api_snapshot(camera_id):
-        if not _CAM_ID_RE.match(camera_id or ""):
+        if not _valid_cam_id(camera_id):
             return jsonify({"error": "invalid camera id"}), 400
         cam = _find_camera(camera_id)
         if not cam: return jsonify({"error": "not found"}), 404

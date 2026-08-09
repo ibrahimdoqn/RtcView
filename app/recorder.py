@@ -622,8 +622,12 @@ class RecordingManager:
     def manual_start(self, cam_id: str, seconds: int = MANUAL_DEFAULT_SECONDS) -> bool:
         cam = self._find_cam(cam_id)
         if not cam: return False
-        # One atomic critical section covers get-or-create so two racing
-        # POSTs never both build a recorder and orphan one of them.
+        # One atomic critical section covers get-or-create AND start() —
+        # not just the get-or-create — so two racing POSTs never both
+        # build a recorder and orphan one of them, and so a reload_camera()
+        # racing in after the get-or-create but before start() can't pop
+        # this same recorder out from under the start() call below (same
+        # class of race as _tick(), see its comment).
         with self._lock:
             r = self._recs.get(cam_id)
             if not r:
@@ -632,7 +636,7 @@ class RecordingManager:
                 self._recs[cam_id] = r
             r.manual_until = time.time() + max(10, int(seconds))
             r.trigger = "manual"
-        if not r.is_running(): r.start(trigger="manual")
+            if not r.is_running(): r.start(trigger="manual")
         return True
 
     def manual_stop(self, cam_id: str) -> bool:
@@ -721,26 +725,40 @@ class RecordingManager:
                     try: r.stop()
                     except Exception: pass
         for cam in cams:
-            want, trigger = (False, "")
-            # Manual override wins regardless of schedule.
-            r = self._recs.get(cam["id"])
-            if r and r.manual_until > now:
-                want, trigger = True, "manual"
-            elif recording_globally_on:
-                want, trigger = self._wants_run(cam, now)
-            if want:
-                if r is None:
-                    r = self._build(cam)
-                    if not r: continue
-                    with self._lock: self._recs[cam["id"]] = r
-                if not r.is_running(): r.start(trigger=trigger)
+            # The read of self._recs and every start()/stop() decided from
+            # it must happen as one atomic unit under self._lock — not just
+            # the dict access. reload_camera() also holds this lock across
+            # its own pop+stop for exactly this reason (see its docstring);
+            # previously this loop only took the lock around inserting a
+            # brand-new recorder, so a reload_camera() racing in in between
+            # this loop's unlocked `self._recs.get(...)` read and its later
+            # start()/stop() call could pop the SAME recorder out from
+            # under it. The old recorder then got a start() call after it
+            # was no longer tracked anywhere — an orphaned ffmpeg process
+            # nothing could ever stop again, with the very next tick
+            # building a second, independently-tracked recorder for the
+            # same camera (double recording).
+            with self._lock:
+                want, trigger = (False, "")
+                # Manual override wins regardless of schedule.
+                r = self._recs.get(cam["id"])
+                if r and r.manual_until > now:
+                    want, trigger = True, "manual"
+                elif recording_globally_on:
+                    want, trigger = self._wants_run(cam, now)
+                if want:
+                    if r is None:
+                        r = self._build(cam)
+                        if not r: continue
+                        self._recs[cam["id"]] = r
+                    if not r.is_running(): r.start(trigger=trigger)
+                    else:
+                        r.trigger = trigger
+                        if r._check_memory() or r._is_stale() or r._check_day_rollover():
+                            r.stop()
+                            r.start(trigger=trigger)
                 else:
-                    r.trigger = trigger
-                    if r._check_memory() or r._is_stale() or r._check_day_rollover():
-                        r.stop()
-                        r.start(trigger=trigger)
-            else:
-                if r and r.is_running(): r.stop()
+                    if r and r.is_running(): r.stop()
 
     def _watcher_loop(self):
         while not self._stop.wait(WATCHER_INTERVAL):

@@ -787,6 +787,17 @@ class Storage:
             # in Python — this used to run a full table scan per purge tick
             # regardless of how many roots were actually over quota.
             pattern = self._like_escape(r["path"] + os.sep) + "%"
+            # Over-quota must be judged against the TRUE total (locked +
+            # unlocked) — the same figure pick_write_root()/health() use
+            # via _bytes_used_under() — not just what's eligible to
+            # delete. A root sitting on a lot of locked (protected)
+            # footage still needs to be recognised as over its cap even
+            # though none of that locked data can be freed here; getting
+            # this backwards (summing only locked=0 rows) meant a root
+            # could stay silently over quota forever whenever enough of
+            # its usage happened to be locked.
+            over = self._bytes_used_under(r["path"]) - r["max_bytes"]
+            if over <= 0: continue
             with self._lock:
                 rows = self._db.execute(
                     "SELECT id, bytes FROM segments"
@@ -794,8 +805,6 @@ class Storage:
                     " ORDER BY started_at ASC",
                     (pattern,)
                 ).fetchall()
-            over = sum(int(b or 0) for _, b in rows) - r["max_bytes"]
-            if over <= 0: continue
             for sid, b in rows:
                 if over <= 0: break
                 b = int(b or 0)

@@ -165,6 +165,20 @@ LOG_MAXLEN = 200
 PROBE_WSDL_TIMEOUT_SEC = 8
 PROBE_OPERATION_TIMEOUT_SEC = 20
 
+# Same idea, but for the long-running watcher's own ONVIF connection
+# (_connect/_create_pullpoint/the PullMessages loop) — not just the
+# one-shot probe above. Without a bounded transport here, a camera that
+# accepts the TCP connection but then goes silent (mid-reboot, firmware
+# hang, NAT/firewall black-holing the response) blocks this thread in a
+# socket read indefinitely; the module's own PULL_TIMEOUT_SEC is only a
+# hint inside the SOAP request body, it does not bound the underlying
+# socket. operation_timeout must stay comfortably above PULL_TIMEOUT_SEC:
+# a live PullMessages call is EXPECTED to block for up to that long
+# waiting for events, and too tight a timeout here would abort perfectly
+# normal long-polls.
+CONNECT_WSDL_TIMEOUT_SEC = 10
+CONNECT_OPERATION_TIMEOUT_SEC = 20
+
 # ---------------------------------------------------------------------------
 # ONVIF constants
 # ---------------------------------------------------------------------------
@@ -412,6 +426,8 @@ class CameraEventWatcher:
     def _connect(self) -> bool:
         try:
             kwargs = {"wsdl_dir": ONVIF_WSDL_DIR} if ONVIF_WSDL_DIR else {}
+            kwargs["transport"] = Transport(timeout=CONNECT_WSDL_TIMEOUT_SEC,
+                                            operation_timeout=CONNECT_OPERATION_TIMEOUT_SEC)
             self._cam = ONVIFCamera(
                 self.cam.get("onvif_host") or self.cam.get("host"),
                 int(self.cam.get("onvif_port", 80) or 80),
