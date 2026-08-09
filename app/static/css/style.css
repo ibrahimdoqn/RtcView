@@ -683,6 +683,21 @@ kbd{
 .tile .tile-actions button:hover{background:rgba(255,255,255,.16);}
 .tile .tile-actions button:active{transform:scale(0.9);}
 
+/* Per-tile live-audio toggle — a liquid-glass pill that lights up in the
+   accent color while that tile's audio is the one playing (only one tile
+   at a time, see setAudioCam in app.js). Uses the same --glass tokens as
+   the rest of the app's frosted-glass surfaces (sidebar, panels, modals)
+   so it reads as part of the same material rather than a one-off button. */
+.tile .tile-audio-btn{
+  background:var(--glass);border-color:var(--glass-brd);
+  backdrop-filter:blur(14px) saturate(1.6);-webkit-backdrop-filter:blur(14px) saturate(1.6);
+}
+.tile .tile-audio-btn.on{
+  background:rgba(10,132,255,.35);border-color:rgba(10,132,255,.55);
+  box-shadow:0 0 0 1px rgba(10,132,255,.25), inset 0 1px 0 rgba(255,255,255,.25);
+}
+.tile .tile-audio-btn.on:hover{background:rgba(10,132,255,.45);}
+
 /* Transport-mode indicator: appears after the camera name in the badge,
    so you can tell at a glance whether a tile is on WebRTC or MSE. */
 .tile[data-mode="mse"] .badge::after{

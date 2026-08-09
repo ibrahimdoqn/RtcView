@@ -8,6 +8,7 @@
     recStatus: new Map(),    // cam_id -> { running, trigger, manual_until, ... }
     selectedId: null,
     solo: false,
+    audioCamId: null,        // which tile's live audio is currently unmuted, or null — only one at a time
     players: new Map(),
     dragging: null,
     sidebarOpen: false,
@@ -472,6 +473,7 @@
       tile.dataset.id = cam.id;
       const showName = state.settings.show_camera_names !== false;
       const showBadge = state.settings.show_status_badges !== false;
+      const audioOn = cam.id === state.audioCamId;
       tile.innerHTML = `
         <video autoplay playsinline muted></video>
         ${(showName || showBadge) ? `<div class="badge">
@@ -479,11 +481,18 @@
           ${showName  ? `<span class="name">${escapeHtml(cam.name)}</span>` : ''}
         </div>` : ''}
         <div class="tile-actions">
+          <button data-act="audio" class="tile-audio-btn${audioOn ? ' on' : ''}" title="${audioOn ? 'Sesi kapat' : 'Sesi aç'}">${audioOn ? '🔊' : '🔇'}</button>
           <button data-act="snap" title="Anlık kare">📷</button>
         </div>
         <div class="zoom-info" style="display:none">1.0×</div>
         <div class="center-msg" data-msg></div>
       `;
+      // The muted attribute above is what lets autoplay start reliably
+      // before any user gesture; audio focus (state.audioCamId) is
+      // applied on top of that right away so a re-render (camera
+      // add/remove, periodic refresh) doesn't silently drop whichever
+      // tile the user had audio on for.
+      tile.querySelector("video").muted = !audioOn;
       wireTile(tile, cam);
       grid.appendChild(tile);
       queueStart(cam, tile);
@@ -491,6 +500,26 @@
     refreshStatusDots();
     updatePtzPanel();
     applyRecUiState();
+  }
+
+  // -------- Live-view audio focus --------
+  // Only one tile's audio plays at a time — a multi-camera grid with
+  // every tile's audio unmuted at once would be unusable noise. Set via
+  // the per-tile glass toggle button or automatically when entering solo
+  // view (double-click) — see toggleSolo/exitSolo.
+  function setAudioCam(id){
+    state.audioCamId = id;
+    state.players.forEach((p, camId) => {
+      if (p.video) p.video.muted = (camId !== id);
+    });
+    $$("#grid .tile").forEach(tile => {
+      const btn = tile.querySelector('[data-act="audio"]');
+      if (!btn) return;
+      const on = tile.dataset.id === id;
+      btn.classList.toggle("on", on);
+      btn.textContent = on ? "🔊" : "🔇";
+      btn.title = on ? "Sesi kapat" : "Sesi aç";
+    });
   }
 
   // Module-level tile drag state so we don't add a new global mousemove/
@@ -525,6 +554,7 @@
       b.addEventListener("click", (e) => {
         e.stopPropagation();
         if (b.dataset.act === "snap") return snapshotCamera(cam);
+        if (b.dataset.act === "audio") return setAudioCam(state.audioCamId === cam.id ? null : cam.id);
       });
     });
 
@@ -912,8 +942,12 @@
   }
   function toggleSolo(id){
     resetZoom(id);
-    if (state.solo && state.selectedId === id){ state.solo = false; }
-    else { state.selectedId = id; state.solo = true; }
+    // Double-clicking into a camera is itself the deliberate "I want to
+    // watch/hear this one" gesture — turn its audio on automatically;
+    // leaving solo mutes it again so returning to the grid doesn't keep
+    // playing that camera's sound over the others.
+    if (state.solo && state.selectedId === id){ state.solo = false; setAudioCam(null); }
+    else { state.selectedId = id; state.solo = true; setAudioCam(id); }
     $("#grid").classList.toggle("solo", state.solo);
     $$("#grid .tile").forEach(el => el.classList.toggle("selected", el.dataset.id === state.selectedId));
     applySoloSizing();
@@ -922,6 +956,7 @@
   function exitSolo(){
     if (state.selectedId) resetZoom(state.selectedId);
     state.solo = false; $("#grid").classList.remove("solo");
+    setAudioCam(null);
     applySoloSizing();
   }
   function toggleFullscreen(){
