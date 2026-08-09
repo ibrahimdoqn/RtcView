@@ -292,6 +292,15 @@ class CameraRecorder:
                 line = raw.decode("utf-8", "replace").rstrip()
                 if not line: continue
                 self._stderr_tail.append(line)
+                # Also into the real logs (journalctl), not just the
+                # in-memory tail the status API exposes — otherwise
+                # whatever ffmpeg actually says about a stream hiccup
+                # (dropped frames, non-monotonic DTS, a segment muxer
+                # re-opening early) is invisible outside the app's own
+                # log viewer. -loglevel warning above means ffmpeg only
+                # emits warnings/errors here, so this stays low-volume in
+                # normal operation.
+                log.warning("[%s] ffmpeg: %s", self.cam_id, line)
         except Exception:
             pass
 
