@@ -724,7 +724,13 @@
   // channel) was tried and removed: it fails whenever go2rtc's WS port
   // isn't reachable from the client (bind, firewall, cross-port block),
   // which was the case in the field.
-  const WHEP_TIMEOUT_MS = 4000;
+  // 10s (not the original 4s) to give a high-latency/relayed path (e.g.
+  // mobile over Tailscale via DERP relay instead of a direct WireGuard
+  // link) enough time for the SDP/ICE handshake plus the first keyframe
+  // — 4s was comfortably enough on LAN but not reliably enough over a
+  // slower relayed mobile connection, causing some tiles to time out and
+  // fall into the reconnect loop while others on the same grid succeeded.
+  const WHEP_TIMEOUT_MS = 10000;
 
   function _wireSizeToVideo(p, cam, tile){
     const video = p.video;

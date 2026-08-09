@@ -322,7 +322,17 @@ class CameraRecorder:
             # / opus are all common but MP4-incompatible with -c copy).
             cmd += ["-c:v", "copy"]
             if audio:
-                cmd += ["-c:a", "aac", "-b:a", "96k", "-ac", "1"]
+                # 48k, not a higher default: AAC-LC has a hard per-channel
+                # bit-budget cap of 6144 bits/frame (ISO/IEC 14496-3),
+                # independent of sample rate. At the 8kHz mono audio these
+                # cameras actually send (1024-sample frame = 128ms), that
+                # caps the achievable bitrate at 6144/0.128s = 48 kbps —
+                # asking for more (96k) can never be delivered, ffmpeg
+                # just silently clamps every frame back down to this same
+                # ceiling and logs a warning on every single frame's
+                # worth of encoding. 48k asks for exactly what's
+                # achievable: same audio, no per-frame clamp warning spam.
+                cmd += ["-c:a", "aac", "-b:a", "48k", "-ac", "1"]
             cmd += [
                 "-f", "segment",
                 "-segment_time", str(self.segment_seconds),
