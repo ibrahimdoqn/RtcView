@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS segments (
     duration     REAL    NOT NULL,
     bytes        INTEGER NOT NULL,
     locked       INTEGER NOT NULL DEFAULT 0,
-    trigger      TEXT    NOT NULL DEFAULT 'schedule'
+    trigger      TEXT    NOT NULL DEFAULT 'schedule',
+    playable     INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_seg_cam_time ON segments(cam_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_seg_time     ON segments(started_at);
@@ -254,6 +255,16 @@ class Storage:
                 # whatever mode they already have).
                 self._db.execute("PRAGMA auto_vacuum = INCREMENTAL")
             self._db.executescript(SCHEMA)
+            # One-time column migration for DBs created before the
+            # 'playable' column existed — executescript's CREATE TABLE IF
+            # NOT EXISTS above is a no-op on an already-existing segments
+            # table, so older indexes never pick up new columns on their
+            # own. Existing rows default to 1 (playable): we have no way
+            # to retroactively verify their trailers cheaply, and treating
+            # unknown history as fine avoids mass-flagging a working index.
+            cols = {r[1] for r in self._db.execute("PRAGMA table_info(segments)").fetchall()}
+            if "playable" not in cols:
+                self._db.execute("ALTER TABLE segments ADD COLUMN playable INTEGER NOT NULL DEFAULT 1")
             # PRAGMA tuning — WAL for concurrency, mmap for cheap reads,
             # 4 MB page cache (default 2 MB), temp tables in RAM.
             self._db.execute("PRAGMA journal_mode=WAL")
@@ -337,7 +348,8 @@ class Storage:
 
     # ---------- Segments ----------
     def register_segment(self, cam_id: str, path: str, started_at: float,
-                         ended_at: float, trigger: str = "schedule") -> Optional[int]:
+                         ended_at: float, trigger: str = "schedule",
+                         playable: Optional[bool] = None) -> Optional[int]:
         try:
             size = os.path.getsize(path)
         except OSError:
@@ -345,6 +357,9 @@ class Storage:
             return None
         duration = max(0.0, ended_at - started_at)
         abs_path = str(Path(path).resolve())
+        # None (caller couldn't check, e.g. non-mp4 container) defaults
+        # to playable — we only ever flag on a positive, verified failure.
+        playable_val = 0 if playable is False else 1
         # A new segment changes per-root bytes_used (quota/health
         # decisions consume it) and disk usage (the file just landed).
         # Invalidate every cache, not just stats — a stale health cache
@@ -357,15 +372,15 @@ class Storage:
             # insert with a new id, breaking any URLs the client already holds.
             cur = self._db.execute(
                 "INSERT OR IGNORE INTO segments"
-                " (cam_id, path, started_at, ended_at, duration, bytes, trigger)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (cam_id, abs_path, started_at, ended_at, duration, size, trigger),
+                " (cam_id, path, started_at, ended_at, duration, bytes, trigger, playable)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (cam_id, abs_path, started_at, ended_at, duration, size, trigger, playable_val),
             )
             if cur.rowcount == 0:
                 self._db.execute(
-                    "UPDATE segments SET ended_at=?, duration=?, bytes=?, trigger=?"
+                    "UPDATE segments SET ended_at=?, duration=?, bytes=?, trigger=?, playable=?"
                     " WHERE path=?",
-                    (ended_at, duration, size, trigger, abs_path),
+                    (ended_at, duration, size, trigger, playable_val, abs_path),
                 )
                 r = self._db.execute("SELECT id FROM segments WHERE path=?", (abs_path,)).fetchone()
                 return r[0] if r else None
@@ -375,7 +390,7 @@ class Storage:
                       t_from: Optional[float] = None,
                       t_to: Optional[float] = None,
                       limit: int = 2000) -> list[dict]:
-        q = "SELECT id, cam_id, path, started_at, ended_at, duration, bytes, locked, trigger FROM segments"
+        q = "SELECT id, cam_id, path, started_at, ended_at, duration, bytes, locked, trigger, playable FROM segments"
         conds, args = [], []
         if cam_id:
             conds.append("cam_id = ?"); args.append(cam_id)
@@ -389,17 +404,17 @@ class Storage:
         args.append(limit)
         with self._lock:
             rows = self._db.execute(q, args).fetchall()
-        cols = ["id","cam_id","path","started_at","ended_at","duration","bytes","locked","trigger"]
+        cols = ["id","cam_id","path","started_at","ended_at","duration","bytes","locked","trigger","playable"]
         return [dict(zip(cols, r)) for r in rows]
 
     def get_segment(self, seg_id: int) -> Optional[dict]:
         with self._lock:
             r = self._db.execute(
-                "SELECT id, cam_id, path, started_at, ended_at, duration, bytes, locked, trigger"
+                "SELECT id, cam_id, path, started_at, ended_at, duration, bytes, locked, trigger, playable"
                 " FROM segments WHERE id = ?", (seg_id,)
             ).fetchone()
         if not r: return None
-        cols = ["id","cam_id","path","started_at","ended_at","duration","bytes","locked","trigger"]
+        cols = ["id","cam_id","path","started_at","ended_at","duration","bytes","locked","trigger","playable"]
         return dict(zip(cols, r))
 
     def delete_segment(self, seg_id: int, force: bool = False) -> bool:

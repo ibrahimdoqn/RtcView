@@ -64,12 +64,21 @@ MEM_RSS_CEILING_MB = 128
 MEM_CHECK_COOLDOWN_SEC = 300
 
 # Staleness watchdog — backstop for a stuck ffmpeg the -timeout flag
-# didn't catch (any other blocking call, not just the RTSP socket read).
-# A segment overdue by this many multiples of segment_seconds — with a
-# flat floor so a short segment_seconds doesn't make this trigger-happy —
-# means the recorder is "running" but not actually producing anything.
-STALE_MULTIPLIER = 3
-STALE_FLOOR_SEC = 180
+# didn't catch (any other blocking call, not just the RTSP socket read),
+# AND for a segment that's simply running way past its configured
+# duration (e.g. a stream discontinuity confusing the segment muxer's
+# internal clock — see -use_wallclock_as_timestamps above). A segment
+# overdue by this many multiples of segment_seconds — with a flat floor
+# so a short segment_seconds doesn't make this trigger-happy — means the
+# recorder is "running" but not actually producing what it should.
+# STALE_CEIL_SEC additionally bounds the worst case in absolute terms: a
+# large configured segment_seconds (e.g. 30 min) should still never be
+# allowed to overrun by more than 10 minutes before being cut — the
+# longer a glitched segment is left open, the more of it ends up
+# unplayable if it never gets a valid trailer (see _mp4_has_moov).
+STALE_MULTIPLIER = 2
+STALE_FLOOR_SEC = 90
+STALE_CEIL_SEC = 600
 
 
 def _proc_rss_mb(pid: int) -> Optional[float]:
@@ -107,6 +116,50 @@ def _parse_fname_ts(path: Path) -> Optional[float]:
         return dt.timestamp()
     except ValueError:
         return None
+
+
+def _mp4_has_moov(path: Path, max_boxes: int = 64) -> bool:
+    """Return True iff the file has a top-level 'moov' box — i.e. ffmpeg
+    actually finished writing a valid trailer/index for this segment. A
+    segment whose ffmpeg process was interrupted mid-write (forced
+    restart racing a still-open segment, or a stream glitch confusing
+    the muxer's timing — see -use_wallclock_as_timestamps and the
+    staleness watchdog above) can land on disk at a normal-looking size
+    with only 'ftyp'/'mdat' boxes and no 'moov' — no player can open it,
+    but nothing about the file's presence/size says so. Plain top-level
+    ISO-BMFF box-header scan, no ffprobe subprocess needed."""
+    try:
+        size = path.stat().st_size
+        if size < 8:
+            return False
+        with open(path, "rb") as f:
+            pos = 0
+            for _ in range(max_boxes):
+                if pos + 8 > size:
+                    break
+                f.seek(pos)
+                header = f.read(8)
+                if len(header) < 8:
+                    break
+                box_size = int.from_bytes(header[0:4], "big")
+                box_type = header[4:8]
+                if box_type == b"moov":
+                    return True
+                if box_size == 1:
+                    ext = f.read(8)
+                    if len(ext) < 8:
+                        break
+                    box_size = int.from_bytes(ext, "big")
+                    if box_size < 16:
+                        break
+                elif box_size == 0:
+                    break  # box runs to EOF and it wasn't moov
+                elif box_size < 8:
+                    break  # corrupt header, give up
+                pos += box_size
+        return False
+    except OSError:
+        return True  # couldn't verify — don't falsely flag on our own I/O error
 
 
 def _is_root_usable(r: Path) -> bool:
@@ -232,6 +285,23 @@ class CameraRecorder:
                 # bounded time, which the existing supervisor tick already
                 # knows how to restart.
                 "-timeout", "20000000",
+
+                # Stamp packets with wall-clock arrival time instead of
+                # trusting the RTP-derived PTS coming from go2rtc. Without
+                # this, a brief upstream hiccup (go2rtc losing and
+                # regaining its own connection to the camera) can hand
+                # ffmpeg a PTS discontinuity WITHOUT ever closing our RTSP
+                # session — is_running() stays True the whole time, so the
+                # supervisor never restarts anything, but the -f segment
+                # muxer (which cuts on elapsed PTS, not real time) reads
+                # the jump as "segment_time already elapsed" and starts
+                # cutting segments far too early/too often, or in the
+                # other direction never notices a segment is overdue.
+                # Confirmed via a go2rtc-based drop/reconnect simulation:
+                # without this flag a 30s-configured segment length
+                # degraded to a run of 16-23s segments after a 12s drop;
+                # with it, segment length stayed close to configured.
+                "-use_wallclock_as_timestamps", "1",
 
                 # Explicit cap on ffmpeg's real-time input buffer. ffmpeg
                 # already defaults to a small cap here, so this is a
@@ -392,7 +462,10 @@ class CameraRecorder:
                 ended = st.st_mtime  # final flush
             if ended <= started:
                 ended = started + max(1.0, st.st_size / 500_000.0)
-            self.storage.register_segment(self.cam_id, path, started, ended, trigger=self.trigger)
+            playable = _mp4_has_moov(f) if self.ext == "mp4" else True
+            if not playable:
+                log.warning("[%s] segment closed without a valid trailer (unplayable): %s", self.cam_id, f)
+            self.storage.register_segment(self.cam_id, path, started, ended, trigger=self.trigger, playable=playable)
         return rolled
 
     def _check_memory(self) -> bool:
@@ -423,7 +496,7 @@ class CameraRecorder:
         if self._stale_since is None:
             return False
         overdue_for = time.time() - self._stale_since
-        threshold = max(STALE_FLOOR_SEC, self.segment_seconds * STALE_MULTIPLIER)
+        threshold = min(STALE_CEIL_SEC, max(STALE_FLOOR_SEC, self.segment_seconds * STALE_MULTIPLIER))
         if overdue_for < threshold:
             return False
         log.warning("[%s] no new segment for %.0fs (expected every ~%ds) — "

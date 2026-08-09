@@ -1152,6 +1152,19 @@ kbd{
 .pb-seg.manual{
   background:linear-gradient(180deg,rgba(255,69,58,.85),rgba(255,69,58,.65));
 }
+/* Segment closed without a valid trailer (see recorder.py _mp4_has_moov) —
+   the file exists and looks normal-sized but a player may not be able to
+   open it. Diagonal hatch overrides whatever color the trigger/lock state
+   would otherwise show, since "might not play" trumps those. */
+.pb-seg.unplayable{
+  background:repeating-linear-gradient(
+    135deg,
+    rgba(255,45,85,.9) 0px, rgba(255,45,85,.9) 6px,
+    rgba(120,10,25,.9) 6px, rgba(120,10,25,.9) 12px
+  );
+  outline:1px solid rgba(255,45,85,.9);
+  outline-offset:-1px;
+}
 /* Fixed centre playhead: a thin vertical line that spans the timeline */
 .pb-playhead{
   position:absolute;top:0;bottom:0;left:50%;width:2px;transform:translateX(-1px);

@@ -3156,16 +3156,19 @@
       if (s1 <= s0) return;
       const x = (s0 - viewStart) * pb.pxPerSec;
       const w = Math.max(2, (s1 - s0) * pb.pxPerSec);
+      const unplayable = s.playable === 0 || s.playable === false;
       const el = document.createElement("div");
       el.className = "pb-seg"
         + (s.locked ? " locked" : "")
         + (s.trigger === "manual" ? " manual" : "")
+        + (unplayable ? " unplayable" : "")
         + (pb.active && s.id === pb.active.id ? " active" : "");
       el.style.left = x + "px";
       el.style.width = w + "px";
       const t0 = new Date(s.started_at*1000);
       el.title = `${pad2(t0.getHours())}:${pad2(t0.getMinutes())}:${pad2(t0.getSeconds())} · ${fmtDuration(s.duration)} · ${fmtBytes(s.bytes)}`
-        + (s.locked ? " · KİLİTLİ" : "") + (s.trigger === "manual" ? " · manuel" : "");
+        + (s.locked ? " · KİLİTLİ" : "") + (s.trigger === "manual" ? " · manuel" : "")
+        + (unplayable ? " · ⚠ bozuk kayıt (oynatılamayabilir)" : "");
       frag.appendChild(el);
     });
 
