@@ -308,6 +308,62 @@ systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}-diskmgr.path"
 systemctl enable --now "${SERVICE_NAME}-diskmgr-boot.service"
 
+# ------------- restart / reboot capability (trigger-file, root services) -------------
+# Same shape again: the app can't call systemctl or reboot itself
+# (NoNewPrivileges=yes), so /api/system/restart and /api/system/reboot
+# just touch a trigger file and a root .path unit does the actual
+# privileged action. Two separate trigger files/units rather than
+# reusing update.trigger -- a plain restart/reboot shouldn't also run
+# self_update.sh's git fetch/reset.
+info "Yeniden başlatma/reboot yetkisi kuruluyor..."
+cat > "/etc/systemd/system/${SERVICE_NAME}-restart.path" <<PATHUNIT
+[Unit]
+Description=RtcView restart trigger watcher
+
+[Path]
+PathExists=${INSTALL_DIR}/restart.trigger
+Unit=${SERVICE_NAME}-restart.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+
+cat > "/etc/systemd/system/${SERVICE_NAME}-restart.service" <<SVCUNIT
+[Unit]
+Description=RtcView service restart (triggered by restart.trigger)
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/rm -f ${INSTALL_DIR}/restart.trigger
+ExecStart=/usr/bin/systemctl restart ${SERVICE_NAME}.service
+SVCUNIT
+
+cat > "/etc/systemd/system/${SERVICE_NAME}-reboot.path" <<PATHUNIT
+[Unit]
+Description=RtcView reboot trigger watcher
+
+[Path]
+PathExists=${INSTALL_DIR}/reboot.trigger
+Unit=${SERVICE_NAME}-reboot.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+
+cat > "/etc/systemd/system/${SERVICE_NAME}-reboot.service" <<SVCUNIT
+[Unit]
+Description=RtcView system reboot (triggered by reboot.trigger)
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/rm -f ${INSTALL_DIR}/reboot.trigger
+ExecStart=/usr/bin/systemctl reboot
+SVCUNIT
+
+systemctl daemon-reload
+systemctl enable --now "${SERVICE_NAME}-restart.path"
+systemctl enable --now "${SERVICE_NAME}-reboot.path"
+
 # ------------- systemd -------------
 info "systemd servisi kuruluyor..."
 # ReadWritePaths includes INSTALL_DIR, the chosen REC_PATH, and common mount

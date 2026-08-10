@@ -202,10 +202,19 @@ def list_block_devices() -> dict:
             continue
         if path in swap_paths or os.path.realpath(path) in swap_paths:
             continue
+        size = int(node.get("size") or 0)
+        if size <= 0:
+            # An empty card-reader slot (no SD/microSD inserted) or an
+            # unconfigured zram device (exists as a node before modprobe
+            # sizes it) reports 0 bytes -- not a real usable disk, just
+            # clutter in the list. A genuinely blank-but-real disk (no
+            # filesystem, real capacity) still has a non-zero size and is
+            # NOT filtered here -- that one's still meant to be formattable.
+            continue
         out.append({
             "path": path,
             "type": ntype,
-            "size": int(node.get("size") or 0),
+            "size": size,
             "fstype": node.get("fstype"),
             "label": node.get("label"),
             "uuid": node.get("uuid"),

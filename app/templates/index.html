@@ -422,6 +422,26 @@
             </details>
             <details class="sys-row">
               <summary>
+                <span class="sys-icon sys-icon-purple">🔁</span>
+                <span class="sys-row-text">
+                  <span class="sys-row-title">Yeniden Başlatma</span>
+                  <span class="sys-row-sub">Uygulamayı veya cihazı yeniden başlat</span>
+                </span>
+              </summary>
+              <div class="sys-row-body">
+                <div class="row" style="gap:.4rem;flex-wrap:wrap;">
+                  <button type="button" id="s-restart-app" class="btn ghost small">Uygulamayı Yeniden Başlat</button>
+                  <button type="button" id="s-restart-system" class="btn danger small">Sistemi Yeniden Başlat</button>
+                </div>
+                <small>"Uygulamayı Yeniden Başlat", sadece RtcView servisini yeniden başlatır — kameralar
+                  birkaç saniye içinde geri gelir. "Sistemi Yeniden Başlat", cihazın tamamını reboot eder —
+                  tüm kayıtlar ve bağlı diskler bir süreliğine kesintiye uğrar, açılışta diskler otomatik
+                  yeniden bağlanır.</small>
+                <div id="s-restart-status" class="usage-text"></div>
+              </div>
+            </details>
+            <details class="sys-row">
+              <summary>
                 <span class="sys-icon sys-icon-gray">📄</span>
                 <span class="sys-row-text">
                   <span class="sys-row-title">Loglar</span>

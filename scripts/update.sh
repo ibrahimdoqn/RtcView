@@ -264,6 +264,59 @@ systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}-diskmgr.path"
 systemctl enable --now "${SERVICE_NAME}-diskmgr-boot.service"
 
+# ------------- restart / reboot capability (trigger-file, root services) -------------
+# Same duplication reasoning as every other block in this section: an
+# existing install only ever gets new root/systemd side effects via
+# update.sh, so whatever install.sh sets up has to be (re)creatable here.
+info "Yeniden başlatma/reboot yetkisi kuruluyor/güncelleniyor..."
+cat > "/etc/systemd/system/${SERVICE_NAME}-restart.path" <<PATHUNIT
+[Unit]
+Description=RtcView restart trigger watcher
+
+[Path]
+PathExists=${INSTALL_DIR}/restart.trigger
+Unit=${SERVICE_NAME}-restart.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+
+cat > "/etc/systemd/system/${SERVICE_NAME}-restart.service" <<SVCUNIT
+[Unit]
+Description=RtcView service restart (triggered by restart.trigger)
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/rm -f ${INSTALL_DIR}/restart.trigger
+ExecStart=/usr/bin/systemctl restart ${SERVICE_NAME}.service
+SVCUNIT
+
+cat > "/etc/systemd/system/${SERVICE_NAME}-reboot.path" <<PATHUNIT
+[Unit]
+Description=RtcView reboot trigger watcher
+
+[Path]
+PathExists=${INSTALL_DIR}/reboot.trigger
+Unit=${SERVICE_NAME}-reboot.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+
+cat > "/etc/systemd/system/${SERVICE_NAME}-reboot.service" <<SVCUNIT
+[Unit]
+Description=RtcView system reboot (triggered by reboot.trigger)
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/rm -f ${INSTALL_DIR}/reboot.trigger
+ExecStart=/usr/bin/systemctl reboot
+SVCUNIT
+
+systemctl daemon-reload
+systemctl enable --now "${SERVICE_NAME}-restart.path"
+systemctl enable --now "${SERVICE_NAME}-reboot.path"
+
 # ------------- systemd unit: ensure recording path + common mounts writable -------------
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 if [ -f "$UNIT_FILE" ]; then

@@ -2640,6 +2640,47 @@
     }
   });
 
+  // ---------- Restart app / reboot system ----------
+  let _restartInFlight = false;
+  async function _runRestartAction({ confirmText, endpoint, startMsg, backUpMsg, doneToast, timeoutMsg }){
+    if (_restartInFlight) return;
+    if (!confirm(confirmText)) return;
+    const appBtn = $("#s-restart-app"), sysBtn = $("#s-restart-system"), el = $("#s-restart-status");
+    _restartInFlight = true;
+    appBtn.disabled = true; sysBtn.disabled = true;
+    try {
+      el.textContent = startMsg;
+      await api.post(endpoint, {});
+      el.textContent = backUpMsg;
+      await _pollServerBackUp();
+      el.textContent = "Geri geldi.";
+      toast(doneToast, "ok");
+    } catch (e) {
+      el.textContent = timeoutMsg + " (" + e.message + ")";
+      toast("Zaman aşımı — cihaz yeniden başlamış olabilir, sayfayı yenileyin: " + e.message, "err");
+    } finally {
+      appBtn.disabled = false; sysBtn.disabled = false;
+      _restartInFlight = false;
+    }
+  }
+  $("#s-restart-app").addEventListener("click", () => _runRestartAction({
+    confirmText: "RtcView servisi yeniden başlatılacak. Kameralar birkaç saniye içinde geri gelir. Devam edilsin mi?",
+    endpoint: "/api/system/restart",
+    startMsg: "Uygulama yeniden başlatılıyor…",
+    backUpMsg: "Yeniden başlatıldı, servis geri geliyor…",
+    doneToast: "Uygulama yeniden başladı",
+    timeoutMsg: "Servis geri gelmedi",
+  }));
+  $("#s-restart-system").addEventListener("click", () => _runRestartAction({
+    confirmText: "Cihazın TAMAMI yeniden başlatılacak (reboot). Tüm kameralar ve bağlı diskler bir süreliğine "
+      + "kesintiye uğrayacak. Bu birkaç dakika sürebilir. Devam edilsin mi?",
+    endpoint: "/api/system/reboot",
+    startMsg: "Sistem yeniden başlatılıyor…",
+    backUpMsg: "Reboot ediliyor, cihaz geri gelene kadar bekleniyor…",
+    doneToast: "Sistem yeniden başladı",
+    timeoutMsg: "Cihaz geri gelmedi",
+  }));
+
   $("#search-input").addEventListener("input", renderSidebar);
 
   let resizeTimer = null;
