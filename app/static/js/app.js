@@ -2251,10 +2251,13 @@
       // Özet satır: toplam kayıt boyutu + kaç yol + toplam disk bilgisi.
       const summary = $("#s-rec-usage-summary");
       if (summary) {
+        const oldest = st.oldest_started_at
+          ? ` · en eski kayıt: ${new Date(st.oldest_started_at * 1000).toLocaleString("tr-TR")}`
+          : "";
         summary.textContent =
           `${fmtBytes(st.bytes_used || 0)} kayıt · ${rootCount} yol · ` +
           `toplam ${fmtBytes(disk.free || 0)} boş / ${fmtBytes(disk.total || 0)}` +
-          ` · ${st.segment_count || 0} segment` +
+          ` · ${st.segment_count || 0} segment` + oldest +
           (s.ffmpeg_available ? "" : " · ⚠ ffmpeg bulunamadı");
       }
       // Per-disk bar list.

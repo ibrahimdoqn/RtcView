@@ -729,8 +729,8 @@ class Storage:
             return cached[1]
 
         with self._lock:
-            total_bytes, total_count = self._db.execute(
-                "SELECT COALESCE(SUM(bytes),0), COUNT(*) FROM segments"
+            total_bytes, total_count, oldest_started_at = self._db.execute(
+                "SELECT COALESCE(SUM(bytes),0), COUNT(*), MIN(started_at) FROM segments"
             ).fetchone()
             per_cam = self._db.execute(
                 "SELECT cam_id, COALESCE(SUM(bytes),0), COUNT(*),"
@@ -774,6 +774,13 @@ class Storage:
             "roots": roots_stats,                        # per-root, with quota+usage
             "bytes_used": int(total_bytes),
             "segment_count": int(total_count),
+            # None when there are no segments at all yet, otherwise the
+            # started_at of the single oldest segment across every camera
+            # and root -- lets the Kayıt & Depolama tab show exactly how
+            # far back current footage goes, which is also a direct,
+            # concrete answer to "when will a full root start freeing up
+            # via retention" (once this timestamp crosses retention_days).
+            "oldest_started_at": float(oldest_started_at) if oldest_started_at is not None else None,
             "max_bytes": total_max,                      # legacy aggregate
             "retention_days": int(rc.get("retention_days", 14)),
             "disk": agg,                                 # aggregate across roots
