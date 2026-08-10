@@ -740,12 +740,18 @@ class RecordingManager:
             # same camera (double recording).
             with self._lock:
                 want, trigger = (False, "")
-                # Manual override wins regardless of schedule.
                 r = self._recs.get(cam["id"])
-                if r and r.manual_until > now:
-                    want, trigger = True, "manual"
-                elif recording_globally_on:
-                    want, trigger = self._wants_run(cam, now)
+                # The global switch gates everything, including manual —
+                # it previously only gated the record_mode-based branch
+                # below, so flipping recording.enabled off system-wide
+                # (e.g. during disk-full maintenance) left an in-progress
+                # manual recording running until its own timer expired.
+                if recording_globally_on:
+                    # Manual override wins regardless of schedule.
+                    if r and r.manual_until > now:
+                        want, trigger = True, "manual"
+                    else:
+                        want, trigger = self._wants_run(cam, now)
                 if want:
                     if r is None:
                         r = self._build(cam)

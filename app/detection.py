@@ -380,6 +380,16 @@ class CameraEventWatcher:
             # parked inside a blocking PullMessages call and can only
             # notice the stop flag once that returns.
             self._thread.join(timeout=PULL_TIMEOUT_SEC + 5)
+            if not self._thread.is_alive():
+                # Safe to touch self._pullpoint now that the thread which
+                # owns it has confirmed exited — releases the subscription
+                # on the camera instead of leaving it to expire on its
+                # own. If the thread is STILL alive (join timed out), skip
+                # this rather than touching _pullpoint from a second
+                # thread concurrently; is_running() callers (see
+                # DetectionManager.reload_camera) already know to treat
+                # that case as "still draining".
+                self._unsubscribe()
         self._close_all_open(time.time())
 
     def is_running(self) -> bool:
@@ -484,6 +494,28 @@ class CameraEventWatcher:
             self._pull_messages_type = None
             self._fail(f"Abonelik oluşturulamadı: {e}", subscribed=False)
             return False
+
+    def _unsubscribe(self):
+        """Best-effort WS-BaseNotification Unsubscribe on the current
+        PullPoint subscription before dropping the reference to it.
+        Without this, every renewal (age-based, every
+        MAX_SUBSCRIPTION_AGE_SEC, on top of every reconnect) left the old
+        subscription dangling on the camera itself rather than releasing
+        it — harmless on firmware that expires abandoned subscriptions on
+        its own, but some firmware caps concurrent subscriptions and would
+        eventually start refusing CreatePullPointSubscription after enough
+        accumulate over a long uptime, silently and permanently stopping
+        detection for that camera. Failures here are swallowed: the
+        subscription may already be gone (camera rebooted, expired it
+        itself), and this is cleanup, not something worth retrying or
+        blocking a reconnect over."""
+        pp = self._pullpoint
+        if pp is None:
+            return
+        try:
+            pp.Unsubscribe()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # ONVIF: event parsing (point 3)
@@ -667,6 +699,7 @@ class CameraEventWatcher:
             # trust the subscription's age) rebuilds immediately. Only an
             # error-driven return backs off, to avoid hammering a camera
             # that is actually unwell.
+            self._unsubscribe()
             self._pullpoint = None
             self._pull_messages_type = None
             self._set(subscribed=False)
@@ -763,6 +796,12 @@ class DetectionManager:
         self.cfg = config_store
         self.storage = storage
         self._watchers: Dict[str, CameraEventWatcher] = {}
+        # Watchers popped out of self._watchers whose thread didn't
+        # actually exit within stop()'s join timeout — see reload_camera.
+        # Tracked separately (not just discarded) so _tick() knows not to
+        # start a second watcher for that camera while this one might
+        # still be alive and could still deliver a stray event.
+        self._draining: Dict[str, CameraEventWatcher] = {}
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._sup_thread: Optional[threading.Thread] = None
@@ -800,12 +839,26 @@ class DetectionManager:
         for the same camera while the first's thread is still winding
         down — duplicate open_detection rows and duplicate notifications
         for one motion edge.
+
+        That still isn't the whole story: stop()'s join has a timeout, and
+        the thread CAN still be alive when it returns (e.g. parked in an
+        ONVIF call that hasn't hit its own bounded timeout yet — see
+        CONNECT_OPERATION_TIMEOUT_SEC). Popping unconditionally in that
+        case would let the very next tick build a second, fully independent
+        watcher — with its own PullPoint subscription — while the first is
+        still capable of processing one more event. The still-alive watcher
+        is tracked in self._draining instead of being dropped, so _tick()
+        knows to hold off starting a replacement until it's confirmed dead.
         """
         with self._lock:
             w = self._watchers.pop(cam_id, None)
             if w:
                 try: w.stop()
                 except Exception as e: log.warning("watcher stop failed for %s: %s", cam_id, e)
+                if w.is_running():
+                    self._draining[cam_id] = w
+                else:
+                    self._draining.pop(cam_id, None)
 
     @staticmethod
     def _wants_watcher(cam: dict) -> bool:
@@ -837,12 +890,27 @@ class DetectionManager:
         cam_ids = {c["id"] for c in cams}
         with self._lock:
             active_ids = set(self._watchers.keys())
+            # Reap any draining watcher (see reload_camera) whose thread
+            # has since actually exited — once dead it no longer needs to
+            # block a replacement from starting for that camera.
+            for cid in list(self._draining.keys()):
+                if not self._draining[cid].is_running():
+                    del self._draining[cid]
         for gone in active_ids - cam_ids:
             self.reload_camera(gone)
         for cam in cams:
             want = self._wants_watcher(cam)
             with self._lock:
                 w = self._watchers.get(cam["id"])
+                draining = cam["id"] in self._draining
+            if want and w is None and draining:
+                # A previous watcher for this camera is still winding down
+                # (still alive past its stop() join timeout) — hold off
+                # starting a replacement so two watchers never run
+                # concurrently against the same camera's PullPoint
+                # subscription. Next tick re-checks; the drain is bounded
+                # by CONNECT_OPERATION_TIMEOUT_SEC, not indefinite.
+                continue
             if want and w is None:
                 nw = CameraEventWatcher(cam, self.storage, self.cfg)
                 nw.start()

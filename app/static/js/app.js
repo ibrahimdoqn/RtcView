@@ -1619,7 +1619,17 @@
     body.record_audio = form.record_audio.checked;
     body.onvif_port = parseInt(body.onvif_port || 80);
     body.retention_days_override = parseInt(body.retention_days_override || 0);
-    body.record_schedule = readScheduleRows($("#rec-schedule-rows"));
+    // renderScheduleRows() always fills #rec-schedule-rows with a starting
+    // 08:00-18:00 template row when opening the editor empty (a UX nicety
+    // for someone actually using schedule mode), but that row sits in the
+    // DOM regardless of record_mode — reading it unconditionally here used
+    // to mean saving ANY change to a camera in "off"/"always"/"manual"
+    // mode (even just renaming it) silently persisted a schedule the user
+    // never configured or saw a reason to look at. Only schedule mode
+    // actually reads record_schedule (see _wants_run in recorder.py), so
+    // only submit it in that case.
+    body.record_schedule = (form.record_mode.value === "schedule")
+      ? readScheduleRows($("#rec-schedule-rows")) : [];
     body.motion_detection_enabled = form.motion_detection_enabled.checked;
     body.person_detection_enabled = form.person_detection_enabled.checked;
     body.motion_timeout_seconds = parseInt(body.motion_timeout_seconds || 15);

@@ -65,6 +65,56 @@ def create_app(config_path: str) -> Flask:
     def _valid_cam_id(cam_id) -> bool:
         return bool(cam_id) and bool(_CAM_ID_RE.match(cam_id)) and cam_id not in (".", "..")
 
+    def _validate_record_schedule(raw):
+        """Normalize/validate a record_schedule value into the window shape
+        recorder.py's _schedule_active expects: a list of
+        {"days":[0..6], "start":"HH:MM", "end":"HH:MM"}. Returns
+        (clean_list, None) on success or (None, error_message) on failure.
+
+        _schedule_active itself only guards the start/end PARSING of an
+        individual row (try/except around the split+int), not the shape of
+        `schedule` as a whole or of each row — if record_schedule is ever
+        anything other than a list of dicts (e.g. a stray string from a
+        malformed client), `for w in schedule: w.get("days")` raises
+        AttributeError iterating a string's characters. That exception
+        wasn't caught per-camera in RecordingManager._tick()'s loop, so it
+        escaped to the loop's caller and skipped every camera after the
+        broken one, every 3s, until the config was fixed. Rejecting a bad
+        shape here — at the one place record_schedule can be written —
+        means _schedule_active never has to see it.
+        """
+        if raw is None:
+            return [], None
+        if not isinstance(raw, list):
+            return None, "invalid record_schedule"
+        clean = []
+        for w in raw:
+            if not isinstance(w, dict):
+                return None, "invalid record_schedule row"
+            days = []
+            for d in (w.get("days") or []):
+                try:
+                    d = int(d)
+                except (TypeError, ValueError):
+                    return None, "invalid record_schedule day"
+                if not 0 <= d <= 6:
+                    return None, "invalid record_schedule day"
+                days.append(d)
+
+            def _parse_hm(v, default):
+                try:
+                    hh, mm = (int(x) for x in str(v if v is not None else default).split(":", 1))
+                except (TypeError, ValueError):
+                    return None
+                return f"{hh:02d}:{mm:02d}" if (0 <= hh <= 23 and 0 <= mm <= 59) else None
+
+            start = _parse_hm(w.get("start"), "00:00")
+            end = _parse_hm(w.get("end"), "23:59")
+            if start is None or end is None:
+                return None, "invalid record_schedule time"
+            clean.append({"days": sorted(set(days)), "start": start, "end": end})
+        return clean, None
+
     store = ConfigStore(config_path)
     go2rtc = Go2RtcClient(store)
     storage = Storage(store)
@@ -208,6 +258,9 @@ def create_app(config_path: str) -> Flask:
             return jsonify({"error": "invalid camera id"}), 400
         if any(c["id"] == cam_id for c in store.get_cameras()):
             return jsonify({"error": "camera id already exists"}), 400
+        record_schedule, err = _validate_record_schedule(body.get("record_schedule"))
+        if err:
+            return jsonify({"error": err}), 400
         cam = {
             "id": cam_id,
             "name": name,
@@ -218,7 +271,7 @@ def create_app(config_path: str) -> Flask:
             "onvif_user": body.get("onvif_user", ""),
             "onvif_pass": body.get("onvif_pass", ""),
             "record_mode": body.get("record_mode", "off"),
-            "record_schedule": body.get("record_schedule", []),
+            "record_schedule": record_schedule,
             "record_audio": bool(body.get("record_audio", False)),
             "retention_days_override": int(body.get("retention_days_override", 0) or 0),
             "motion_detection_enabled": bool(body.get("motion_detection_enabled", False)),
@@ -255,6 +308,11 @@ def create_app(config_path: str) -> Flask:
                 return jsonify({"error": "invalid motion_timeout_seconds"}), 400
         if "group_ids" in body:
             body["group_ids"] = [str(g) for g in (body.get("group_ids") or []) if str(g).strip()]
+        if "record_schedule" in body:
+            clean, err = _validate_record_schedule(body.get("record_schedule"))
+            if err:
+                return jsonify({"error": err}), 400
+            body["record_schedule"] = clean
         ok = store.update_camera(camera_id, body)
         if not ok:
             return jsonify({"error": "not found"}), 404
