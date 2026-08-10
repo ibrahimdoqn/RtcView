@@ -20,6 +20,7 @@ from app import diskmgr
 from app.config import ConfigStore
 from app.detection import DetectionManager, ONVIF_AVAILABLE as ONVIF_EVENTS_AVAILABLE
 from app.go2rtc_client import Go2RtcClient
+from app.netmon import NetworkMonitor
 from app.ptz import ptz_controller, ONVIF_AVAILABLE
 from app.recorder import RecordingManager, MANUAL_DEFAULT_SECONDS
 from app.storage import Storage
@@ -121,18 +122,23 @@ def create_app(config_path: str) -> Flask:
     storage = Storage(store)
     recorder = RecordingManager(store, storage)
     detector = DetectionManager(store, storage)
+    netmon = NetworkMonitor()
 
     app.config["STORE"] = store
     app.config["GO2RTC"] = go2rtc
     app.config["STORAGE"] = storage
     app.config["RECORDER"] = recorder
     app.config["DETECTOR"] = detector
+    app.config["NETMON"] = netmon
 
     storage.start()
     recorder.start()
     detector.start()
+    netmon.start()
 
     def _shutdown():
+        try: netmon.stop()
+        except Exception: pass
         try: detector.stop()
         except Exception: pass
         try: recorder.stop()
