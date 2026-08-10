@@ -620,7 +620,7 @@ class Storage:
                     du = shutil.disk_usage(str(r))
                     disk = {"total": du.total, "free": du.free, "used": du.used}
                     free_pct = (du.free / du.total) * 100 if du.total else 0
-                    if du.free < 1 * 1024**3:
+                    if du.free < 1 * 1024**3 and not self._has_purgeable_segments():
                         # A root sitting right at capacity is the EXPECTED
                         # steady state for an unlimited-quota (max_gb=0)
                         # root once its footage volume outgrows the disk —
@@ -628,17 +628,14 @@ class Storage:
                         # the oldest segments to hold this root just above
                         # SAFETY_MARGIN_BYTES, forever, by design (a rolling
                         # buffer bounded by physical disk size rather than
-                        # by retention_days alone). Only actually alarming
-                        # if there's nothing left anywhere to purge, i.e.
-                        # the rolling purge itself has run out of room to
-                        # make more room — that's a real dead end.
-                        msg = f"Disk kapasitesine yakın: {du.free // (1024*1024)} MB boş"
-                        if self._has_purgeable_segments():
-                            r_warns.append(f"{msg} — en eski kayıtlar otomatik siliniyor")
-                        else:
-                            r_errs.append(f"{msg} — silinecek kayıt kalmadı, kayıt durabilir")
-                    elif free_pct < 10:
-                        r_warns.append(f"%{100 - free_pct:.0f} dolu")
+                        # by retention_days alone). Not worth flagging at
+                        # all while that's still working (stays "ok"/green)
+                        # — only a genuine dead end, nothing left anywhere
+                        # to purge, is actually actionable.
+                        r_errs.append(
+                            f"Disk doldu: {du.free // (1024*1024)} MB boş — "
+                            "silinecek kayıt kalmadı, kayıt durabilir"
+                        )
                 except Exception as e:
                     r_errs.append(f"Disk okunamadı: {e}")
             used_by_rec = self._bytes_used_under(entry["path"])
