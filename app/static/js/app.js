@@ -2512,6 +2512,75 @@
     }
   });
 
+  // ---------- Network status panel ----------
+  // Whole-device network view (every ethernet/wifi interface the host
+  // has, not just whatever this app happens to talk over) -- this is a
+  // camera-over-network app, so knowing the network's own health belongs
+  // right alongside CPU/RAM, not buried elsewhere.
+  let _netAutoTimer = null;
+  const _netStateLabel = (state) => state === "up" ? "bağlı" : state === "down" ? "bağlı değil" : (state || "bilinmiyor");
+  const _netKindLabel = (kind) => kind === "wifi" ? "Wi-Fi" : "Ethernet";
+  const _netKindIcon = (kind) => kind === "wifi" ? "📶" : "🔌";
+  const _fmtRate = (bps) => fmtBytes(bps || 0) + "/s";
+  const _fmtWhen = (ts) => ts ? new Date(ts * 1000).toLocaleString("tr-TR") : "—";
+
+  async function refreshNetStatus(){
+    const listEl = $("#s-net-ifaces"), evEl = $("#s-net-events");
+    if (!listEl) return;
+    try {
+      const r = await api.get("/api/network/status");
+      if (!r.interfaces || r.interfaces.length === 0){
+        listEl.innerHTML = `<div class="disk-row-empty">Fiziksel ağ arayüzü bulunamadı (ne ethernet ne wifi).</div>`;
+      } else {
+        listEl.innerHTML = r.interfaces.map(i => {
+          const tagCls = i.state === "up" ? "mounted" : "down";
+          return `<div class="disk-row">
+            <div class="disk-row-head">
+              <span>${_netKindIcon(i.kind)}</span>
+              <span class="disk-row-path">${escapeHtml(i.name)}</span>
+              <span class="disk-row-meta">${_netKindLabel(i.kind)}</span>
+              <span class="disk-row-tag ${tagCls}">${_netStateLabel(i.state)}</span>
+            </div>
+            <div class="disk-row-meta" style="margin-top:.25rem;">
+              IP: ${i.ip ? escapeHtml(i.ip) : "—"}${i.mac ? " · MAC: " + escapeHtml(i.mac) : ""}
+            </div>
+            <div class="net-iface-rate">
+              <span>↓ <b>${_fmtRate(i.rx_rate)}</b> (${fmtBytes(i.rx_bytes || 0)} toplam)</span>
+              <span>↑ <b>${_fmtRate(i.tx_rate)}</b> (${fmtBytes(i.tx_bytes || 0)} toplam)</span>
+            </div>
+            <div class="disk-row-meta" style="margin-top:.25rem;">
+              Son bağlanma: ${_fmtWhen(i.last_up_at)} · Son kopma: ${_fmtWhen(i.last_down_at)}
+            </div>
+          </div>`;
+        }).join("");
+      }
+      if (evEl){
+        evEl.textContent = (!r.events || r.events.length === 0) ? "(henüz olay yok)"
+          : r.events.slice(0, 50).map(e => `[${_fmtWhen(e.ts)}] ${e.message}`).join("\n");
+      }
+    } catch (e) {
+      listEl.innerHTML = `<div class="disk-row-empty" style="color:var(--danger)">Hata: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+  $("#s-net-refresh").addEventListener("click", refreshNetStatus);
+  const netDetails = $("#s-net-ifaces").closest("details");
+  if (netDetails){
+    netDetails.addEventListener("toggle", () => {
+      if (netDetails.open) refreshNetStatus();
+      if (netDetails.open && $("#s-net-auto").checked){
+        _netAutoTimer = _netAutoTimer || setInterval(refreshNetStatus, 3000);
+      } else {
+        clearInterval(_netAutoTimer); _netAutoTimer = null;
+      }
+    });
+  }
+  $("#s-net-auto").addEventListener("change", () => {
+    clearInterval(_netAutoTimer); _netAutoTimer = null;
+    if ($("#s-net-auto").checked && netDetails && netDetails.open){
+      _netAutoTimer = setInterval(refreshNetStatus, 3000);
+    }
+  });
+
   // ---------- Logs panel ----------
   async function refreshLogs(){
     const view = $("#s-log-view"); if (!view) return;

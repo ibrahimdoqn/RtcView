@@ -776,6 +776,10 @@ def create_app(config_path: str) -> Flask:
     def api_system_stats():
         return jsonify(_read_system_stats(recorder, store))
 
+    @app.get("/api/network/status")
+    def api_network_status():
+        return jsonify(netmon.snapshot())
+
     @app.get("/api/system/logs")
     def api_system_logs():
         try: lines = max(5, min(2000, int(request.args.get("lines", 200))))
