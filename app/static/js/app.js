@@ -1802,10 +1802,22 @@
   function _diskRowHtml(d){
     const mounted = !!d.mountpoint;
     const hasFs = !!d.fstype;
+    // "managed" (from GET /api/storage/devices, cross-referenced against
+    // config.disks) means RtcView itself mounted this. A device mounted
+    // by something else entirely -- a hand-set-up NFS share, a log2ram
+    // zram mount at /var/log, /home on its own partition -- must never
+    // offer Ayır/"add as recording folder": unmounting it could break
+    // whatever put it there, and recording onto e.g. a RAM-backed log
+    // mount would be actively harmful. The backend already refuses an
+    // unmount for an unrecognised uuid (POST /api/storage/unmount 404s),
+    // so this isn't a safety gap either way -- just not worth offering a
+    // button guaranteed to fail with a confusing error.
     let actions;
-    if (mounted){
+    if (mounted && d.managed){
       actions = `<button type="button" class="btn ghost small disk-btn-addroot">Kayıt klasörü olarak ekle</button>
         <button type="button" class="btn ghost small disk-btn-unmount">Ayır</button>`;
+    } else if (mounted){
+      actions = "";
     } else if (hasFs){
       actions = `<button type="button" class="btn ghost small disk-btn-mount">Bağla</button>
         <button type="button" class="btn ghost small disk-btn-format">Formatla</button>`;
@@ -1818,7 +1830,7 @@
           <span class="disk-row-path">${escapeHtml(d.path)}</span>
           <span class="disk-row-meta">${fmtBytes(d.size)}</span>
           <span class="disk-row-tag">${hasFs ? escapeHtml(d.fstype) + (d.label ? " · " + escapeHtml(d.label) : "") : "boş"}</span>
-          ${mounted ? `<span class="disk-row-tag mounted">${escapeHtml(d.mountpoint)}</span>` : ""}
+          ${mounted ? `<span class="disk-row-tag mounted">${escapeHtml(d.mountpoint)}${d.managed ? "" : " (harici)"}</span>` : ""}
           <div class="disk-row-actions">${actions}</div>
         </div>
         <div class="disk-row-expand"></div>

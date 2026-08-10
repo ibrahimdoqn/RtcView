@@ -192,6 +192,78 @@ SVCUNIT
 systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}-updater.path"
 
+# ------------- disk management capability (job-queue-triggered root service) -------------
+# Same mechanism as install.sh's own copy of this block (search there for
+# the full rationale) — duplicated here because update.sh is how an
+# EXISTING install picks up new code (via "Şimdi Güncelle" / self_update.sh)
+# without ever re-running install.sh, so anything install.sh sets up as a
+# one-time root/systemd side effect has to be (re)created here too or an
+# upgraded instance silently ends up missing it. This exact gap is why an
+# already-running install could queue disk-management jobs that just sit
+# forever with no rtcview-diskmgr.path/.service present to process them.
+info "Disk yönetimi yetkisi kuruluyor/güncelleniyor (iş kuyruğu + açılış servisi)..."
+if ! command -v mkfs.f2fs >/dev/null 2>&1; then
+  apt-get install -y --no-install-recommends f2fs-tools >/dev/null 2>&1 || \
+    warn "f2fs-tools kurulamadı — Depolama sayfasında f2fs seçeneği devre dışı kalır (ext4 etkilenmez)."
+fi
+mkdir -p "${INSTALL_DIR}/diskmgr/jobs" "${INSTALL_DIR}/diskmgr/results"
+chown -R "$SERVICE_USER":"$SERVICE_USER" "${INSTALL_DIR}/diskmgr"
+chmod 0755 "${INSTALL_DIR}/scripts/diskmgr_worker.py" "${INSTALL_DIR}/scripts/diskmgr_boot.py" 2>/dev/null || true
+
+cat > "/etc/systemd/system/${SERVICE_NAME}-diskmgr.path" <<PATHUNIT
+[Unit]
+Description=RtcView disk-manager job queue watcher
+
+[Path]
+DirectoryNotEmpty=${INSTALL_DIR}/diskmgr/jobs
+Unit=${SERVICE_NAME}-diskmgr.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+
+cat > "/etc/systemd/system/${SERVICE_NAME}-diskmgr.service" <<SVCUNIT
+[Unit]
+Description=RtcView disk-manager job worker (format/mount/unmount)
+
+[Service]
+Type=oneshot
+Environment=RTCVIEW_HOME=${INSTALL_DIR}
+Environment=RTCVIEW_SERVICE_USER=${SERVICE_USER}
+ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/scripts/diskmgr_worker.py
+SVCUNIT
+
+cat > "/etc/systemd/system/${SERVICE_NAME}-diskmgr-boot.service" <<BOOTUNIT
+[Unit]
+Description=RtcView disk-manager boot-time remount (no /etc/fstab entries)
+After=local-fs.target
+Before=${SERVICE_NAME}.service
+
+[Service]
+Type=oneshot
+Environment=RTCVIEW_HOME=${INSTALL_DIR}
+Environment=RTCVIEW_CONFIG=${INSTALL_DIR}/config
+Environment=RTCVIEW_SERVICE_USER=${SERVICE_USER}
+ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/scripts/diskmgr_boot.py
+
+[Install]
+WantedBy=multi-user.target
+BOOTUNIT
+
+# Ordering drop-in rather than rewriting the base unit (update.sh never
+# regenerates rtcview.service itself, only patches it via drop-ins, so an
+# admin's own edits to the base file survive updates) -- After= is
+# additive across drop-ins, so this doesn't disturb network-online.target.
+mkdir -p "/etc/systemd/system/${SERVICE_NAME}.service.d"
+cat > "/etc/systemd/system/${SERVICE_NAME}.service.d/diskmgr-order.conf" <<ORDERCONF
+[Unit]
+After=${SERVICE_NAME}-diskmgr-boot.service
+ORDERCONF
+
+systemctl daemon-reload
+systemctl enable --now "${SERVICE_NAME}-diskmgr.path"
+systemctl enable --now "${SERVICE_NAME}-diskmgr-boot.service"
+
 # ------------- systemd unit: ensure recording path + common mounts writable -------------
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 if [ -f "$UNIT_FILE" ]; then
