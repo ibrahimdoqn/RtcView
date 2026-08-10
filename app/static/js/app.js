@@ -1019,6 +1019,7 @@
       const k = e.key.toLowerCase();
       if (k === "escape"){
         if (!$("#settings-page").classList.contains("hidden")){ closeSettingsPage(); return; }
+        if (!$("#storage-page").classList.contains("hidden")){ closeStoragePage(); return; }
         if (state.solo) exitSolo(); else if (state.sidebarOpen) closeSidebar();
         return;
       }
@@ -1731,13 +1732,246 @@
     if (name === "genel") loadGenelTab();
     else if (name === "kameralar") showCameraList();
     else if (name === "bildirimler") loadNotifSettingsTab();
-    else if (name === "kayit") loadKayitTab();
     else if (name === "sistem") loadMemCeiling();
   }
   $$(".settings-tab-btn").forEach(btn => btn.addEventListener("click", () => switchSettingsTab(btn.dataset.tab)));
   $("#btn-settings").addEventListener("click", () => openSettingsPage("genel"));
   $("#settings-close").addEventListener("click", closeSettingsPage);
   _bindBackdropClose($("#settings-backdrop"), closeSettingsPage);
+
+  // -------- Depolama page (separate from Ayarlar — Kayıt & Depolama's
+  // old tab content moved here verbatim, plus the new Disk Yönetimi card) --------
+  function openStoragePage(){
+    closeSidebar();
+    $("#storage-backdrop").classList.remove("hidden");
+    $("#storage-page").classList.remove("hidden");
+    loadKayitTab();
+    refreshDiskList();
+  }
+  function closeStoragePage(){
+    $("#storage-backdrop").classList.add("hidden");
+    $("#storage-page").classList.add("hidden");
+    // In-flight format/mount/unmount polls (see _pollDiskJob) check this
+    // same hidden state on every tick and stop themselves rather than
+    // needing a timer handle tracked here -- simpler than threading a
+    // cancellation token through a recursive setTimeout chain for what's
+    // at most one or two concurrent polls.
+  }
+  $("#btn-storage").addEventListener("click", openStoragePage);
+  $("#storage-close").addEventListener("click", closeStoragePage);
+  _bindBackdropClose($("#storage-backdrop"), closeStoragePage);
+
+  // -------- Disk Yönetimi (Depolama page) --------
+  let _diskDevices = [];
+  let _diskF2fsAvailable = false;
+
+  async function refreshDiskList(){
+    const statusEl = $("#disk-list-status");
+    const listEl = $("#disk-list");
+    statusEl.textContent = "Yükleniyor…";
+    try {
+      const r = await api.get("/api/storage/devices");
+      if (r.error){
+        listEl.innerHTML = `<div class="disk-row-empty">${escapeHtml(r.error)}</div>`;
+        statusEl.textContent = "";
+        return;
+      }
+      _diskDevices = r.devices || [];
+      _diskF2fsAvailable = !!r.f2fs_available;
+      renderDiskList();
+      statusEl.textContent = _diskDevices.length ? `${_diskDevices.length} disk` : "";
+    } catch (e) {
+      listEl.innerHTML = `<div class="disk-row-empty">Hata: ${escapeHtml(e.message)}</div>`;
+      statusEl.textContent = "";
+    }
+  }
+  $("#disk-refresh").addEventListener("click", refreshDiskList);
+
+  function _diskKey(d){ return d.path.replace(/[^a-zA-Z0-9]/g, "_"); }
+
+  function renderDiskList(){
+    const listEl = $("#disk-list");
+    if (!_diskDevices.length){
+      listEl.innerHTML = `<div class="disk-row-empty">Uygun disk bulunamadı (sistem diski hariç tutulur).</div>`;
+      return;
+    }
+    listEl.innerHTML = _diskDevices.map(d => _diskRowHtml(d)).join("");
+    _diskDevices.forEach(d => _wireDiskRow(d));
+  }
+
+  function _diskRowHtml(d){
+    const mounted = !!d.mountpoint;
+    const hasFs = !!d.fstype;
+    let actions;
+    if (mounted){
+      actions = `<button type="button" class="btn ghost small disk-btn-addroot">Kayıt klasörü olarak ekle</button>
+        <button type="button" class="btn ghost small disk-btn-unmount">Ayır</button>`;
+    } else if (hasFs){
+      actions = `<button type="button" class="btn ghost small disk-btn-mount">Bağla</button>
+        <button type="button" class="btn ghost small disk-btn-format">Formatla</button>`;
+    } else {
+      actions = `<button type="button" class="btn ghost small disk-btn-format">Formatla</button>`;
+    }
+    return `
+      <div class="disk-row" data-key="${_diskKey(d)}">
+        <div class="disk-row-head">
+          <span class="disk-row-path">${escapeHtml(d.path)}</span>
+          <span class="disk-row-meta">${fmtBytes(d.size)}</span>
+          <span class="disk-row-tag">${hasFs ? escapeHtml(d.fstype) + (d.label ? " · " + escapeHtml(d.label) : "") : "boş"}</span>
+          ${mounted ? `<span class="disk-row-tag mounted">${escapeHtml(d.mountpoint)}</span>` : ""}
+          <div class="disk-row-actions">${actions}</div>
+        </div>
+        <div class="disk-row-expand"></div>
+      </div>`;
+  }
+
+  function _diskDefaultMountpoint(d){
+    const base = (d.label || d.path.split("/").pop() || "disk").replace(/[^a-zA-Z0-9_-]/g, "_");
+    return `/mnt/rtcview/${base}`;
+  }
+
+  function _wireDiskRow(d){
+    const row = $(`.disk-row[data-key="${_diskKey(d)}"]`);
+    if (!row) return;
+    const expand = row.querySelector(".disk-row-expand");
+
+    const fmtBtn = row.querySelector(".disk-btn-format");
+    if (fmtBtn) fmtBtn.addEventListener("click", () => _openFormatPanel(d, expand));
+
+    const mountBtn = row.querySelector(".disk-btn-mount");
+    if (mountBtn) mountBtn.addEventListener("click", () => _openMountPanel(d, expand));
+
+    const unmountBtn = row.querySelector(".disk-btn-unmount");
+    if (unmountBtn) unmountBtn.addEventListener("click", () => _unmountDisk(d));
+
+    const addRootBtn = row.querySelector(".disk-btn-addroot");
+    if (addRootBtn) addRootBtn.addEventListener("click", () => {
+      _renderRecPaths([..._readRecPaths(), { path: d.mountpoint, max_gb: 0 }]);
+      toast("Kayıt klasörlerine eklendi — kaydetmeyi unutmayın", "ok");
+      $("#s-rec-paths").scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }
+
+  function _openFormatPanel(d, expand){
+    const hasFs = !!d.fstype;
+    const radioName = `fmt-fstype-${_diskKey(d)}`;
+    expand.innerHTML = `
+      <div class="disk-format-panel">
+        ${hasFs ? `<div class="disk-format-warn">Bu cihazda zaten veri var (${escapeHtml(d.fstype)}${d.label ? ", etiket: " + escapeHtml(d.label) : ""}) — TÜMÜ SİLİNECEK.</div>` : ""}
+        <div class="disk-format-fstypes">
+          <label><input type="radio" name="${radioName}" value="ext4" checked /> ext4</label>
+          <label><input type="radio" name="${radioName}" value="f2fs" ${_diskF2fsAvailable ? "" : "disabled"} /> f2fs${_diskF2fsAvailable ? "" : " (kurulu değil)"}</label>
+        </div>
+        <label>Etiket (isteğe bağlı) <input type="text" class="fmt-label" maxlength="16" placeholder="rtcview" /></label>
+        <label>Onaylamak için cihaz yolunu yazın: <code>${escapeHtml(d.path)}</code>
+          <input type="text" class="fmt-confirm disk-format-confirm-input" placeholder="${escapeHtml(d.path)}" autocomplete="off" />
+        </label>
+        <div class="row" style="gap:.4rem;">
+          <button type="button" class="btn danger small fmt-go" disabled>Formatla</button>
+          <button type="button" class="btn ghost small fmt-cancel">Vazgeç</button>
+        </div>
+        <div class="disk-job-status"></div>
+      </div>`;
+    const confirmInput = expand.querySelector(".fmt-confirm");
+    const goBtn = expand.querySelector(".fmt-go");
+    confirmInput.addEventListener("input", () => {
+      goBtn.disabled = confirmInput.value.trim() !== d.path;
+    });
+    expand.querySelector(".fmt-cancel").addEventListener("click", () => { expand.innerHTML = ""; });
+    goBtn.addEventListener("click", async () => {
+      const fstype = expand.querySelector(`input[name="${radioName}"]:checked`).value;
+      const label = expand.querySelector(".fmt-label").value.trim();
+      goBtn.disabled = true;
+      const statusEl = expand.querySelector(".disk-job-status");
+      statusEl.textContent = "Formatlanıyor…"; statusEl.classList.remove("err");
+      try {
+        const r = await api.post("/api/storage/format", { device: d.path, fstype, label });
+        _pollDiskJob(r.job_id, statusEl, () => { refreshDiskList(); });
+      } catch (e) {
+        statusEl.textContent = "Hata: " + e.message; statusEl.classList.add("err");
+        goBtn.disabled = false;
+      }
+    });
+  }
+
+  function _openMountPanel(d, expand){
+    expand.innerHTML = `
+      <div class="disk-mount-panel">
+        <label>Bağlama yolu <input type="text" class="mnt-path" value="${escapeHtml(_diskDefaultMountpoint(d))}" /></label>
+        <div class="row" style="gap:.4rem;">
+          <button type="button" class="btn primary small mnt-go">Bağla</button>
+          <button type="button" class="btn ghost small mnt-cancel">Vazgeç</button>
+        </div>
+        <div class="disk-job-status"></div>
+      </div>`;
+    expand.querySelector(".mnt-cancel").addEventListener("click", () => { expand.innerHTML = ""; });
+    expand.querySelector(".mnt-go").addEventListener("click", async () => {
+      const mountpoint = expand.querySelector(".mnt-path").value.trim();
+      const goBtn = expand.querySelector(".mnt-go");
+      const statusEl = expand.querySelector(".disk-job-status");
+      if (!mountpoint.startsWith("/")){
+        statusEl.textContent = "Mutlak bir yol girin (ör. /mnt/rtcview/disk1)";
+        statusEl.classList.add("err");
+        return;
+      }
+      goBtn.disabled = true;
+      statusEl.textContent = "Bağlanıyor…"; statusEl.classList.remove("err");
+      try {
+        const r = await api.post("/api/storage/mount", { device: d.path, mountpoint, label: d.label || "" });
+        _pollDiskJob(r.job_id, statusEl, () => { refreshDiskList(); });
+      } catch (e) {
+        statusEl.textContent = "Hata: " + e.message; statusEl.classList.add("err");
+        goBtn.disabled = false;
+      }
+    });
+  }
+
+  async function _unmountDisk(d){
+    if (!confirm(`${d.mountpoint} ayrılsın mı?`)) return;
+    try {
+      const r = await api.post("/api/storage/unmount", { uuid: d.uuid });
+      toast("Ayırma başlatıldı", "ok");
+      _pollDiskJob(r.job_id, null, () => { refreshDiskList(); });
+    } catch (e) { toast("Ayırma başlatılamadı: " + e.message, "err"); }
+  }
+
+  // Polls GET /api/storage/job/<id> (ok:null while pending) every second
+  // until resolved, up to a ~120s ceiling -- format/mount are usually a
+  // few seconds on modern ext4/f2fs but can run longer on slow SBC
+  // storage controllers. Stops silently (no error, no callback) once the
+  // Depolama page is closed -- no cancellation token needed for at most
+  // one or two concurrent polls.
+  function _pollDiskJob(jobId, statusEl, onSuccess){
+    const start = Date.now();
+    const setStatus = (text, isErr) => {
+      if (!statusEl) return;
+      statusEl.textContent = text;
+      statusEl.classList.toggle("err", !!isErr);
+    };
+    const tick = async () => {
+      if ($("#storage-page").classList.contains("hidden")) return;
+      let res;
+      try { res = await api.get(`/api/storage/job/${jobId}`); }
+      catch (e) { setStatus("Hata: " + e.message, true); return; }
+      if (res.ok === null){
+        if (Date.now() - start > 120000){
+          setStatus("Zaman aşımı — işlem hâlâ sürüyor olabilir, listeyi yenileyin.", true);
+          return;
+        }
+        setTimeout(tick, 1000);
+        return;
+      }
+      if (res.ok){
+        setStatus("Tamamlandı", false);
+        toast("İşlem tamamlandı", "ok");
+        onSuccess();
+      } else {
+        setStatus("Hata: " + (res.error || "bilinmeyen hata"), true);
+        toast("İşlem başarısız: " + (res.error || "bilinmeyen hata"), "err");
+      }
+    };
+    tick();
+  }
 
   // Tracks whether the go2rtc fields actually loaded from the server. If a
   // transient fetch failure leaves them at their empty HTML defaults, the

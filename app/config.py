@@ -55,6 +55,14 @@ DEFAULT_CONFIG = {
     },
     "cameras": [],
     "groups": [],  # [{"id": "grp_xxxxxxxx", "name": "İç Mekan"}]
+    # Physical disks RtcView itself formatted/mounted (Depolama page's Disk
+    # Yönetimi card) and is responsible for remounting on every boot, since
+    # they're deliberately mounted WITHOUT an /etc/fstab entry — see
+    # scripts/diskmgr_boot.sh, the root-owned oneshot unit that reads this
+    # list at boot and resolves each uuid via /dev/disk/by-uuid. Keyed by
+    # filesystem UUID (stable across /dev/sdX renumbering), not device path.
+    # [{"uuid": str, "mountpoint": str, "fstype": "ext4"|"f2fs", "label": str}]
+    "disks": [],
 }
 
 # Per-camera recording defaults merged when a camera is loaded. Live
@@ -298,6 +306,28 @@ class ConfigStore:
                     gids = cam.get("group_ids") or []
                     if group_id in gids:
                         cam["group_ids"] = [g for g in gids if g != group_id]
+                self._save_locked()
+            return removed
+
+    def get_disks(self):
+        return self._data["disks"]
+
+    def add_disk(self, disk: dict):
+        with _lock:
+            # uuid is the natural key (stable across /dev/sdX renumbering,
+            # unlike device path) -- replace rather than duplicate if this
+            # uuid is somehow already known (e.g. a re-mount after an
+            # unmount that failed to clean up its config entry).
+            self._data["disks"] = [d for d in self._data["disks"] if d.get("uuid") != disk.get("uuid")]
+            self._data["disks"].append(disk)
+            self._save_locked()
+
+    def remove_disk(self, uuid: str) -> bool:
+        with _lock:
+            before = len(self._data["disks"])
+            self._data["disks"] = [d for d in self._data["disks"] if d.get("uuid") != uuid]
+            removed = len(self._data["disks"]) != before
+            if removed:
                 self._save_locked()
             return removed
 

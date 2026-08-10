@@ -16,6 +16,7 @@ import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, stream_with_context
 from flask_cors import CORS
 
+from app import diskmgr
 from app.config import ConfigStore
 from app.detection import DetectionManager, ONVIF_AVAILABLE as ONVIF_EVENTS_AVAILABLE
 from app.go2rtc_client import Go2RtcClient
@@ -652,6 +653,97 @@ def create_app(config_path: str) -> Flask:
     @app.post("/api/recording/purge")
     def api_rec_purge():
         return jsonify(storage.purge_once())
+
+    # ---------- Physical disk management (Depolama page) ----------
+    # Device listing is unprivileged (lsblk/findmnt need no root). Format/
+    # mount/unmount are privileged and handed off to a root-owned systemd
+    # service via a job-queue directory -- see app/diskmgr.py's module
+    # docstring and scripts/diskmgr_worker.py for the full mechanism (same
+    # shape as the self-update trigger-file pattern, just bidirectional).
+    @app.get("/api/storage/devices")
+    def api_storage_devices():
+        result = diskmgr.list_block_devices()
+        managed_uuids = {d.get("uuid") for d in store.get_disks() if d.get("uuid")}
+        for dev in result["devices"]:
+            dev["managed"] = bool(dev.get("uuid")) and dev["uuid"] in managed_uuids
+        return jsonify(result)
+
+    @app.post("/api/storage/format")
+    def api_storage_format():
+        body = request.get_json(force=True) or {}
+        device = str(body.get("device") or "").strip()
+        fstype = str(body.get("fstype") or "").strip()
+        label = str(body.get("label") or "").strip()
+        if not device.startswith("/dev/") or fstype not in ("ext4", "f2fs"):
+            return jsonify({"error": "geçersiz cihaz veya dosya sistemi türü"}), 400
+        try:
+            job_id = diskmgr.submit_job("format", device, device=device, fstype=fstype, label=label)
+        except diskmgr.DiskJobConflict as e:
+            return jsonify({"error": str(e)}), 409
+        except Exception as e:
+            return jsonify({"error": f"iş kuyruğuna eklenemedi: {e}"}), 500
+        return jsonify({"job_id": job_id})
+
+    @app.post("/api/storage/mount")
+    def api_storage_mount():
+        body = request.get_json(force=True) or {}
+        device = str(body.get("device") or "").strip()
+        mountpoint = str(body.get("mountpoint") or "").strip()
+        # Just carried through to the job result and back into config.json
+        # for display purposes (Depolama page's disk rows) -- the frontend
+        # already has it from GET /api/storage/devices's LABEL field, no
+        # need to re-derive it privileged-side.
+        label = str(body.get("label") or "").strip()
+        if not device.startswith("/dev/") or not mountpoint.startswith("/"):
+            return jsonify({"error": "geçersiz cihaz veya bağlama yolu"}), 400
+        try:
+            job_id = diskmgr.submit_job("mount", device, device=device, mountpoint=mountpoint, label=label)
+        except diskmgr.DiskJobConflict as e:
+            return jsonify({"error": str(e)}), 409
+        except Exception as e:
+            return jsonify({"error": f"iş kuyruğuna eklenemedi: {e}"}), 500
+        return jsonify({"job_id": job_id})
+
+    @app.post("/api/storage/unmount")
+    def api_storage_unmount():
+        body = request.get_json(force=True) or {}
+        disk_uuid = str(body.get("uuid") or "").strip()
+        disk = next((d for d in store.get_disks() if d.get("uuid") == disk_uuid), None)
+        if not disk:
+            return jsonify({"error": "bilinmeyen disk"}), 404
+        try:
+            job_id = diskmgr.submit_job("unmount", disk_uuid, mountpoint=disk["mountpoint"])
+        except diskmgr.DiskJobConflict as e:
+            return jsonify({"error": str(e)}), 409
+        except Exception as e:
+            return jsonify({"error": f"iş kuyruğuna eklenemedi: {e}"}), 500
+        return jsonify({"job_id": job_id, "uuid": disk_uuid})
+
+    @app.get("/api/storage/job/<job_id>")
+    def api_storage_job(job_id):
+        result = diskmgr.get_job_result(job_id)
+        if result is None:
+            return jsonify({"ok": None})  # still pending
+        # First time this result is observed as a resolved mount/unmount,
+        # fold it into config.json -- the root worker never touches config
+        # itself, config.json stays single-writer (this Flask process only).
+        action = result.get("action")
+        if result.get("ok") and action == "mount" and result.get("uuid"):
+            already = any(d.get("uuid") == result["uuid"] for d in store.get_disks())
+            if not already:
+                store.add_disk({
+                    "uuid": result["uuid"],
+                    "mountpoint": result.get("mountpoint"),
+                    "fstype": result.get("fstype"),
+                    "label": result.get("label") or "",
+                })
+        elif result.get("ok") and action == "unmount":
+            # job was submitted with device_key=uuid, but the result body
+            # only carries mountpoint -- resolve back to a uuid via config.
+            disk = next((d for d in store.get_disks() if d.get("mountpoint") == result.get("mountpoint")), None)
+            if disk:
+                store.remove_disk(disk["uuid"])
+        return jsonify(result)
 
     # ---------- System stats + logs ----------
     @app.get("/api/system/stats")
