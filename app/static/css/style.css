@@ -8,6 +8,11 @@
   --radius:14px; --radius-sm:10px;
   --glass:rgba(28,30,38,.55); --glass-brd:rgba(255,255,255,.14);
   --glass-hi:rgba(255,255,255,.18);
+  /* Mica: a denser, more opaque tinted material than --glass — a
+     base/backdrop surface (Windows 11's Mica role) that the lighter,
+     more transparent --glass cards then float on top of (its Acrylic
+     role), rather than a plain flat black/white page background. */
+  --mica:rgba(20,22,27,.88); --mica-2:rgba(28,30,38,.94);
   --shadow-sm:0 2px 8px rgba(0,0,0,.35);
   --shadow-md:0 10px 30px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.3);
   --shadow-lg:0 24px 60px rgba(0,0,0,.55), 0 4px 12px rgba(0,0,0,.35);
@@ -23,6 +28,7 @@
   --border:rgba(0,0,0,.08); --border-solid:#e5e7ee;
   --text:#0e1116; --muted:#5e6675;
   --glass:rgba(255,255,255,.65); --glass-brd:rgba(0,0,0,.08); --glass-hi:rgba(0,0,0,.05);
+  --mica:rgba(246,247,250,.90); --mica-2:rgba(255,255,255,.94);
 }
 
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
@@ -1498,41 +1504,59 @@ label.row.small{font-size:.82rem;gap:.4rem;}
 .grp-empty{font-size:.75rem;color:var(--muted);opacity:.7;padding:.2rem .6rem .3rem;}
 
 /* ========================================================================
-   SETTINGS PAGE — full-screen, tabbed (replaces the old camera + settings
-   modals). Tabpanels reuse .modal-body for field/fieldset/legend styling.
-   Same frosted-glass material language as the sidebar (var(--glass) +
-   blur/saturate + inset highlight) throughout, so the settings page reads
-   as part of the same UI rather than a plainer sub-screen.
+   SETTINGS PAGE — a floating, tabbed panel (replaces the old camera +
+   settings modals). Tabpanels reuse .modal-body for field/fieldset/legend
+   styling. Two-layer material, same relationship as Windows 11's Mica +
+   Acrylic: the panel's own background is Mica (var(--mica) — denser,
+   mostly-opaque, tinted) with #settings-backdrop dimming/blurring the
+   grid behind it, while the fieldset/details CARDS inside float on top
+   in the lighter, more transparent --glass. Only full-screen on mobile
+   (this app's usual max-width:640px / portrait+max-width:900px
+   breakpoint, see the media query below) — there isn't enough width to
+   spare for a floating panel + visible backdrop margin at that size.
    ======================================================================== */
+.settings-backdrop{
+  position:fixed;inset:0;z-index:129;
+  background:rgba(0,0,0,.4);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  opacity:0;pointer-events:none;transition:opacity .22s var(--ease-out);
+}
+.settings-backdrop:not(.hidden){opacity:1;pointer-events:auto;}
 .settings-page{
-  position:fixed;inset:0;z-index:130;color:var(--text);
-  /* A faint top tint gives the glass cards something to sit "above"
-     instead of a flat single-color field — subtle enough to disappear
-     under any real content, matching macOS System Settings' soft
-     gradient backdrop behind its frosted panes. */
+  position:fixed;z-index:130;color:var(--text);
+  top:50%;left:50%;transform:translate(-50%,-50%);
+  width:min(920px, 92vw);height:min(820px, 88vh);
+  border-radius:22px;overflow:hidden;
+  box-shadow:var(--shadow-lg), 0 0 0 1px var(--glass-brd);
+  /* Two soft colour blooms give the mica base some depth instead of a
+     flat tinted fill, echoing the subtle accent-washed look Mica gets
+     from sampling a desktop wallpaper — we have no wallpaper to sample,
+     so a fixed gradient stands in for it. */
   background:
-    radial-gradient(ellipse 140% 55% at 50% -12%, rgba(10,132,255,.10), transparent 60%),
-    var(--bg);
+    radial-gradient(ellipse 140% 60% at 8% -10%, rgba(10,132,255,.16), transparent 55%),
+    radial-gradient(ellipse 120% 60% at 100% 110%, rgba(175,82,222,.12), transparent 55%),
+    var(--mica);
+  backdrop-filter:blur(50px) saturate(1.25);-webkit-backdrop-filter:blur(50px) saturate(1.25);
   display:flex;flex-direction:column;
-  padding-top:var(--safe-t);padding-bottom:var(--safe-b);
 }
 .settings-page.hidden{display:none!important;}
 .settings-header{
   display:flex;justify-content:space-between;align-items:center;
   padding:.9rem 1.1rem .6rem;
-  background:var(--glass);
-  backdrop-filter:blur(30px) saturate(1.8);-webkit-backdrop-filter:blur(30px) saturate(1.8);
+  background:var(--mica-2);
   flex:0 0 auto;
 }
 .settings-header h2{margin:0;font-size:1.2rem;font-weight:700;letter-spacing:-0.02em;}
-/* Header + tab strip share one continuous glass surface (no seam between
-   them) with the border sitting only at the very bottom of the tabs. */
+/* Header + tab strip share one continuous surface (no seam between them),
+   a touch more opaque than the mica body so the chrome reads as a fixed
+   layer above the scrolling content — no separate backdrop-filter here,
+   the panel's own blur (see .settings-page) already covers what's behind
+   the whole thing; stacking another would just be redundant cost. */
 .settings-tabs{
   display:flex;gap:.3rem;padding:.5rem .9rem .8rem;overflow-x:auto;
   border-bottom:1px solid var(--glass-brd);flex:0 0 auto;
   -webkit-overflow-scrolling:touch;
-  background:var(--glass);
-  backdrop-filter:blur(30px) saturate(1.8);-webkit-backdrop-filter:blur(30px) saturate(1.8);
+  background:var(--mica-2);
   box-shadow:0 12px 24px -18px rgba(0,0,0,.5);
 }
 .settings-tabs::-webkit-scrollbar{display:none;}
@@ -1591,6 +1615,23 @@ label.row.small{font-size:.82rem;gap:.4rem;}
 .sys-row-sub{
   font-size:.72rem;color:var(--muted);font-weight:400;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+/* Mobile: back to a full-screen takeover, not a floating panel — this app's
+   usual "is this mobile" breakpoint (matches the JS isMobile() check and
+   every other mobile override in this file), not the narrower 480px one
+   below. There isn't enough width to spare for a floating panel PLUS a
+   visible dimmed backdrop margin at this size — a modal that only leaves
+   a sliver of backdrop visible around it just reads as a worse-fitting
+   full screen, not an intentional floating window. */
+@media (max-width: 640px), (orientation: portrait) and (max-width: 900px){
+  .settings-backdrop{display:none!important;}
+  .settings-page{
+    top:0;left:0;right:0;bottom:0;transform:none;
+    width:auto;height:auto;
+    border-radius:0;box-shadow:none;
+    padding-top:var(--safe-t);padding-bottom:var(--safe-b);
+  }
 }
 
 @media (max-width: 480px){

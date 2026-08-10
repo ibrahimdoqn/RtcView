@@ -35,6 +35,26 @@
       localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify([...state.collapsedGroups]));
     } catch {}
   }
+
+  // Whether the PTZ panel is open is also a per-device preference (same
+  // reasoning as above — the default itself already differs by device
+  // type, open on desktop/closed on mobile, so remembering an explicit
+  // override per-device is the only choice that doesn't fight itself).
+  // null (never explicitly set on this device) keeps the existing
+  // device-type default in updatePtzPanel()/togglePtzPanel(); "1"/"0"
+  // means the user has explicitly overridden it here.
+  const PTZ_OPEN_KEY = "rtcview.ptzOpen";
+  function _loadPtzOpen(){
+    try {
+      const v = localStorage.getItem(PTZ_OPEN_KEY);
+      if (v === "1") return true;
+      if (v === "0") return false;
+    } catch {}
+    return null;
+  }
+  function _savePtzOpen(open){
+    try { localStorage.setItem(PTZ_OPEN_KEY, open ? "1" : "0"); } catch {}
+  }
   const isMobile = () => window.matchMedia("(max-width: 640px), (orientation: portrait) and (max-width: 900px)").matches;
 
   // How often the notification bell refreshes. This is the dominant term
@@ -133,6 +153,7 @@
       state.cameras = cfg.cameras || [];
       state.groups = cfg.groups || [];
       _loadCollapsedGroups();
+      state.ptzOpen = _loadPtzOpen();
       applySettings();
       renderSidebar(); renderGrid();
       updateStatus();
@@ -1050,9 +1071,10 @@
     if (!cam || !cam.ptz_enabled) return;
     const currentlyOpen = state.ptzOpen === null ? !isMobile() : state.ptzOpen;
     state.ptzOpen = !currentlyOpen;
+    _savePtzOpen(state.ptzOpen);
     updatePtzPanel();
   }
-  function closePtzPanel(){ state.ptzOpen = false; updatePtzPanel(); }
+  function closePtzPanel(){ state.ptzOpen = false; _savePtzOpen(false); updatePtzPanel(); }
 
   async function loadPresets(cam){
     try {
@@ -1680,10 +1702,12 @@
   let _lastSettingsTab = "genel";
   function openSettingsPage(tab){
     closeSidebar();
+    $("#settings-backdrop").classList.remove("hidden");
     $("#settings-page").classList.remove("hidden");
     switchSettingsTab(tab || _lastSettingsTab);
   }
   function closeSettingsPage(){
+    $("#settings-backdrop").classList.add("hidden");
     $("#settings-page").classList.add("hidden");
     stopMotionPoll();
     clearInterval(_sysAutoTimer); _sysAutoTimer = null;
@@ -1713,6 +1737,7 @@
   $$(".settings-tab-btn").forEach(btn => btn.addEventListener("click", () => switchSettingsTab(btn.dataset.tab)));
   $("#btn-settings").addEventListener("click", () => openSettingsPage("genel"));
   $("#settings-close").addEventListener("click", closeSettingsPage);
+  _bindBackdropClose($("#settings-backdrop"), closeSettingsPage);
 
   // Tracks whether the go2rtc fields actually loaded from the server. If a
   // transient fetch failure leaves them at their empty HTML defaults, the

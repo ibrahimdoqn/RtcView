@@ -123,7 +123,10 @@
     <button id="ptz-close" class="ptz-close" aria-label="Kapat">✕</button>
   </div>
 
-  <!-- Full-screen settings page: Genel / Kameralar / Bildirimler / Kayıt & Depolama / Sistem -->
+  <!-- Settings: a floating panel on desktop (dimmed/blurred backdrop
+       behind it), full-screen on mobile — see .settings-page's CSS.
+       Genel / Kameralar / Bildirimler / Kayıt & Depolama / Sistem -->
+  <div id="settings-backdrop" class="settings-backdrop hidden"></div>
   <div id="settings-page" class="settings-page hidden" role="dialog" aria-label="Ayarlar">
     <div class="settings-header">
       <h2>Ayarlar</h2>
