@@ -1,4 +1,5 @@
 """Recording storage: SQLite segment index + retention/quota purger."""
+import errno
 import logging
 import os
 import shutil
@@ -614,6 +615,25 @@ class Storage:
                 try:
                     test.write_text("ok"); test.unlink()
                     writable = True
+                except OSError as e:
+                    if e.errno == errno.ENOSPC:
+                        # A disk so full even the tiny write-test probe
+                        # can't land is the SAME "disk kapasitesine yakın"
+                        # story as the free-space check below, just past
+                        # zero bytes instead of under the 1 GB margin —
+                        # the rolling/retention purge doesn't care how it
+                        # got full, only that something old enough still
+                        # exists to reclaim. A real problem here (wrong
+                        # permissions, read-only fs, hardware fault) is
+                        # NOT something purging can ever fix, so anything
+                        # other than ENOSPC stays a hard error below,
+                        # unconditionally.
+                        if not self._has_purgeable_segments():
+                            r_errs.append(
+                                "Yazılamıyor: disk dolu — silinecek kayıt kalmadı, kayıt durabilir"
+                            )
+                    else:
+                        r_errs.append(f"Yazılamıyor: {e}")
                 except Exception as e:
                     r_errs.append(f"Yazılamıyor: {e}")
                 try:
