@@ -317,78 +317,145 @@
 
       <!-- Sistem -->
       <div class="settings-tabpanel modal-body" data-tab="sistem">
-        <details><summary>Sistem Kaynakları</summary>
-          <div id="s-sys-stats" class="sys-stats">Yükleniyor…</div>
-          <div class="row" style="gap:.4rem;margin-top:.4rem;">
-            <button type="button" id="s-sys-refresh" class="btn ghost small">Yenile</button>
-            <label class="row" style="margin-left:auto;color:var(--muted);font-size:.8rem;gap:.35rem;">
-              <input type="checkbox" id="s-sys-auto" checked /> otomatik
-            </label>
+
+        <div class="settings-section">
+          <div class="settings-section-title">Durum</div>
+          <div class="settings-card">
+            <details class="sys-row">
+              <summary>
+                <span class="sys-icon sys-icon-blue">📊</span>
+                <span class="sys-row-text">
+                  <span class="sys-row-title">Sistem Kaynakları</span>
+                  <span class="sys-row-sub">CPU, bellek, ffmpeg süreçleri</span>
+                </span>
+              </summary>
+              <div class="sys-row-body">
+                <div id="s-sys-stats" class="sys-stats">Yükleniyor…</div>
+                <div class="row" style="gap:.4rem;margin-top:.4rem;">
+                  <button type="button" id="s-sys-refresh" class="btn ghost small">Yenile</button>
+                  <label class="row" style="margin-left:auto;color:var(--muted);font-size:.8rem;gap:.35rem;">
+                    <input type="checkbox" id="s-sys-auto" checked /> otomatik
+                  </label>
+                </div>
+              </div>
+            </details>
           </div>
-        </details>
-        <details><summary>Kayıt Bekçisi (Bellek Sınırı)</summary>
-          <label>ffmpeg bellek sınırı (MB) <input id="s-sys-mem-ceiling" type="number" min="32" max="4096" /></label>
-          <small>Bir kameranın kayıt işlemi (ffmpeg) bu değeri aşarsa otomatik olarak
-            yeniden başlatılır — bellek sızıntısının cihazı bunaltmasını önler.
-            Sağlıklı bir kayıt normalde 50-90 MB civarında sabit kalır; düşük
-            RAM'li cihazlarda (SBC) değeri düşük tutmak, güçlü sunucularda
-            yükseltmek isteyebilirsiniz.</small>
-          <div class="modal-actions">
-            <button type="button" id="s-save-mem-ceiling" class="btn primary small">Kaydet</button>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">Bakım</div>
+          <div class="settings-card">
+            <details class="sys-row">
+              <summary>
+                <span class="sys-icon sys-icon-orange">🧠</span>
+                <span class="sys-row-text">
+                  <span class="sys-row-title">Kayıt Bekçisi</span>
+                  <span class="sys-row-sub">Bellek sınırı aşılırsa otomatik yeniden başlat</span>
+                </span>
+              </summary>
+              <div class="sys-row-body">
+                <label>ffmpeg bellek sınırı (MB) <input id="s-sys-mem-ceiling" type="number" min="32" max="4096" /></label>
+                <small>Bir kameranın kayıt işlemi (ffmpeg) bu değeri aşarsa otomatik olarak
+                  yeniden başlatılır — bellek sızıntısının cihazı bunaltmasını önler.
+                  Sağlıklı bir kayıt normalde 50-90 MB civarında sabit kalır; düşük
+                  RAM'li cihazlarda (SBC) değeri düşük tutmak, güçlü sunucularda
+                  yükseltmek isteyebilirsiniz.</small>
+                <div class="modal-actions">
+                  <button type="button" id="s-save-mem-ceiling" class="btn primary small">Kaydet</button>
+                </div>
+              </div>
+            </details>
+            <details id="update-details" class="sys-row">
+              <summary>
+                <span class="sys-icon sys-icon-green">⬇️</span>
+                <span class="sys-row-text">
+                  <span class="sys-row-title">Güncelleme</span>
+                  <span class="sys-row-sub">GitHub'daki en son sürümü al</span>
+                </span>
+              </summary>
+              <div class="sys-row-body">
+                <div id="s-update-info" class="usage-text">—</div>
+                <div class="row" style="gap:.4rem;margin-top:.5rem;flex-wrap:wrap;">
+                  <button type="button" id="s-update-refresh" class="btn ghost small">Yenile</button>
+                  <button type="button" id="s-update-now" class="btn primary small">Şimdi Güncelle</button>
+                </div>
+                <small>GitHub'daki en son sürümü indirir, dosyaları günceller ve servisi yeniden başlatır.
+                  Bu sırada uygulama birkaç dakika erişilemez olabilir.</small>
+              </div>
+            </details>
+            <details class="sys-row">
+              <summary>
+                <span class="sys-icon sys-icon-gray">📄</span>
+                <span class="sys-row-text">
+                  <span class="sys-row-title">Loglar</span>
+                  <span class="sys-row-sub">Servis kayıtlarını görüntüle</span>
+                </span>
+              </summary>
+              <div class="sys-row-body">
+                <div class="row" style="gap:.4rem;margin-bottom:.4rem;flex-wrap:wrap;">
+                  <select id="s-log-lines" class="pb-select" style="min-height:32px;">
+                    <option value="10">Son 10</option>
+                    <option value="20">Son 20</option>
+                    <option value="50">Son 50</option>
+                    <option value="100">Son 100</option>
+                    <option value="200" selected>Son 200</option>
+                    <option value="500">Son 500</option>
+                    <option value="1000">Son 1000</option>
+                  </select>
+                  <select id="s-log-level" class="pb-select" style="min-height:32px;">
+                    <option value="">Tümü</option>
+                    <option value="warn">Uyarı+</option>
+                    <option value="err">Hata</option>
+                  </select>
+                  <button type="button" id="s-log-refresh" class="btn ghost small">Yenile</button>
+                  <button type="button" id="s-log-copy" class="btn ghost small">Panoya kopyala</button>
+                </div>
+                <pre id="s-log-view" class="log-view">—</pre>
+              </div>
+            </details>
           </div>
-        </details>
-        <details id="update-details"><summary>Güncelleme</summary>
-          <div id="s-update-info" class="usage-text">—</div>
-          <div class="row" style="gap:.4rem;margin-top:.5rem;flex-wrap:wrap;">
-            <button type="button" id="s-update-refresh" class="btn ghost small">Yenile</button>
-            <button type="button" id="s-update-now" class="btn primary small">Şimdi Güncelle</button>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">Yardım</div>
+          <div class="settings-card">
+            <details class="sys-row">
+              <summary>
+                <span class="sys-icon sys-icon-purple">⌨️</span>
+                <span class="sys-row-text"><span class="sys-row-title">Klavye kısayolları</span></span>
+              </summary>
+              <div class="sys-row-body">
+                <ul class="kbd-list">
+                  <li><kbd>B</kbd> / <kbd>Tab</kbd> menü aç/kapat</li>
+                  <li><kbd>F</kbd> tam ekran</li>
+                  <li><kbd>P</kbd> PTZ paneli aç/kapat</li>
+                  <li><kbd>V</kbd> kayıtları izle (playback)</li>
+                  <li><kbd>G</kbd> / <kbd>Esc</kbd> ızgaraya dön</li>
+                  <li><kbd>R</kbd> seçili görüntüde zoom sıfırla</li>
+                  <li><kbd>1</kbd>–<kbd>8</kbd> sütun sayısı</li>
+                  <li>Sağ tık: zoom sıfırla • Çift tık / iki parmak dokun: solo</li>
+                </ul>
+              </div>
+            </details>
+            <details class="sys-row">
+              <summary>
+                <span class="sys-icon sys-icon-pink">▶️</span>
+                <span class="sys-row-text"><span class="sys-row-title">Playback kısayolları</span></span>
+              </summary>
+              <div class="sys-row-body">
+                <ul class="kbd-list">
+                  <li><kbd>Space</kbd> oynat/duraklat</li>
+                  <li><kbd>←</kbd> / <kbd>→</kbd> ±10 sn</li>
+                  <li><kbd>,</kbd> / <kbd>.</kbd> kare-kare (duraklatılmışken)</li>
+                  <li><kbd>1</kbd> 0.5×, <kbd>2</kbd> 1×, <kbd>3</kbd> 2×, <kbd>4</kbd> 4×, <kbd>5</kbd> 8×, <kbd>6</kbd> 16×</li>
+                  <li><kbd>E</kbd> algılanan olaylar</li>
+                  <li><kbd>Esc</kbd> olay listesini / playback'i kapat</li>
+                </ul>
+              </div>
+            </details>
           </div>
-          <small>GitHub'daki en son sürümü indirir, dosyaları günceller ve servisi yeniden başlatır.
-            Bu sırada uygulama birkaç dakika erişilemez olabilir.</small>
-        </details>
-        <details><summary>Loglar</summary>
-          <div class="row" style="gap:.4rem;margin-bottom:.4rem;flex-wrap:wrap;">
-            <select id="s-log-lines" class="pb-select" style="min-height:32px;">
-              <option value="10">Son 10</option>
-              <option value="20">Son 20</option>
-              <option value="50">Son 50</option>
-              <option value="100">Son 100</option>
-              <option value="200" selected>Son 200</option>
-              <option value="500">Son 500</option>
-              <option value="1000">Son 1000</option>
-            </select>
-            <select id="s-log-level" class="pb-select" style="min-height:32px;">
-              <option value="">Tümü</option>
-              <option value="warn">Uyarı+</option>
-              <option value="err">Hata</option>
-            </select>
-            <button type="button" id="s-log-refresh" class="btn ghost small">Yenile</button>
-            <button type="button" id="s-log-copy" class="btn ghost small">Panoya kopyala</button>
-          </div>
-          <pre id="s-log-view" class="log-view">—</pre>
-        </details>
-        <details><summary>Klavye kısayolları</summary>
-          <ul class="kbd-list">
-            <li><kbd>B</kbd> / <kbd>Tab</kbd> menü aç/kapat</li>
-            <li><kbd>F</kbd> tam ekran</li>
-            <li><kbd>P</kbd> PTZ paneli aç/kapat</li>
-            <li><kbd>V</kbd> kayıtları izle (playback)</li>
-            <li><kbd>G</kbd> / <kbd>Esc</kbd> ızgaraya dön</li>
-            <li><kbd>R</kbd> seçili görüntüde zoom sıfırla</li>
-            <li><kbd>1</kbd>–<kbd>8</kbd> sütun sayısı</li>
-            <li>Sağ tık: zoom sıfırla • Çift tık / iki parmak dokun: solo</li>
-          </ul>
-        </details>
-        <details><summary>Playback kısayolları</summary>
-          <ul class="kbd-list">
-            <li><kbd>Space</kbd> oynat/duraklat</li>
-            <li><kbd>←</kbd> / <kbd>→</kbd> ±10 sn</li>
-            <li><kbd>,</kbd> / <kbd>.</kbd> kare-kare (duraklatılmışken)</li>
-            <li><kbd>1</kbd> 0.5×, <kbd>2</kbd> 1×, <kbd>3</kbd> 2×, <kbd>4</kbd> 4×, <kbd>5</kbd> 8×, <kbd>6</kbd> 16×</li>
-            <li><kbd>E</kbd> algılanan olaylar</li>
-            <li><kbd>Esc</kbd> olay listesini / playback'i kapat</li>
-          </ul>
-        </details>
+        </div>
+
       </div>
 
     </div>

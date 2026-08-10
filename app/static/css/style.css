@@ -376,14 +376,60 @@ input,select{font:inherit;color:inherit;}
 .modal-body label input:focus,.modal-body label select:focus{border-color:var(--accent);}
 .modal-body label.row{flex-direction:row;align-items:center;gap:.55rem;color:var(--text);font-size:.92rem;font-weight:400;}
 .modal-body label.row input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent);}
+/* Fieldsets and <details> are the "glass card" surfaces inside every
+   settings tab — the same frosted material as the sidebar/panels
+   elsewhere in the app (var(--glass) + blur/saturate + a soft inset top
+   highlight), just applied to flat content instead of an overlay, so
+   cards read as floating slightly above the page rather than flat
+   printed boxes. */
 .modal-body fieldset{
-  border:1px solid var(--border-solid);border-radius:11px;padding:.75rem;
-  display:flex;flex-direction:column;gap:.55rem;margin:0;
-  min-width:0;
+  border:1px solid var(--glass-brd);border-radius:var(--radius);padding:.9rem;
+  display:flex;flex-direction:column;gap:.6rem;margin:0;min-width:0;
+  background:var(--glass);
+  backdrop-filter:blur(16px) saturate(1.6);-webkit-backdrop-filter:blur(16px) saturate(1.6);
+  box-shadow:var(--shadow-sm), inset 0 1px 0 var(--glass-hi);
 }
-.modal-body fieldset legend{color:var(--muted);font-size:.78rem;padding:0 .4rem;font-weight:500;}
-.modal-body details{color:var(--text);font-size:.85rem;}
-.modal-body details summary{cursor:pointer;padding:.3rem 0;color:var(--muted);font-weight:500;}
+.modal-body fieldset legend{
+  color:var(--muted);font-size:.72rem;padding:0 .4rem;font-weight:600;
+  text-transform:uppercase;letter-spacing:.05em;
+}
+.modal-body details{
+  color:var(--text);font-size:.85rem;
+  border:1px solid var(--glass-brd);border-radius:var(--radius);
+  background:var(--glass);
+  backdrop-filter:blur(16px) saturate(1.6);-webkit-backdrop-filter:blur(16px) saturate(1.6);
+  box-shadow:var(--shadow-sm), inset 0 1px 0 var(--glass-hi);
+  overflow:hidden;
+}
+/* Custom chevron replaces the inconsistent browser-default triangle
+   marker — rotates open/closed instead of just swapping glyph, which
+   reads as more deliberate/native-feeling. */
+.modal-body details summary{
+  cursor:pointer;padding:.75rem .9rem;color:var(--text);font-weight:500;
+  list-style:none;display:flex;align-items:center;gap:.6rem;
+  -webkit-tap-highlight-color:transparent;
+}
+.modal-body details summary::-webkit-details-marker{display:none;}
+.modal-body details summary::after{
+  content:"";width:7px;height:7px;margin-left:auto;flex:0 0 auto;
+  border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);
+  transform:rotate(-45deg);transition:transform .2s var(--ease-out);
+}
+.modal-body details[open] summary::after{transform:rotate(45deg);margin-top:-3px;}
+.modal-body details > :not(summary){margin:0 .9rem .9rem;}
+/* A <details> nested INSIDE a fieldset (e.g. the "Gelişmiş / Hata
+   Ayıklama" debug panel under Hareket ve İnsan Algılama) sits on top of
+   the fieldset's own glass surface already — giving it a second full
+   card (border+blur+shadow) on top of that reads as a box nested inside
+   a box. Flatten it to just a divider + tighter padding instead. */
+.modal-body fieldset details{
+  background:none;border:none;box-shadow:none;
+  backdrop-filter:none;-webkit-backdrop-filter:none;
+  border-top:1px solid var(--glass-brd);border-radius:0;
+  margin-top:.15rem;padding-top:.3rem;
+}
+.modal-body fieldset details summary{padding:.4rem .2rem;}
+.modal-body fieldset details > :not(summary){margin:0 .2rem .6rem;}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:.55rem;min-width:0;}
 .grid2 label{min-width:0;}
 .grid2 input,.grid2 select{min-width:0;width:100%;}
@@ -604,6 +650,9 @@ kbd{
   .modal-body{gap:.5rem;padding:.7rem;}
   .modal-body fieldset{padding:.45rem .55rem;gap:.35rem;border-radius:9px;}
   .modal-body fieldset legend{font-size:.68rem;padding:0 .3rem;letter-spacing:.02em;}
+  .modal-body details{border-radius:9px;}
+  .modal-body details summary{padding:.6rem .7rem;font-size:.85rem;}
+  .modal-body details > :not(summary){margin:0 .7rem .7rem;}
   .modal-body label{font-size:.74rem;gap:.2rem;}
   .modal-body .grid2{gap:.35rem;grid-template-columns:1fr 1fr;}
   .modal-body label input,.modal-body label select{padding:.45rem .55rem;min-height:34px;font-size:.85rem;}
@@ -1451,43 +1500,105 @@ label.row.small{font-size:.82rem;gap:.4rem;}
 /* ========================================================================
    SETTINGS PAGE — full-screen, tabbed (replaces the old camera + settings
    modals). Tabpanels reuse .modal-body for field/fieldset/legend styling.
+   Same frosted-glass material language as the sidebar (var(--glass) +
+   blur/saturate + inset highlight) throughout, so the settings page reads
+   as part of the same UI rather than a plainer sub-screen.
    ======================================================================== */
 .settings-page{
-  position:fixed;inset:0;z-index:130;background:var(--bg);color:var(--text);
+  position:fixed;inset:0;z-index:130;color:var(--text);
+  /* A faint top tint gives the glass cards something to sit "above"
+     instead of a flat single-color field — subtle enough to disappear
+     under any real content, matching macOS System Settings' soft
+     gradient backdrop behind its frosted panes. */
+  background:
+    radial-gradient(ellipse 140% 55% at 50% -12%, rgba(10,132,255,.10), transparent 60%),
+    var(--bg);
   display:flex;flex-direction:column;
   padding-top:var(--safe-t);padding-bottom:var(--safe-b);
 }
 .settings-page.hidden{display:none!important;}
 .settings-header{
   display:flex;justify-content:space-between;align-items:center;
-  padding:.9rem 1.1rem;border-bottom:1px solid var(--border);
-  background:var(--panel);
-  backdrop-filter:blur(20px) saturate(1.6);-webkit-backdrop-filter:blur(20px) saturate(1.6);
+  padding:.9rem 1.1rem .6rem;
+  background:var(--glass);
+  backdrop-filter:blur(30px) saturate(1.8);-webkit-backdrop-filter:blur(30px) saturate(1.8);
   flex:0 0 auto;
 }
-.settings-header h2{margin:0;font-size:1.15rem;font-weight:600;letter-spacing:-0.015em;}
+.settings-header h2{margin:0;font-size:1.2rem;font-weight:700;letter-spacing:-0.02em;}
+/* Header + tab strip share one continuous glass surface (no seam between
+   them) with the border sitting only at the very bottom of the tabs. */
 .settings-tabs{
-  display:flex;gap:.35rem;padding:.6rem .9rem;overflow-x:auto;
-  border-bottom:1px solid var(--border);flex:0 0 auto;
+  display:flex;gap:.3rem;padding:.5rem .9rem .8rem;overflow-x:auto;
+  border-bottom:1px solid var(--glass-brd);flex:0 0 auto;
   -webkit-overflow-scrolling:touch;
+  background:var(--glass);
+  backdrop-filter:blur(30px) saturate(1.8);-webkit-backdrop-filter:blur(30px) saturate(1.8);
+  box-shadow:0 12px 24px -18px rgba(0,0,0,.5);
 }
 .settings-tabs::-webkit-scrollbar{display:none;}
 .settings-tab-btn{
-  flex:0 0 auto;padding:.5rem 1rem;border-radius:999px;font-size:.85rem;font-weight:500;
-  background:rgba(255,255,255,.05);border:1px solid var(--border-solid);color:var(--muted);
+  flex:0 0 auto;padding:.45rem 1rem;border-radius:999px;font-size:.85rem;font-weight:500;
+  background:transparent;border:1px solid transparent;color:var(--muted);
   white-space:nowrap;
-  transition:background .12s var(--ease-out), color .12s var(--ease-out), border-color .12s var(--ease-out);
+  transition:background .16s var(--ease-out), color .16s var(--ease-out), box-shadow .16s var(--ease-out);
 }
-.settings-tab-btn:hover{background:rgba(255,255,255,.1);}
-.settings-tab-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+.settings-tab-btn:hover{background:var(--glass-hi);color:var(--text);}
+.settings-tab-btn.active{
+  background:var(--accent);color:#fff;
+  box-shadow:0 3px 12px rgba(10,132,255,.45), inset 0 1px 0 rgba(255,255,255,.3);
+}
 .settings-content{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;min-width:0;}
 .settings-tabpanel.hidden{display:none;}
-.settings-tabpanel.modal-body{max-width:640px;margin:0 auto;}
+.settings-tabpanel.modal-body{max-width:660px;margin:0 auto;}
+
+/* ----- Sistem tab: grouped sections instead of a flat <details> stack -----
+   Rows keep their exact IDs/behavior (still real <details> elements the
+   existing JS toggles/queries via .closest("details")) but are laid out
+   as icon + title/subtitle + chevron inside one shared card per section,
+   iOS-Settings-style, instead of each floating as its own separate box. */
+.settings-section{display:flex;flex-direction:column;gap:.4rem;}
+.settings-section-title{
+  font-size:.72rem;font-weight:600;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.06em;padding:0 .3rem;
+}
+.settings-card{
+  background:var(--glass);border:1px solid var(--glass-brd);border-radius:var(--radius);
+  backdrop-filter:blur(16px) saturate(1.6);-webkit-backdrop-filter:blur(16px) saturate(1.6);
+  box-shadow:var(--shadow-sm), inset 0 1px 0 var(--glass-hi);
+  overflow:hidden;
+}
+/* .sys-row is itself a .modal-body <details> — cancel its own standalone
+   card treatment so it lays flat inside the shared .settings-card instead
+   of double-boxing, and separate siblings with a hairline instead. */
+.settings-card .sys-row{
+  background:none;border:none;border-radius:0;box-shadow:none;
+  backdrop-filter:none;-webkit-backdrop-filter:none;
+}
+.settings-card .sys-row + .sys-row{border-top:1px solid var(--glass-brd);}
+.sys-icon{
+  width:28px;height:28px;border-radius:8px;flex:0 0 auto;
+  display:grid;place-items:center;font-size:.92rem;line-height:1;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.3), 0 1px 3px rgba(0,0,0,.2);
+}
+.sys-icon-blue{background:linear-gradient(180deg,#64d2ff,#0a84ff);}
+.sys-icon-orange{background:linear-gradient(180deg,#ffbe4d,#ff9500);}
+.sys-icon-green{background:linear-gradient(180deg,#42e07d,#30d158);}
+.sys-icon-gray{background:linear-gradient(180deg,#98989d,#68686d);}
+.sys-icon-purple{background:linear-gradient(180deg,#cb7cf5,#af52de);}
+.sys-icon-pink{background:linear-gradient(180deg,#ff8fbf,#ff2d78);}
+.sys-row-text{display:flex;flex-direction:column;gap:.1rem;min-width:0;flex:1;}
+.sys-row-title{font-size:.88rem;font-weight:500;color:var(--text);}
+.sys-row-sub{
+  font-size:.72rem;color:var(--muted);font-weight:400;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
 
 @media (max-width: 480px){
-  .settings-header{padding:.7rem .9rem;}
-  .settings-header h2{font-size:1rem;}
-  .settings-tabs{padding:.5rem .6rem;}
+  .settings-header{padding:.7rem .9rem .5rem;}
+  .settings-header h2{font-size:1.05rem;}
+  .settings-tabs{padding:.4rem .6rem .6rem;}
   .settings-tab-btn{padding:.4rem .8rem;font-size:.8rem;}
+  .sys-icon{width:26px;height:26px;font-size:.85rem;}
+  .sys-row-sub{white-space:normal;}
 }
 
