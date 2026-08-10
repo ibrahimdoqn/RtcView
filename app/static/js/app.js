@@ -83,8 +83,12 @@
       downOnBackdrop = (e.target === modalEl);
     });
     modalEl.addEventListener("mouseup", (e) => {
+      // Deliberately doesn't touch modalEl's classList itself — the
+      // sidebar/PTZ/events-drawer backdrops each follow a different
+      // show/hide convention (.hidden vs .open), so hiding is left
+      // entirely to onClose(), which every caller already implements
+      // correctly for its own panel.
       if (downOnBackdrop && e.target === modalEl) {
-        modalEl.classList.add("hidden");
         if (typeof onClose === "function") { try { onClose(); } catch {} }
       }
       downOnBackdrop = false;
@@ -247,7 +251,7 @@
 
   $("#fab-menu").addEventListener("click", toggleSidebar);
   $("#btn-close-sidebar").addEventListener("click", closeSidebar);
-  $("#sidebar-backdrop").addEventListener("click", closeSidebar);
+  _bindBackdropClose($("#sidebar-backdrop"), closeSidebar);
 
   // One camera row. Shared by the grouped tree and the flat fallback, so
   // both look and behave identically (drag-reorder, status dot, select).
@@ -1086,7 +1090,7 @@
   });
   $("#ptz-fab").addEventListener("click", togglePtzPanel);
   $("#ptz-close").addEventListener("click", closePtzPanel);
-  $("#ptz-backdrop").addEventListener("click", closePtzPanel);
+  _bindBackdropClose($("#ptz-backdrop"), closePtzPanel);
 
   (function wirePtzSwipe(){
     const panel = $("#ptz-panel");
@@ -1252,6 +1256,13 @@
           renderGroupFilterRow();
           renderCamTabList();
           renderNotifGroups();
+          // Missing here previously: the sidebar renders each camera's
+          // group name directly from state.groups too, so without this
+          // a rename left the OLD name showing there indefinitely — even
+          // the 15s refreshGroups() poll wouldn't catch it up, since its
+          // diff only compares [id, notify_enabled] and a name-only
+          // change never trips it.
+          renderSidebar();
         } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); input.value = g.name; }
       };
       input.addEventListener("blur", save);
@@ -1675,9 +1686,22 @@
   function closeSettingsPage(){
     $("#settings-page").classList.add("hidden");
     stopMotionPoll();
+    clearInterval(_sysAutoTimer); _sysAutoTimer = null;
   }
   function switchSettingsTab(name){
     _lastSettingsTab = name;
+    // Both of these only naturally stop themselves in the narrow case
+    // that motivated them (returning to the Kameralar list, collapsing
+    // the Sistem Kaynakları <details>) — neither one fires when the user
+    // instead switches to a DIFFERENT top-level tab while they're still
+    // running, so without this a poll left running (camera-detail motion
+    // debug, or Sistem's 2s auto-refresh) just kept hitting its endpoint
+    // in the background for the rest of the session. Harmless to call
+    // unconditionally: both are no-ops if nothing was running, and
+    // showCameraList()/the <details> toggle below still call them again
+    // redundantly on their own paths.
+    stopMotionPoll();
+    clearInterval(_sysAutoTimer); _sysAutoTimer = null;
     $$(".settings-tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
     $$(".settings-tabpanel").forEach(p => p.classList.toggle("hidden", p.dataset.tab !== name));
     if (name === "genel") loadGenelTab();
@@ -2624,7 +2648,7 @@
     $("#pb-close").addEventListener("click", closePlayback);
     $("#pb-events-btn").addEventListener("click", togglePbEvents);
     $("#pb-events-close").addEventListener("click", closePbEvents);
-    $("#pb-events-backdrop").addEventListener("click", closePbEvents);
+    _bindBackdropClose($("#pb-events-backdrop"), closePbEvents);
     $("#pb-cam").addEventListener("change", (e) => { state.playback.camId = e.target.value; loadDay(); });
     $("#pb-date").addEventListener("change", (e) => { state.playback.date = e.target.value; loadDay(); });
     $("#pb-prev-day").addEventListener("click", () => shiftDay(-1));

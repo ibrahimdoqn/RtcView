@@ -420,17 +420,30 @@ class Storage:
     def delete_segment(self, seg_id: int, force: bool = False) -> bool:
         seg = self.get_segment(seg_id)
         if not seg: return False
-        if seg["locked"] and not force: return False
-        # Unlink first, then drop the index row. If the OS refuses the
-        # unlink (permission, ENOENT), we still drop the row so a fresh
-        # rescan can normalise the state; the file — if it still exists
-        # — will be re-registered as a new id.
+        # The locked check and the delete are one atomic statement (both
+        # under self._lock) rather than "read locked, decide, then
+        # delete" — the latter left a window where a concurrent
+        # set_locked(seg_id, True) (a user protecting a segment right as
+        # a purge was about to remove it) could land in between the
+        # check and the delete and still lose the file, since the delete
+        # would proceed on the already-stale "unlocked" read.
+        with self._lock:
+            if force:
+                cur = self._db.execute("DELETE FROM segments WHERE id = ?", (seg_id,))
+            else:
+                cur = self._db.execute("DELETE FROM segments WHERE id = ? AND locked = 0", (seg_id,))
+            deleted = cur.rowcount > 0
+        if not deleted:
+            return False
+        # Unlink AFTER the row is confirmed gone (and confirmed not
+        # locked, atomically, per above). If the OS refuses the unlink
+        # (permission, ENOENT), the index row is already dropped so a
+        # fresh rescan can normalise the state; the file — if it still
+        # exists — will be re-registered as a new id.
         try:
             Path(seg["path"]).unlink(missing_ok=True)
         except Exception as e:
             log.warning("delete_segment: unlink failed %s: %s", seg["path"], e)
-        with self._lock:
-            self._db.execute("DELETE FROM segments WHERE id = ?", (seg_id,))
         # Invalidate everything: emergency purge / write picker rely on
         # fresh per-root byte totals AND disk_usage numbers.
         self._invalidate_caches()
@@ -747,18 +760,63 @@ class Storage:
         rc = self._rec_cfg()
         removed = 0; freed = 0
         retention = int(rc.get("retention_days", 14))
-        if retention > 0:
-            cutoff = time.time() - retention * 86400
+        now_ts = time.time()
+
+        # Per-camera retention_days_override (0 = "use the global
+        # default" — this was previously accepted/persisted by the
+        # camera-add/update API and shown in the UI but never actually
+        # read anywhere, a silent no-op). Queried as separate indexed
+        # cutoff scans (global scan excluding overridden cameras, then
+        # one small scan per overridden camera) rather than pulling every
+        # segment into Python to filter by camera, so a purge tick stays
+        # cheap regardless of how many segments exist in total.
+        overrides: dict[str, int] = {}
+        for c in self.config_store.get_cameras():
+            try:
+                ov = int(c.get("retention_days_override", 0) or 0)
+            except (TypeError, ValueError):
+                ov = 0
+            if ov > 0:
+                overrides[c["id"]] = ov
+
+        def _purge_segments_older_than(days: int, cam_id: Optional[str]):
+            nonlocal removed, freed
+            cutoff = now_ts - days * 86400
             with self._lock:
-                old = self._db.execute(
-                    "SELECT id, path, bytes FROM segments WHERE ended_at < ? AND locked = 0",
-                    (cutoff,)
-                ).fetchall()
-            for sid, p, b in old:
+                if cam_id is not None:
+                    rows = self._db.execute(
+                        "SELECT id, bytes FROM segments"
+                        " WHERE ended_at < ? AND locked = 0 AND cam_id = ?",
+                        (cutoff, cam_id)
+                    ).fetchall()
+                elif overrides:
+                    placeholders = ",".join("?" * len(overrides))
+                    rows = self._db.execute(
+                        "SELECT id, bytes FROM segments"
+                        f" WHERE ended_at < ? AND locked = 0 AND cam_id NOT IN ({placeholders})",
+                        (cutoff, *overrides.keys())
+                    ).fetchall()
+                else:
+                    rows = self._db.execute(
+                        "SELECT id, bytes FROM segments WHERE ended_at < ? AND locked = 0",
+                        (cutoff,)
+                    ).fetchall()
+            for sid, b in rows:
                 if self.delete_segment(sid):
                     removed += 1; freed += int(b or 0)
+
+        if retention > 0:
+            _purge_segments_older_than(retention, cam_id=None)
+        for cam_id, days in overrides.items():
+            _purge_segments_older_than(days, cam_id=cam_id)
+
+        # Detections retention stays tied to the global default only —
+        # retention_days_override is specifically a recording-footage
+        # setting (matches its own name/UI copy), not a per-camera
+        # detection-history one.
+        if retention > 0:
             with self._lock:
-                self._db.execute("DELETE FROM detections WHERE ended_at < ?", (cutoff,))
+                self._db.execute("DELETE FROM detections WHERE ended_at < ?", (now_ts - retention * 86400,))
 
         # Notification retention: independent of recording.retention_days
         # (notifications are a transient action log, not video). Note this

@@ -488,10 +488,13 @@ def create_app(config_path: str) -> Flask:
         if not cam.get("ptz_enabled"):
             return jsonify({"error": "PTZ not enabled"}), 400
         body = request.get_json(force=True) or {}
-        pan = float(body.get("pan", 0))
-        tilt = float(body.get("tilt", 0))
-        zoom = float(body.get("zoom", 0))
-        timeout = float(body.get("timeout", 0.6))
+        try:
+            pan = float(body.get("pan", 0))
+            tilt = float(body.get("tilt", 0))
+            zoom = float(body.get("zoom", 0))
+            timeout = float(body.get("timeout", 0.6))
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid pan/tilt/zoom/timeout"}), 400
         try:
             ptz_controller.move(cam, pan, tilt, zoom, timeout=timeout)
             return jsonify({"ok": True})
@@ -733,7 +736,10 @@ def create_app(config_path: str) -> Flask:
     @app.post("/api/cameras/<camera_id>/record/start")
     def api_rec_manual_start(camera_id):
         body = request.get_json(silent=True) or {}
-        seconds = int(body.get("seconds", MANUAL_DEFAULT_SECONDS) or MANUAL_DEFAULT_SECONDS)
+        try:
+            seconds = int(body.get("seconds", MANUAL_DEFAULT_SECONDS) or MANUAL_DEFAULT_SECONDS)
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid seconds"}), 400
         ok = recorder.manual_start(camera_id, seconds=seconds)
         if not ok:
             return jsonify({"error": "camera not found or recording disabled"}), 400
