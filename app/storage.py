@@ -701,7 +701,17 @@ class Storage:
             "root": str(primary),               # legacy field for UI compat
             "roots": per_root,                  # per-root breakdown
             "exists": bool(prim and prim["exists"]),
-            "writable": bool(prim and prim["writable"]),
+            # ANY root being writable, not just the primary (first-listed)
+            # one -- the whole point of the "önce A dolsun sonra B" model
+            # is that the primary root is EXPECTED to eventually fill up
+            # and go unwritable while recording keeps working fine via
+            # whichever other root still has room. Reporting this as
+            # "SALT-OKUR" (read-only) whenever specifically the primary
+            # root goes full read as "recording is broken" when it very
+            # much wasn't -- this should track "can the app still record
+            # somewhere", which is what pick_write_root()/_any_has_room()
+            # already mean by "writable" everywhere else in this file.
+            "writable": any(pr["writable"] for pr in per_root),
             "db_ok": db_ok,
             "disk": agg,                        # aggregate across all roots
             "free_percent": agg_free_pct,       # aggregate percentage
