@@ -875,9 +875,21 @@ class Storage:
         # This is the "diskler dolduğunda eski kayıtlar silinsin" path.
         # The batch loop rechecks after each small batch so we stop as
         # soon as room appears — no gratuitous deletion.
+        #
+        # "Room" here must mean the same thing pick_write_root() means by
+        # it — writable AND enough free space AND under quota — not just
+        # "has free bytes". A root with plenty of free space but a broken
+        # permission (e.g. wrong owner after a remount) is NOT room: it
+        # can have gigabytes free and 0% quota used while every write to
+        # it fails, which used to make this function report "someone has
+        # room" and skip the emergency purge entirely — while the actual
+        # writable root quietly ran itself down to ENOSPC.
         def _any_has_room() -> bool:
             for entry in roots_q:
+                r = Path(entry["path"])
                 try:
+                    probe = r / ".rtcview_write_test"
+                    probe.write_text("ok"); probe.unlink()
                     du = shutil.disk_usage(entry["path"])
                 except Exception:
                     continue
