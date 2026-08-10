@@ -267,3 +267,29 @@ def get_job_result(job_id: str) -> Optional[dict]:
             return json.load(f)
     except Exception:
         return None
+
+
+def list_job_results() -> list:
+    """Every recorded job result (format/mount/unmount), most recent
+    first. Folding a successful mount/unmount into config.disks was
+    originally only done by the /api/storage/job/<id> handler as the
+    frontend polled -- but that ties config persistence to a single
+    browser session staying alive long enough to observe the result. A
+    closed tab, a locked phone, or a network hiccup mid-poll meant a
+    disk could mount successfully on the real filesystem while
+    config.disks never learned about it -- so it never showed as
+    "managed" and the Ayır button never appeared. main.py now calls this
+    on every device-list fetch (page open, "Yenile") to reconcile
+    regardless of which session (if any) originally submitted the job."""
+    try:
+        paths = sorted(_results_dir().glob("*.json"), key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return []
+    out = []
+    for p in paths:
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                out.append(json.load(f))
+        except Exception:
+            continue
+    return out

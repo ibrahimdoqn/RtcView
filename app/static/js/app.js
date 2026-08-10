@@ -1019,7 +1019,6 @@
       const k = e.key.toLowerCase();
       if (k === "escape"){
         if (!$("#settings-page").classList.contains("hidden")){ closeSettingsPage(); return; }
-        if (!$("#storage-page").classList.contains("hidden")){ closeStoragePage(); return; }
         if (state.solo) exitSolo(); else if (state.sidebarOpen) closeSidebar();
         return;
       }
@@ -1732,6 +1731,7 @@
     if (name === "genel") loadGenelTab();
     else if (name === "kameralar") showCameraList();
     else if (name === "bildirimler") loadNotifSettingsTab();
+    else if (name === "kayit"){ loadKayitTab(); refreshDiskList(); }
     else if (name === "sistem") loadMemCeiling();
   }
   $$(".settings-tab-btn").forEach(btn => btn.addEventListener("click", () => switchSettingsTab(btn.dataset.tab)));
@@ -1739,29 +1739,7 @@
   $("#settings-close").addEventListener("click", closeSettingsPage);
   _bindBackdropClose($("#settings-backdrop"), closeSettingsPage);
 
-  // -------- Depolama page (separate from Ayarlar — Kayıt & Depolama's
-  // old tab content moved here verbatim, plus the new Disk Yönetimi card) --------
-  function openStoragePage(){
-    closeSidebar();
-    $("#storage-backdrop").classList.remove("hidden");
-    $("#storage-page").classList.remove("hidden");
-    loadKayitTab();
-    refreshDiskList();
-  }
-  function closeStoragePage(){
-    $("#storage-backdrop").classList.add("hidden");
-    $("#storage-page").classList.add("hidden");
-    // In-flight format/mount/unmount polls (see _pollDiskJob) check this
-    // same hidden state on every tick and stop themselves rather than
-    // needing a timer handle tracked here -- simpler than threading a
-    // cancellation token through a recursive setTimeout chain for what's
-    // at most one or two concurrent polls.
-  }
-  $("#btn-storage").addEventListener("click", openStoragePage);
-  $("#storage-close").addEventListener("click", closeStoragePage);
-  _bindBackdropClose($("#storage-backdrop"), closeStoragePage);
-
-  // -------- Disk Yönetimi (Depolama page) --------
+  // -------- Disk Yönetimi (Ayarlar → Kayıt & Depolama tab) --------
   let _diskDevices = [];
   let _diskF2fsAvailable = false;
 
@@ -1950,9 +1928,9 @@
   // Polls GET /api/storage/job/<id> (ok:null while pending) every second
   // until resolved, up to a ~120s ceiling -- format/mount are usually a
   // few seconds on modern ext4/f2fs but can run longer on slow SBC
-  // storage controllers. Stops silently (no error, no callback) once the
-  // Depolama page is closed -- no cancellation token needed for at most
-  // one or two concurrent polls.
+  // storage controllers. Stops silently (no error, no callback) once
+  // Ayarlar is closed -- no cancellation token needed for at most one or
+  // two concurrent polls.
   function _pollDiskJob(jobId, statusEl, onSuccess){
     const start = Date.now();
     const setStatus = (text, isErr) => {
@@ -1961,7 +1939,7 @@
       statusEl.classList.toggle("err", !!isErr);
     };
     const tick = async () => {
-      if ($("#storage-page").classList.contains("hidden")) return;
+      if ($("#settings-page").classList.contains("hidden")) return;
       let res;
       try { res = await api.get(`/api/storage/job/${jobId}`); }
       catch (e) { setStatus("Hata: " + e.message, true); return; }

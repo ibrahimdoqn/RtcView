@@ -654,14 +654,52 @@ def create_app(config_path: str) -> Flask:
     def api_rec_purge():
         return jsonify(storage.purge_once())
 
-    # ---------- Physical disk management (Depolama page) ----------
+    # ---------- Physical disk management (Ayarlar → Kayıt & Depolama) ----------
     # Device listing is unprivileged (lsblk/findmnt need no root). Format/
     # mount/unmount are privileged and handed off to a root-owned systemd
     # service via a job-queue directory -- see app/diskmgr.py's module
     # docstring and scripts/diskmgr_worker.py for the full mechanism (same
     # shape as the self-update trigger-file pattern, just bidirectional).
+    def _apply_disk_job_result(result: dict):
+        # Folds a resolved mount/unmount into config.json -- the root
+        # worker never touches config itself, config.json stays
+        # single-writer (this Flask process only). Idempotent (add_disk
+        # replaces-not-duplicates by uuid, remove_disk on an
+        # already-gone uuid is a harmless no-op) so it's safe to call
+        # repeatedly from both the per-job poll endpoint AND the device
+        # list reconciliation below.
+        action = result.get("action")
+        if result.get("ok") and action == "mount" and result.get("uuid"):
+            already = any(d.get("uuid") == result["uuid"] for d in store.get_disks())
+            if not already:
+                store.add_disk({
+                    "uuid": result["uuid"],
+                    "mountpoint": result.get("mountpoint"),
+                    "fstype": result.get("fstype"),
+                    "label": result.get("label") or "",
+                })
+        elif result.get("ok") and action == "unmount":
+            # job was submitted with device_key=uuid, but the result body
+            # only carries mountpoint -- resolve back to a uuid via config.
+            disk = next((d for d in store.get_disks() if d.get("mountpoint") == result.get("mountpoint")), None)
+            if disk:
+                store.remove_disk(disk["uuid"])
+
     @app.get("/api/storage/devices")
     def api_storage_devices():
+        # Reconcile EVERY known job result against config.disks before
+        # listing, not just the one the last poll happened to observe.
+        # Fixes a real bug: if the browser tab that submitted a mount job
+        # closed (or the phone locked, or the network hiccuped) before
+        # its poll ever reached a resolved result, the disk mounted fine
+        # on the real filesystem but config.disks never learned about it
+        # -- so it never showed as managed and "Ayır" never appeared,
+        # forever, until something re-triggered the fold-in. Now every
+        # time this page is opened or "Yenile" is clicked, state gets
+        # fully re-synced regardless of which session (if any) is still
+        # around to have seen the original result.
+        for result in diskmgr.list_job_results():
+            _apply_disk_job_result(result)
         result = diskmgr.list_block_devices()
         managed_uuids = {d.get("uuid") for d in store.get_disks() if d.get("uuid")}
         for dev in result["devices"]:
@@ -724,25 +762,7 @@ def create_app(config_path: str) -> Flask:
         result = diskmgr.get_job_result(job_id)
         if result is None:
             return jsonify({"ok": None})  # still pending
-        # First time this result is observed as a resolved mount/unmount,
-        # fold it into config.json -- the root worker never touches config
-        # itself, config.json stays single-writer (this Flask process only).
-        action = result.get("action")
-        if result.get("ok") and action == "mount" and result.get("uuid"):
-            already = any(d.get("uuid") == result["uuid"] for d in store.get_disks())
-            if not already:
-                store.add_disk({
-                    "uuid": result["uuid"],
-                    "mountpoint": result.get("mountpoint"),
-                    "fstype": result.get("fstype"),
-                    "label": result.get("label") or "",
-                })
-        elif result.get("ok") and action == "unmount":
-            # job was submitted with device_key=uuid, but the result body
-            # only carries mountpoint -- resolve back to a uuid via config.
-            disk = next((d for d in store.get_disks() if d.get("mountpoint") == result.get("mountpoint")), None)
-            if disk:
-                store.remove_disk(disk["uuid"])
+        _apply_disk_job_result(result)
         return jsonify(result)
 
     # ---------- System stats + logs ----------
