@@ -198,7 +198,8 @@ def create_app(config_path: str) -> Flask:
     def api_settings_set():
         updates = request.get_json(force=True) or {}
         allowed = {"grid_columns", "theme", "show_camera_names",
-                   "show_status_badges", "auto_reconnect", "reconnect_delay_ms"}
+                   "show_status_badges", "auto_reconnect", "reconnect_delay_ms",
+                   "temp_sensor_path"}
         clean = {k: v for k, v in updates.items() if k in allowed}
         if "grid_columns" in clean:
             try:
@@ -208,6 +209,8 @@ def create_app(config_path: str) -> Flask:
                 clean["grid_columns"] = gc
             except Exception:
                 return jsonify({"error": "invalid grid_columns"}), 400
+        if "temp_sensor_path" in clean:
+            clean["temp_sensor_path"] = str(clean["temp_sensor_path"] or "").strip()
         store.update_app(clean)
         return jsonify(store.get_app())
 
@@ -653,7 +656,7 @@ def create_app(config_path: str) -> Flask:
     # ---------- System stats + logs ----------
     @app.get("/api/system/stats")
     def api_system_stats():
-        return jsonify(_read_system_stats(recorder))
+        return jsonify(_read_system_stats(recorder, store))
 
     @app.get("/api/system/logs")
     def api_system_logs():
@@ -1039,7 +1042,24 @@ def _read_loadavg():
         return {"1m": 0, "5m": 0, "15m": 0}
 
 
-def _read_system_stats(recorder):
+def _read_cpu_temp(path: str):
+    # Linux sysfs thermal-zone files report millidegrees C — this is the
+    # universal format for /sys/class/thermal/thermal_zone*/temp
+    # regardless of board. Returns None (not an error) for an empty path,
+    # a missing zone, or any unreadable/non-numeric content, since the
+    # right zone number is board-specific and the configured path may not
+    # exist on this particular device.
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            raw = f.read().strip()
+        return round(int(raw) / 1000.0, 1)
+    except (OSError, ValueError):
+        return None
+
+
+def _read_system_stats(recorder, store):
     my_pid = os.getpid()
     my_stat = _read_proc_stat(my_pid)
     my_cpu = _cpu_percent(my_pid)
@@ -1085,6 +1105,7 @@ def _read_system_stats(recorder):
     mem_total = mem.get("MemTotal", 0)
     mem_avail = mem.get("MemAvailable", 0)
     mem_used = mem_total - mem_avail if mem_total else 0
+    temp_c = _read_cpu_temp(store.get_app().get("temp_sensor_path", ""))
 
     return {
         "process": process,
@@ -1098,6 +1119,7 @@ def _read_system_stats(recorder):
             "mem_available": mem_avail,
             "swap_total": mem.get("SwapTotal", 0),
             "swap_used": mem.get("SwapTotal", 0) - mem.get("SwapFree", 0),
+            "temp_c": temp_c,
         },
         "recorders": len(recorder._recs) if hasattr(recorder, "_recs") else 0,
     }

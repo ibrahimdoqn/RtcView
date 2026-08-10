@@ -1837,12 +1837,23 @@
       const r = await api.get("/api/recording/settings");
       $("#s-sys-mem-ceiling").value = r.mem_rss_ceiling_mb || 128;
     } catch {}
+    // state.settings already carries temp_sensor_path (part of the same
+    // /api/config "app" block loaded at init) -- no extra fetch needed.
+    $("#s-temp-path").value = state.settings.temp_sensor_path || "";
   }
   $("#s-save-mem-ceiling").addEventListener("click", async () => {
     const v = parseInt($("#s-sys-mem-ceiling").value || 128);
     try {
       await api.post("/api/recording/settings", { mem_rss_ceiling_mb: v });
       toast("Bellek sınırı kaydedildi", "ok");
+    } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
+  });
+  $("#s-save-temp-path").addEventListener("click", async () => {
+    const v = $("#s-temp-path").value.trim();
+    try {
+      state.settings = await api.post("/api/settings", { temp_sensor_path: v });
+      toast("Sensör yolu kaydedildi", "ok");
+      if ($("#s-sys-stats").closest("details").open) refreshSysStats();
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
   });
 
@@ -2234,6 +2245,13 @@
       html += `<div class="k">FFmpeg toplam CPU</div><div class="v">${total.toFixed(1)}%</div>`;
 
       html += `<div class="section-title">Sistem</div>`;
+      if (s.system.temp_c != null){
+        const tC = s.system.temp_c;
+        const tCls = tC >= 80 ? "crit" : tC >= 65 ? "warn" : "";
+        html += `<div class="k">Sıcaklık</div><div class="v ${tCls}">${tC.toFixed(1)}°C</div>`;
+      } else {
+        html += `<div class="k">Sıcaklık</div><div class="v" style="color:var(--muted)">— (sensör ayarlı değil)</div>`;
+      }
       html += `<div class="k">Yük</div><div class="v">${s.system.load["1m"].toFixed(2)}  /  ${s.system.load["5m"].toFixed(2)}  /  ${s.system.load["15m"].toFixed(2)}</div>`;
       html += `<div class="k">Bellek</div><div class="v">${fmtBytes(s.system.mem_used)} / ${fmtBytes(s.system.mem_total)} (${memPct.toFixed(0)}%)</div>`;
       html += `<div class="bar"><div class="bar-fill ${barCls(memPct)}" style="width:${memPct.toFixed(1)}%"></div></div>`;

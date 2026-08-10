@@ -368,6 +368,27 @@
                 </div>
               </div>
             </details>
+            <details class="sys-row">
+              <summary>
+                <span class="sys-icon sys-icon-red">🌡️</span>
+                <span class="sys-row-text">
+                  <span class="sys-row-title">Sıcaklık Sensörü</span>
+                  <span class="sys-row-sub">Okunacak sysfs dosya yolu</span>
+                </span>
+              </summary>
+              <div class="sys-row-body">
+                <label>Sensör yolu <input id="s-temp-path" type="text" placeholder="/sys/class/thermal/thermal_zone0/temp" /></label>
+                <small>Cihaza göre değişir — NanoPi R4S gibi ARM SBC'lerde genelde
+                  <code>thermal_zone0</code>, ama farklı kartlarda numara ya da
+                  hiç olmayabilir. Cihazınızdaki seçenekleri görmek için sunucuda
+                  <code>ls /sys/class/thermal/</code> ve her birinin
+                  <code>type</code> dosyasını kontrol edin. Boş bırakılırsa
+                  sıcaklık gösterilmez.</small>
+                <div class="modal-actions">
+                  <button type="button" id="s-save-temp-path" class="btn primary small">Kaydet</button>
+                </div>
+              </div>
+            </details>
             <details id="update-details" class="sys-row">
               <summary>
                 <span class="sys-icon sys-icon-green">⬇️</span>

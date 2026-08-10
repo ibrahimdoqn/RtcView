@@ -13,6 +13,16 @@ DEFAULT_CONFIG = {
         "show_status_badges": True,
         "auto_reconnect": True,
         "reconnect_delay_ms": 3000,
+        # Linux sysfs thermal zone to read for the Sistem tab's CPU
+        # temperature reading, in millidegrees C (the standard format for
+        # every /sys/class/thermal/thermal_zone*/temp file). The zone
+        # number that actually reports the SoC/CPU varies by board (RK3399
+        # boards like the NanoPi R4S use zone0 for "cpu-thermal", but a Pi
+        # or an x86 box may number it differently, or not expose one at
+        # all) — user-editable rather than hardcoded so this works on
+        # "any device", not just the one this was written against. Empty
+        # string disables the reading entirely.
+        "temp_sensor_path": "/sys/class/thermal/thermal_zone0/temp",
     },
     "go2rtc": {
         "host": "127.0.0.1",
