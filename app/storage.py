@@ -178,6 +178,19 @@ class Storage:
             ).fetchone()
         return int(row[0] or 0)
 
+    def _has_purgeable_segments(self) -> bool:
+        """Whether ANY unlocked segment exists anywhere (checked globally,
+        not per-root, since the emergency purge itself deletes the
+        globally-oldest segment regardless of which root it's on).
+        health() uses this to tell "disk is at capacity, and is being
+        actively kept there by the rolling purge" (expected steady state
+        for an unlimited-quota root — not an error) apart from "disk is
+        full AND there's nothing left to delete" (an actual dead end —
+        recording will start failing)."""
+        with self._lock:
+            row = self._db.execute("SELECT 1 FROM segments WHERE locked = 0 LIMIT 1").fetchone()
+        return row is not None
+
     def pick_write_root(self) -> Path:
         """Sequential fill: try each configured root in order.
 
@@ -608,7 +621,22 @@ class Storage:
                     disk = {"total": du.total, "free": du.free, "used": du.used}
                     free_pct = (du.free / du.total) * 100 if du.total else 0
                     if du.free < 1 * 1024**3:
-                        r_errs.append(f"Disk neredeyse dolu: {du.free // (1024*1024)} MB")
+                        # A root sitting right at capacity is the EXPECTED
+                        # steady state for an unlimited-quota (max_gb=0)
+                        # root once its footage volume outgrows the disk —
+                        # the emergency purge in purge_once() keeps deleting
+                        # the oldest segments to hold this root just above
+                        # SAFETY_MARGIN_BYTES, forever, by design (a rolling
+                        # buffer bounded by physical disk size rather than
+                        # by retention_days alone). Only actually alarming
+                        # if there's nothing left anywhere to purge, i.e.
+                        # the rolling purge itself has run out of room to
+                        # make more room — that's a real dead end.
+                        msg = f"Disk kapasitesine yakın: {du.free // (1024*1024)} MB boş"
+                        if self._has_purgeable_segments():
+                            r_warns.append(f"{msg} — en eski kayıtlar otomatik siliniyor")
+                        else:
+                            r_errs.append(f"{msg} — silinecek kayıt kalmadı, kayıt durabilir")
                     elif free_pct < 10:
                         r_warns.append(f"%{100 - free_pct:.0f} dolu")
                 except Exception as e:
