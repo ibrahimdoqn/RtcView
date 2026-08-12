@@ -3318,6 +3318,37 @@
     return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   }
 
+  // Detection bars for a single kind (motion/person/vehicle) are, on their
+  // own, often just a few seconds wide — barely a sliver at any normal
+  // zoom level, and a burst of separate short detections a few seconds
+  // apart reads as visual noise rather than "something happened here".
+  // Coalesce same-kind intervals that are within DETECT_MERGE_GAP_SEC of
+  // each other into one run, then pad any run shorter than
+  // DETECT_MIN_DUR_SEC (centered on its midpoint) so even a single
+  // instantaneous detection still marks a legible chunk of the timeline.
+  const DETECT_MERGE_GAP_SEC = 60;
+  const DETECT_MIN_DUR_SEC = 60;
+  function _mergeDetectIntervals(list, gapSec, minDurSec){
+    if (!list || !list.length) return [];
+    const sorted = list.slice().sort((a, b) => a.started_at - b.started_at);
+    const merged = [{ started_at: sorted[0].started_at, ended_at: sorted[0].ended_at }];
+    for (let i = 1; i < sorted.length; i++){
+      const d = sorted[i];
+      const cur = merged[merged.length - 1];
+      if (d.started_at - cur.ended_at <= gapSec){
+        cur.ended_at = Math.max(cur.ended_at, d.ended_at);
+      } else {
+        merged.push({ started_at: d.started_at, ended_at: d.ended_at });
+      }
+    }
+    return merged.map(iv => {
+      const dur = iv.ended_at - iv.started_at;
+      if (dur >= minDurSec) return iv;
+      const mid = (iv.started_at + iv.ended_at) / 2;
+      return { started_at: mid - minDurSec / 2, ended_at: mid + minDurSec / 2 };
+    });
+  }
+
   function renderTimeline(){
     const pb = state.playback;
     const tl = $("#pb-timeline");
@@ -3395,12 +3426,13 @@
       };
       // Drawn in ascending specificity so the most interesting signal
       // visually wins on overlap: motion first, then vehicle, then person.
-      (pb.detections || []).filter(d => d.kind === "motion")
-        .forEach(d => addDetectBar(d.started_at, d.ended_at, "motion"));
-      (pb.detections || []).filter(d => d.kind === "vehicle")
-        .forEach(d => addDetectBar(d.started_at, d.ended_at, "vehicle"));
-      (pb.detections || []).filter(d => d.kind === "person")
-        .forEach(d => addDetectBar(d.started_at, d.ended_at, "person"));
+      // Each kind is merged/padded independently (see _mergeDetectIntervals)
+      // before drawing, so nearby short detections read as one run.
+      ["motion", "vehicle", "person"].forEach(kind => {
+        const raw = (pb.detections || []).filter(d => d.kind === kind);
+        _mergeDetectIntervals(raw, DETECT_MERGE_GAP_SEC, DETECT_MIN_DUR_SEC)
+          .forEach(iv => addDetectBar(iv.started_at, iv.ended_at, kind));
+      });
     }
 
     // ----- segment bars (only visible slices, clipped) -----

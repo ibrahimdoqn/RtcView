@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-08-12
+
+### Düzeltildi
+- Kayıt oynatma zaman çizelgesindeki hareket/insan/araç şeritleri artık daha okunaklı: aynı türden algılamalar arasında 1 dakikadan kısa bir boşluk varsa tek bir şeritte birleştiriliyor, ve tek bir algılama (birleşmemiş olsa bile) çok kısa sürse dahi (ör. 5 sn) en az 1 dakikalık bir bölüm işaretliyor (algılamanın orta noktası etrafında genişletilerek). Önceden birkaç saniyelik ayrı algılamalar zoom seviyesine göre görünmeyecek kadar ince şeritler halinde çiziliyordu.
+
 ## [3.0.0] - 2026-08-12
 
 ### Yıkıcı değişiklik
@@ -64,7 +69,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/ibrahimdoqn/RtcView/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/ibrahimdoqn/RtcView/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.0...v1.1.1
