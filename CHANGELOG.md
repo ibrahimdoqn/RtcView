@@ -5,6 +5,18 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-08-12
+
+### Yıkıcı değişiklik
+- **Grup bildirim zamanlaması artık RtcView'da değil, Home Assistant'ta.** Her grubun eski `notify_enabled` (elle aç/kapat anahtarı) ve `notify_schedule` (gün/saat bazlı otomatik kurallar) alanları tamamen kaldırıldı; yerine tek bir `ha_notify_entity` alanı geldi — bir Home Assistant `input_boolean.*` varlığının entity_id'si (ör. `input_boolean.fabrika_bildirim`). O değişkenin o anki açık/kapalı durumu, kameraların hareket/insan/araç algılama sensörleriyle aynı paylaşılan WebSocket bağlantısı üzerinden okunur ve grubun bildirim göndermesini doğrudan belirler. Zamanlama, otomasyon veya elle açma/kapama artık tamamen Home Assistant tarafında.
+- Kaldırılan dosya: `app/notify_rules.py` (eski zamanlama motoru). Grup bildirim anahtarı izleme mantığı `app/homeassistant.py`'ye taşındı (`HAManager.group_notify_active`, `HAManager.reload()`'daki ikinci watch map).
+- `PUT /api/groups/<id>` artık `notify_enabled`/`notify_schedule` değil `ha_notify_entity` kabul ediyor (bir `input_boolean.*` entity_id olmalı). `GET`/`POST /api/groups` yanıtları artık her grup için canlı, hesaplanan bir `notify_active` alanı taşıyor (hiç saklanmıyor, doğrudan HA'nın anlık durumundan okunuyor).
+- `GET /api/homeassistant/entities` artık `?domain=binary_sensor|input_boolean` parametresi kabul ediyor — grup bildirim anahtarı seçicisi `input_boolean.*` varlıklarını listelemek için bunu kullanıyor.
+- Ayarlar → Bildirimler'deki kural editörü (gün/saat seçici, "+ Kural" listesi) tamamen kaldırıldı; yerine her grup kartında tek bir Home Assistant değişken seçici + salt-okunur durum etiketi ("Bildirimler açık" / "kapalı" / "Değişken seçilmedi") geldi. Kenar çubuğundaki grup satırındaki anahtar da artık tıklanamıyor — küçük, salt-okunur bir durum noktasına (yeşil/kırmızı/gri) dönüştü.
+
+### Düzeltildi
+- Kayıt oynatmadaki **algılanan olaylar** çekmecesi artık zaman çizelgesiyle aynı mantığı kullanıyor: aynı türden (veya çakışan farklı türden) algılamalar arasında 1 dakikadan kısa boşluk varsa tek bir olayda birleştiriliyor, ve her olay en az 1 dakikalık bir süre olarak gösteriliyor (çok kısa bir algılama artık "anlık" yerine kendi orta noktası etrafında genişletilmiş bir süreyle listeleniyor) — çekmece ve zaman çizelgesi artık her zaman aynı "bir olay" tanımında hemfikir.
+
 ## [3.0.1] - 2026-08-12
 
 ### Düzeltildi
@@ -69,7 +81,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/ibrahimdoqn/RtcView/compare/v3.0.1...v4.0.0
 [3.0.1]: https://github.com/ibrahimdoqn/RtcView/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/ibrahimdoqn/RtcView/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.1...v2.0.0

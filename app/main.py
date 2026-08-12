@@ -68,6 +68,7 @@ def create_app(config_path: str) -> Flask:
         return bool(cam_id) and bool(_CAM_ID_RE.match(cam_id)) and cam_id not in (".", "..")
 
     _HA_ENTITY_RE = re.compile(r"^binary_sensor\.[a-z0-9_]+$")
+    _HA_NOTIFY_ENTITY_RE = re.compile(r"^input_boolean\.[a-z0-9_]+$")
 
     def _validate_ha_entities(body):
         """Pull ha_{motion,person,vehicle}_entity out of a camera request
@@ -210,7 +211,7 @@ def create_app(config_path: str) -> Flask:
             "onvif_available": ONVIF_AVAILABLE,
             "ha_websocket_available": HA_WEBSOCKET_AVAILABLE,
             "recording_enabled": store.get_recording().get("enabled", True),
-            "version": "3.0.0",
+            "version": "4.0.0",
         })
 
     @app.get("/api/config")
@@ -375,9 +376,17 @@ def create_app(config_path: str) -> Flask:
         return jsonify({"ok": True})
 
     # ---------- Camera groups ----------
+    def _with_notify_active(group: dict) -> dict:
+        # notify_active is computed, never stored — it's just the live
+        # on/off state of the group's ha_notify_entity, read straight off
+        # HAManager's WebSocket connection (see HAManager.group_notify_active).
+        out = dict(group)
+        out["notify_active"] = ha_mgr.group_notify_active(group)
+        return out
+
     @app.get("/api/groups")
     def api_groups_list():
-        return jsonify(store.get_groups())
+        return jsonify([_with_notify_active(g) for g in store.get_groups()])
 
     @app.post("/api/groups")
     def api_groups_add():
@@ -387,7 +396,8 @@ def create_app(config_path: str) -> Flask:
             return jsonify({"error": "name required"}), 400
         group = {"id": "grp_" + uuid.uuid4().hex[:8], "name": name}
         store.add_group(group)
-        return jsonify(group), 201
+        ha_mgr.reload()
+        return jsonify(_with_notify_active(group)), 201
 
     @app.put("/api/groups/<group_id>")
     def api_groups_update(group_id):
@@ -398,64 +408,26 @@ def create_app(config_path: str) -> Flask:
             if not name:
                 return jsonify({"error": "name required"}), 400
             updates["name"] = name
-        if "notify_enabled" in body:
-            updates["notify_enabled"] = bool(body["notify_enabled"])
-        if "notify_schedule" in body:
-            # Scheduled on/off ACTIONS (not windows) — see
-            # apply_notify_rules in app/notify_rules.py. Normalised here so a
-            # malformed row can never reach the evaluator or the config
-            # file: bad times are rejected outright rather than silently
-            # ignored later, since a dropped rule changes when the user
-            # actually gets notified.
-            rules = []
-            for r in (body.get("notify_schedule") or []):
-                if not isinstance(r, dict):
-                    return jsonify({"error": "invalid notify_schedule row"}), 400
-                try:
-                    hh, mm = (int(x) for x in str(r.get("time", "")).split(":", 1))
-                except (TypeError, ValueError):
-                    return jsonify({"error": "invalid notify_schedule time"}), 400
-                if not (0 <= hh <= 23 and 0 <= mm <= 59):
-                    return jsonify({"error": "invalid notify_schedule time"}), 400
-                days = []
-                for d in (r.get("days") or []):
-                    try:
-                        d = int(d)
-                    except (TypeError, ValueError):
-                        return jsonify({"error": "invalid notify_schedule day"}), 400
-                    if not 0 <= d <= 6:
-                        return jsonify({"error": "invalid notify_schedule day"}), 400
-                    days.append(d)
-                rules.append({
-                    "days": sorted(set(days)),
-                    "time": f"{hh:02d}:{mm:02d}",
-                    "action": "off" if str(r.get("action", "on")).lower() == "off" else "on",
-                })
-            updates["notify_schedule"] = rules
-            # notify_rule_applied_at is a monotone high-water mark on the
-            # timestamp of the last-applied occurrence (see
-            # apply_notify_rules in app/notify_rules.py) — it only ever compares
-            # against occurrences of the CURRENT schedule. Editing the
-            # schedule (e.g. moving a rule earlier in the day, or adding
-            # one) can make "most recent occurrence <= now" compute to a
-            # timestamp at or before that stale mark, and it would then be
-            # silently treated as "already applied" for up to a week.
-            # Resetting the mark makes the next tick recompute from
-            # scratch — the same self-correcting path already used for a
-            # boundary missed while the service was stopped.
-            updates["notify_rule_applied_at"] = 0
+        if "ha_notify_entity" in body:
+            val = str(body.get("ha_notify_entity") or "").strip()
+            if val and not _HA_NOTIFY_ENTITY_RE.match(val):
+                return jsonify({"error": "invalid ha_notify_entity — must be an input_boolean.* entity id"}), 400
+            updates["ha_notify_entity"] = val
         if not updates:
             return jsonify({"error": "no valid fields"}), 400
         ok = store.update_group(group_id, updates)
         if not ok:
             return jsonify({"error": "not found"}), 404
-        return jsonify(next((g for g in store.get_groups() if g["id"] == group_id), {"ok": True}))
+        ha_mgr.reload()
+        g = next((g for g in store.get_groups() if g["id"] == group_id), None)
+        return jsonify(_with_notify_active(g) if g else {"ok": True})
 
     @app.delete("/api/groups/<group_id>")
     def api_groups_delete(group_id):
         ok = store.remove_group(group_id)
         if not ok:
             return jsonify({"error": "not found"}), 404
+        ha_mgr.reload()
         return jsonify({"ok": True})
 
     # ---------- PTZ ----------
@@ -522,11 +494,19 @@ def create_app(config_path: str) -> Flask:
         return jsonify(ha_module.test_connection(
             cfg.get("url"), cfg.get("token"), cfg.get("verify_ssl", True)))
 
+    _HA_ENTITY_DOMAINS = ("binary_sensor", "input_boolean")
+
     @app.get("/api/homeassistant/entities")
     def api_ha_entities():
+        # binary_sensor for the camera detection pickers, input_boolean for
+        # the group notify-gate picker — anything else is rejected rather
+        # than silently defaulting, so a typo'd query param fails loudly.
+        domain = request.args.get("domain", "binary_sensor")
+        if domain not in _HA_ENTITY_DOMAINS:
+            return jsonify({"error": f"invalid domain — must be one of {_HA_ENTITY_DOMAINS}"}), 400
         cfg = store.get_home_assistant()
         return jsonify(ha_module.fetch_entities(
-            cfg.get("url"), cfg.get("token"), cfg.get("verify_ssl", True)))
+            cfg.get("url"), cfg.get("token"), cfg.get("verify_ssl", True), domain=domain))
 
     # ---------- Notifications ----------
     # No global on/off or global snooze — notification config lives

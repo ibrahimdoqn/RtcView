@@ -1,5 +1,5 @@
-"""Home Assistant motion / person / vehicle detection — binary_sensor
-state to timeline + notifications.
+"""Home Assistant motion / person / vehicle detection, and group
+notification gating — both driven by entity state over one WebSocket.
 
 Replaces the old ONVIF PullPoint-based detection engine entirely. Instead
 of RtcView talking ONVIF events to each camera itself, each camera is
@@ -10,14 +10,23 @@ whatever) chooses to expose them. RtcView just watches those entities'
 on/off state and turns edges into the same detection intervals +
 notifications the old system produced.
 
+Whether a GROUP currently delivers notifications is decided the same
+way: each group is wired (in Ayarlar → Bildirimler) to one HA
+``input_boolean`` entity (e.g. ``input_boolean.fabrika_bildirim``), and
+its live on/off state IS the answer — no schedule or manual switch lives
+in RtcView any more. Turning notifications on/off, and any automatic
+schedule for doing so, is entirely Home Assistant's job (e.g. an
+automation flipping the input_boolean); this module just reads it.
+
 Architecture
 ------------
 ONE persistent WebSocket connection to the single configured HA instance
-(``config.home_assistant``), not one per camera — HA already multiplexes
-every entity's state over one connection, so there is no reason to open
-several. ``HAManager`` owns that connection's background thread and a
-``entity_id -> [(cam_id, kind), ...]`` watch map rebuilt whenever camera
-config changes (``reload()``).
+(``config.home_assistant``), not one per camera/group — HA already
+multiplexes every entity's state over one connection, so there is no
+reason to open several. ``HAManager`` owns that connection's background
+thread and two watch maps rebuilt whenever camera/group config changes
+(``reload()``): ``entity_id -> [(cam_id, kind), ...]`` for detection, and
+``entity_id -> [group_id, ...]`` for notification gating.
 
 On connect: authenticate, fetch every entity's current state once
 (``get_states``) and reconcile it against in-memory state (this is also
@@ -31,7 +40,9 @@ resync reconciles reality, extending a still-open interval or closing it
 at the reconnect instant if HA now reports "off". This is the same
 "best available evidence, not pretended precision" principle the old
 ONVIF engine used for its silence-timeout fallback, just triggered by a
-connection event instead of a timer.
+connection event instead of a timer. The same applies to a group's
+notify-gate state: it simply keeps its last known value across a
+disconnect and gets corrected on the next resync.
 """
 import json
 import logging
@@ -44,8 +55,6 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
-
-from app.notify_rules import apply_notify_rules, group_notify_active
 
 log = logging.getLogger("homeassistant")
 
@@ -74,12 +83,6 @@ PING_REPLY_TIMEOUT_SEC = 10.0
 
 RECONNECT_BACKOFF_START_SEC = 2.0
 RECONNECT_BACKOFF_MAX_SEC = 30.0
-
-# Cadence for the notify_schedule rule engine — independent of the HA
-# connection (group notification switches must keep flipping on schedule
-# even while HA is unreachable), mirrors the old ONVIF DetectionManager's
-# SUPERVISOR_INTERVAL.
-NOTIFY_RULES_INTERVAL_SEC = 5
 
 # Bounded timeouts for the one-shot REST helpers (entity list, connection
 # test) so an unreachable HA instance fails fast instead of hanging a
@@ -176,7 +179,13 @@ class HAManager:
 
         # entity_id -> [(cam_id, kind), ...] — rebuilt by reload().
         self._watched: Dict[str, List[Tuple[str, str]]] = {}
-        self._rules_thread: Optional[threading.Thread] = None
+        # entity_id -> [group_id, ...] — rebuilt by reload(). Each watched
+        # input_boolean's last-known on/off state lives in
+        # _group_notify_state, keyed the same way (by entity_id, not
+        # group_id, since several groups could in principle share one
+        # entity and would then agree by construction).
+        self._notify_watched: Dict[str, List[str]] = {}
+        self._group_notify_state: Dict[str, bool] = {}
 
         # Per-camera state, same shape the old ONVIF watcher exposed (plus
         # a third "vehicle" kind) so the settings UI's debug panel needed
@@ -198,10 +207,6 @@ class HAManager:
     def start(self):
         with self._lock:
             self._stop.clear()
-            if not self._rules_thread or not self._rules_thread.is_alive():
-                self._rules_thread = threading.Thread(
-                    target=self._rules_loop, daemon=True, name="ha-notify-rules")
-                self._rules_thread.start()
             if WEBSOCKET_AVAILABLE:
                 if not self._thread or not self._thread.is_alive():
                     self._thread = threading.Thread(target=self._run, daemon=True, name="ha-detect")
@@ -219,25 +224,12 @@ class HAManager:
             except Exception: pass
         if self._thread:
             self._thread.join(timeout=WS_IDLE_TIMEOUT_SEC + 5)
-        if self._rules_thread:
-            self._rules_thread.join(timeout=5)
         self._close_all_active(time.time(), reason="servis durduruldu")
 
-    def _rules_loop(self):
-        # Applies immediately on start so a boundary missed while stopped
-        # is corrected right away rather than waiting a full interval —
-        # same reasoning as the old DetectionManager's supervisor loop.
-        while not self._stop.is_set():
-            try:
-                apply_notify_rules(self.config_store)
-            except Exception as e:
-                log.exception("notify rule tick failed: %s", e)
-            if self._stop.wait(NOTIFY_RULES_INTERVAL_SEC):
-                break
-
     def reload(self):
-        """Rebuild the watch map from current camera config. Cheap and
-        connection-agnostic — call after any camera add/update/delete."""
+        """Rebuild both watch maps from current camera/group config. Cheap
+        and connection-agnostic — call after any camera or group
+        add/update/delete."""
         watched: Dict[str, List[Tuple[str, str]]] = {}
         cam_ids_now = set()
         for cam in self.config_store.get_cameras():
@@ -247,8 +239,14 @@ class HAManager:
                 if not eid:
                     continue
                 watched.setdefault(eid, []).append((cam["id"], kind))
+        notify_watched: Dict[str, List[str]] = {}
+        for g in self.config_store.get_groups():
+            eid = (g.get("ha_notify_entity") or "").strip()
+            if eid:
+                notify_watched.setdefault(eid, []).append(g["id"])
         with self._lock:
             self._watched = watched
+            self._notify_watched = notify_watched
             # Drop state for cameras that no longer exist.
             for cid in list(self._cam_state.keys()):
                 if cid not in cam_ids_now:
@@ -256,6 +254,10 @@ class HAManager:
             for key in list(self._open_ids.keys()):
                 if key[0] not in cam_ids_now:
                     self._open_ids.pop(key, None)
+            # Drop cached state for entities no group watches any more.
+            for eid in list(self._group_notify_state.keys()):
+                if eid not in notify_watched:
+                    self._group_notify_state.pop(eid, None)
 
     def reload_camera(self, cam_id: str):
         """Kept for call-site parity with the old DetectionManager API
@@ -314,6 +316,32 @@ class HAManager:
             out[cid] = st
         return out
 
+    def connection_state(self) -> dict:
+        """The shared HA connection's state, for UI surfaces (like the
+        Bildirimler tab) that show it without needing a whole camera."""
+        with self._lock:
+            return dict(self._conn_state)
+
+    def group_notify_active(self, group: dict) -> bool:
+        """Whether this group currently delivers notifications: the live
+        on/off state of its ha_notify_entity, nothing else. An unwired
+        group (no entity picked), or a wired one whose state we haven't
+        heard yet (HA unreachable, or not resynced since reload), both
+        read as False — silence is the safe default, never a false
+        notification sent because we assumed a switch we can't see."""
+        eid = (group.get("ha_notify_entity") or "").strip()
+        if not eid:
+            return False
+        with self._lock:
+            return bool(self._group_notify_state.get(eid, False))
+
+    def group_notify_states(self) -> Dict[str, bool]:
+        """entity_id -> known on/off state, for anything that wants to
+        report every watched notify entity at once rather than one group
+        at a time."""
+        with self._lock:
+            return dict(self._group_notify_state)
+
     # ------------------------------------------------------------------
     # Detection state machine — one entry per (cam_id, kind)
     # ------------------------------------------------------------------
@@ -366,7 +394,7 @@ class HAManager:
             if not group_ids:
                 return
             groups = {g["id"]: g for g in self.config_store.get_groups()}
-            if not any(group_notify_active(groups[gid])
+            if not any(self.group_notify_active(groups[gid])
                        for gid in group_ids if gid in groups):
                 return
             self.storage.create_notification(cam_id, kind, ts)
@@ -476,7 +504,9 @@ class HAManager:
         reconciles reality after any reconnect (including the very first
         connect), whether that means confirming "still active" (extends
         the already-open interval rather than starting a new one) or
-        discovering a change that happened entirely during the outage."""
+        discovering a change that happened entirely during the outage.
+        Also reconciles every watched group-notify entity's on/off state
+        the same way."""
         req_id = self._next_id()
         ws.send(json.dumps({"id": req_id, "type": "get_states"}))
         result = json.loads(ws.recv())
@@ -486,16 +516,20 @@ class HAManager:
         now = time.time()
         with self._lock:
             watched = dict(self._watched)
+            notify_watched = dict(self._notify_watched)
         for st in result.get("result", []):
-            targets = watched.get(st.get("entity_id"))
-            if not targets:
-                continue
+            eid = st.get("entity_id")
             active = st.get("state") == "on"
-            for cam_id, kind in targets:
-                if active:
-                    self._mark_active(cam_id, kind, now)
-                else:
-                    self._close_kind(cam_id, kind, now, "HA senkronizasyonu")
+            targets = watched.get(eid)
+            if targets:
+                for cam_id, kind in targets:
+                    if active:
+                        self._mark_active(cam_id, kind, now)
+                    else:
+                        self._close_kind(cam_id, kind, now, "HA senkronizasyonu")
+            if eid in notify_watched:
+                with self._lock:
+                    self._group_notify_state[eid] = active
 
     def _handle_raw(self, raw: str, now: float):
         try:
@@ -511,8 +545,7 @@ class HAManager:
         entity_id = data.get("entity_id")
         with self._lock:
             targets = list(self._watched.get(entity_id) or [])
-        if not targets:
-            return
+            is_notify_entity = entity_id in self._notify_watched
         new_state = (data.get("new_state") or {}).get("state")
         active = new_state == "on"
         for cam_id, kind in targets:
@@ -520,3 +553,6 @@ class HAManager:
                 self._mark_active(cam_id, kind, now)
             else:
                 self._close_kind(cam_id, kind, now, "HA olayı")
+        if is_notify_entity:
+            with self._lock:
+                self._group_notify_state[entity_id] = active

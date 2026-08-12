@@ -839,31 +839,6 @@ kbd{
 }
 .sched-times span{color:var(--muted);font-size:.8rem;}
 .sched-del{color:var(--muted);padding:.3rem .5rem;border-radius:7px;flex:0 0 auto;}
-
-/* Notification rule row: "<days>  <time>  →  Aç/Kapat".
-   Reuses .sched-row + the shared day picker; only the trailing controls
-   differ from the recording window row. A left accent stripe makes a long
-   timetable scannable — green switches on, red switches off. */
-.notify-rule-row{border-left:3px solid #30d158;}
-.notify-rule-row.is-off{border-left-color:#ff453a;}
-.notify-rule-time{
-  background:var(--panel-solid);border:1px solid var(--border-solid);border-radius:7px;
-  color:var(--text);padding:.35rem .4rem;font-size:.85rem;width:6.5rem;flex:0 0 auto;
-}
-.notify-rule-arrow{color:var(--muted);font-size:.85rem;flex:0 0 auto;}
-.notify-rule-action{
-  background:var(--panel-solid);border:1px solid var(--border-solid);border-radius:7px;
-  color:var(--text);padding:.35rem .5rem;font-size:.82rem;flex:1 1 140px;min-width:0;
-}
-.notify-rule-row.is-off .notify-rule-action{color:#ff8f88;}
-
-/* "Şu an: ..." live read-out above the rule list. */
-.notif-now{
-  font-size:.8rem;font-weight:600;color:#30d158;
-  display:flex;align-items:center;gap:.35rem;
-}
-.notif-now::before{content:"●";font-size:.7rem;}
-.notif-now.is-off{color:var(--muted);}
 .sched-del:hover{background:rgba(255,69,58,.15);color:var(--danger);}
 
 /* Storage usage bar */
@@ -1438,9 +1413,10 @@ label.row.small{font-size:.82rem;gap:.4rem;}
 
 /* ========================================================================
    BİLDİRİMLER — per-group notification cards (Ayarlar → Bildirimler).
-   Notification config lives on the group, not the camera: enable +
-   schedule + a manual snooze / force-on override, each independently
-   auto-saved.
+   Notification config lives on the group, not the camera, and is no
+   longer editable here at all — each group just picks which Home
+   Assistant input_boolean entity to mirror; the pill/dot below report
+   that entity's live on/off state read-only.
    ======================================================================== */
 #notif-groups-list{display:flex;flex-direction:column;gap:.6rem;margin-top:.2rem;}
 .notif-group-card{
@@ -1449,40 +1425,36 @@ label.row.small{font-size:.82rem;gap:.4rem;}
 }
 .notif-group-head{display:flex;justify-content:space-between;align-items:center;gap:.5rem;}
 .notif-group-name{font-weight:600;font-size:.92rem;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.notif-entity-picker{display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;color:var(--muted);}
+.notif-entity-picker select{
+  background:var(--panel-solid);border:1px solid var(--border-solid);border-radius:7px;
+  color:var(--text);padding:.4rem .5rem;font-size:.85rem;
+}
 
 /* ========================================================================
-   SWITCH — iOS-style on/off toggle. Used for the per-group notification
-   switch in both the sidebar tree and Ayarlar → Bildirimler, so the same
-   control looks and behaves identically in both places.
-   Markup: <label class="sw"><input type="checkbox"><span class="sw-track">
-           <span class="sw-thumb"></span></span></label>
+   NOTIFY STATUS — read-only reflections of a group's ha_notify_entity
+   state: a small dot in the sidebar tree, a text pill in the Bildirimler
+   card. Neither is interactive — the switch lives in Home Assistant now.
    ======================================================================== */
-.sw{position:relative;display:inline-flex;align-items:center;flex:0 0 auto;cursor:pointer;}
-.sw input{
-  position:absolute;inset:0;width:100%;height:100%;
-  margin:0;opacity:0;cursor:pointer;z-index:1;
+.notify-status-dot{
+  width:9px;height:9px;border-radius:50%;flex:0 0 auto;
+  background:var(--muted);
 }
-.sw-track{
-  position:relative;display:block;width:44px;height:26px;border-radius:13px;
-  background:rgba(120,120,128,.32);
-  transition:background .22s var(--ease-out);
+.notify-status-dot.on{background:#30d158;}                  /* iOS green */
+.notify-status-dot.off{background:#ff453a;}
+.notify-status-dot.unset{background:var(--muted);opacity:.5;}
+.notify-status-pill{
+  font-size:.78rem;font-weight:600;padding:.15rem .55rem;border-radius:999px;
+  flex:0 0 auto;background:rgba(120,120,128,.18);color:var(--muted);
 }
-.sw-thumb{
-  position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;
-  background:#fff;box-shadow:0 2px 5px rgba(0,0,0,.35);
-  transition:transform .22s var(--ease-spring);
-}
-.sw input:checked + .sw-track{background:#30d158;}          /* iOS green */
-.sw input:checked + .sw-track .sw-thumb{transform:translateX(18px);}
-.sw input:focus-visible + .sw-track{outline:2px solid var(--accent);outline-offset:2px;}
-.sw input:disabled + .sw-track{opacity:.45;cursor:not-allowed;}
-/* Pressing the switch squashes the thumb slightly, like iOS. */
-.sw input:active:not(:disabled) + .sw-track .sw-thumb{width:26px;}
-.sw input:checked:active:not(:disabled) + .sw-track .sw-thumb{transform:translateX(14px);}
+.notify-status-pill.on{background:rgba(48,209,88,.16);color:#30d158;}
+.notify-status-pill.off{background:rgba(255,69,58,.14);color:#ff453a;}
+.notify-status-pill.unset{background:rgba(120,120,128,.18);color:var(--muted);}
 
 /* ========================================================================
    SIDEBAR GROUP TREE — groups listed like cameras, each with its own
-   notification switch, and its member cameras nested underneath.
+   read-only notification status dot, and its member cameras nested
+   underneath.
    ======================================================================== */
 .grp-block{display:flex;flex-direction:column;gap:.3rem;}
 .grp-block + .grp-block{margin-top:.15rem;}

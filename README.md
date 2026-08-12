@@ -57,11 +57,11 @@ kendi entegrasyonu, vb. — kaynak fark etmez).
 - Kamera ayarlarında canlı durum kutucukları (yanan/sönük) + **"Gelişmiş / Hata Ayıklama"** paneli: HA bağlantı durumu, son olay zamanları, ham olay logu
 - **Kurulum**: HA'da profilinizin altındaki *Uzun Ömürlü Erişim Jetonları* (Long-Lived Access Tokens) bölümünden bir jeton oluşturun → RtcView'da Ayarlar → Genel → Home Assistant bağlantısı'na URL'yi ve jetonu girip "Bağlantıyı test et" ile doğrulayın → her kameranın kendi ayarlarından ilgili sensörleri seçin
 
-### Bildirimler (grup bazlı)
+### Bildirimler (grup bazlı, Home Assistant kontrollü)
 - Bildirim ayarları **kamera değil, grup** bazında yapılır — bir kamera birden fazla gruba ait olabilir, gruplardan **herhangi biri** o an aktifse bildirim gönderilir
 - Grupsuz kameralar hiç bildirim göndermez
-- Her grup için tek bir **açık/kapalı anahtar** vardır — bildirim gidip gitmeyeceğini yalnızca o anahtar belirler. Aşağısına eklenen **kurallar** ("Pzt, Sal, Çar · 09:00 → Bildirimleri Kapat" gibi) bu anahtarı belirtilen gün/saatte kendiliğinden açar ya da kapatır; anahtarı istediğiniz an elle de çevirebilirsiniz, bir sonraki kural gelene kadar öyle kalır. Kural yoksa bildirimler her zaman açıktır
-- Aynı anahtar kenar çubuğundaki grup satırında da bulunur (🔔), Ayarlar'a girmeden tek dokunuşla açılıp kapatılabilir
+- Bir grubun bildirim gönderip göndermeyeceğini artık RtcView değil, **Home Assistant'taki bir `input_boolean` değişkeni** belirler (ör. `input_boolean.fabrika_bildirim`) — değişken açıksa bildirim gelir, kapalıysa gelmez. Zamanlama, otomasyon, sesli asistan, elle açma/kapama — hepsi HA tarafında; RtcView yalnızca değişkenin o anki durumunu okur (aynı paylaşılan WebSocket bağlantısı üzerinden, hareket/insan/araç algılamasıyla birlikte)
+- Her grup için hangi değişkenin izleneceği Ayarlar → Bildirimler'den seçilir; aynı durum kenar çubuğundaki grup satırında salt-okunur bir nokta olarak da gösterilir (yeşil = açık, kırmızı = kapalı, gri = değişken seçilmemiş)
 - Sidebar'daki 🔔 ikonu okunmamış bildirim sayısını gösterir; panelden bir bildirime dokunmak doğrudan o kameranın o anındaki kaydına (playback) götürür
 - "Tümünü sil" ile bildirim geçmişi tek tuşla temizlenir
 
@@ -186,8 +186,7 @@ Playback:
 │   ├── recorder.py     # ffmpeg segment kaydı
 │   ├── storage.py      # tek diskli depolama: sağlık, retention/kota/dolma-önleyici purge, playback index
 │   ├── netmon.py        # ağ arayüzü izleme (netlink olayları + bant genişliği)
-│   ├── homeassistant.py # Home Assistant WebSocket bağlantısı + hareket/insan/araç algılama
-│   ├── notify_rules.py  # grup bildirim zamanlama motoru (notify_schedule kuralları)
+│   ├── homeassistant.py # Home Assistant WebSocket bağlantısı: hareket/insan/araç algılama + grup bildirim anahtarları
 │   ├── ptz.py           # ONVIF PTZ
 │   ├── go2rtc_client.py
 │   ├── config.py        # config.json okuma/yazma, şema göçü
@@ -205,7 +204,7 @@ Playback:
 
 Kök yardımcı script'ler `scripts/` altında: `install.sh`, `update.sh`, `uninstall.sh`, `self_update.sh`.
 
-Home Assistant entegrasyonunun tamamı `app/homeassistant.py` içindedir (WebSocket bağlantısı, kimlik doğrulama, durum senkronizasyonu, algılama aralıklarının yazılması). Grup bildirim zamanlama motoru ayrıca `app/notify_rules.py`'dedir — algılama kaynağından bağımsız, hangi backend kullanılırsa kullanılsın aynı şekilde çalışır.
+Home Assistant entegrasyonunun tamamı `app/homeassistant.py` içindedir (WebSocket bağlantısı, kimlik doğrulama, durum senkronizasyonu, algılama aralıklarının yazılması). Grup bildirim anahtarları (her grubun `input_boolean.*` değişkeni) da aynı bağlantı üzerinden aynı modülde izlenir — ayrı bir zamanlama motoruna gerek yok, çünkü zamanlama artık tamamen Home Assistant tarafında.
 
 ## API özeti
 
@@ -236,15 +235,15 @@ Home Assistant entegrasyonunun tamamı `app/homeassistant.py` içindedir (WebSoc
 **Home Assistant**
 - `GET /api/homeassistant/settings` · `POST /api/homeassistant/settings` — URL/token/verify_ssl (token asla geri okunmaz)
 - `POST /api/homeassistant/test` — bağlantıyı anlık test eder
-- `GET /api/homeassistant/entities` — `binary_sensor.*` varlık listesi (kamera sensör seçicisi için)
+- `GET /api/homeassistant/entities?domain=binary_sensor|input_boolean` — varlık listesi (kamera sensör seçicisi ve grup bildirim anahtarı seçicisi için; varsayılan `binary_sensor`)
 
 **PTZ**
 - `POST /api/ptz/<id>/move` · `POST /api/ptz/<id>/stop`
 - `GET /api/ptz/<id>/presets` · `POST /api/ptz/<id>/preset/<token>`
 
 **Kamera Grupları / Bildirimler**
-- `GET /api/groups` · `POST /api/groups`
-- `PUT /api/groups/<id>` — ad, `notify_enabled`, `notify_schedule` (gün/saat bazlı aç-kapat kuralları)
+- `GET /api/groups` · `POST /api/groups` — her grup `ha_notify_entity` (bir `input_boolean.*`) ve canlı `notify_active` durumunu taşır
+- `PUT /api/groups/<id>` — ad, `ha_notify_entity`
 - `DELETE /api/groups/<id>`
 - `GET /api/notifications?unread_only=&limit=` · `DELETE /api/notifications` · `POST /api/notifications/read-all`
 

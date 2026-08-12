@@ -297,12 +297,15 @@
     return el;
   }
 
-  // A group header + its cameras. The header carries the notification
-  // switch so a group can be silenced without opening Ayarlar at all.
+  // A group header + its cameras. The header carries a read-only
+  // notification status dot — whether the group notifies is decided by a
+  // Home Assistant input_boolean now (Ayarlar → Bildirimler picks which
+  // one), not by anything you can flip from the sidebar.
   function _groupBlock(g, members){
     const block = document.createElement("div");
     const collapsed = state.collapsedGroups.has(g.id);
-    const notifyOn = g.notify_enabled !== false;
+    const hasEntity = !!(g.ha_notify_entity || "").trim();
+    const notifyOn = hasEntity && !!g.notify_active;
     block.className = "grp-block"
       + (collapsed ? " collapsed" : "")
       + (notifyOn ? "" : " notif-off");
@@ -316,13 +319,11 @@
     name.textContent = g.name;
     const count = document.createElement("span"); count.className = "grp-count";
     count.textContent = String(members.length);
-    // Title spells out what "on" actually means, since an enabled group
-    // with no time window still never notifies (empty schedule = never).
-    const sw = makeSwitch(notifyOn, notifyOn
-      ? "Bildirimler açık — kapatmak için dokunun"
-      : "Bildirimler kapalı — açmak için dokunun");
-    sw.input.addEventListener("change", () => setGroupNotify(g.id, sw.input.checked));
-    head.append(caret, name, count, sw);
+    const dot = document.createElement("span");
+    dot.className = "notify-status-dot" + (!hasEntity ? " unset" : (notifyOn ? " on" : " off"));
+    dot.title = !hasEntity ? "Home Assistant bildirim değişkeni seçilmedi (Ayarlar → Bildirimler)"
+      : (notifyOn ? "Bildirimler açık" : "Bildirimler kapalı");
+    head.append(caret, name, count, dot);
 
     const toggleCollapse = () => {
       if (collapsed) state.collapsedGroups.delete(g.id);
@@ -331,11 +332,8 @@
       renderSidebar();
     };
     caret.addEventListener("click", toggleCollapse);
-    // Clicking the header row collapses too, but never when the tap
-    // landed on the switch — that would toggle notifications AND fold
-    // the group in one gesture.
     head.addEventListener("click", (e) => {
-      if (e.target.closest(".sw") || e.target.closest(".grp-caret")) return;
+      if (e.target.closest(".grp-caret")) return;
       toggleCollapse();
     });
 
@@ -1284,8 +1282,8 @@
           // group name directly from state.groups too, so without this
           // a rename left the OLD name showing there indefinitely — even
           // the 15s refreshGroups() poll wouldn't catch it up, since its
-          // diff only compares [id, notify_enabled] and a name-only
-          // change never trips it.
+          // diff only compares [id, ha_notify_entity, notify_active] and a
+          // name-only change never trips it.
           renderSidebar();
         } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); input.value = g.name; }
       };
@@ -1533,85 +1531,6 @@
     return row;
   }
 
-  // ----- Notification rule editor (scheduled ON/OFF actions) -----
-  // Deliberately NOT the window editor above: recording still describes
-  // periods (record from X to Y), whereas notifications are now a list of
-  // "at this time, switch on/off" moments — see apply_notify_rules in
-  // app/notify_rules.py for why. Same day picker, different payload.
-  function notifyRuleRow(r){
-    const row = document.createElement("div");
-    row.className = "sched-row notify-rule-row";
-    const daysWrap = _dayPicker(r && r.days);
-
-    const time = document.createElement("input");
-    time.type = "time"; time.className = "notify-rule-time";
-    time.value = (r && r.time) || "09:00";
-
-    const arrow = document.createElement("span");
-    arrow.className = "notify-rule-arrow"; arrow.textContent = "→";
-
-    const action = document.createElement("select");
-    action.className = "notify-rule-action";
-    action.innerHTML = `<option value="on">Bildirimleri Aç</option>`
-                     + `<option value="off">Bildirimleri Kapat</option>`;
-    action.value = (r && r.action === "off") ? "off" : "on";
-    // Colour-code the row so a long list reads at a glance.
-    const paint = () => row.classList.toggle("is-off", action.value === "off");
-    action.addEventListener("change", paint);
-    paint();
-
-    const del = document.createElement("button"); del.type = "button";
-    del.className = "sched-del"; del.textContent = "✕"; del.title = "Bu kuralı sil";
-    del.addEventListener("click", () => row.remove());
-
-    row.append(daysWrap, time, arrow, action, del);
-    row._getRule = () => ({
-      days: daysWrap.getDays(),
-      time: time.value || "00:00",
-      action: action.value,
-    });
-    return row;
-  }
-
-  function renderNotifyRules(wrapEl, rules){
-    wrapEl.innerHTML = "";
-    (rules || []).forEach(r => wrapEl.appendChild(notifyRuleRow(r)));
-  }
-
-  function readNotifyRules(wrapEl){
-    return Array.from(wrapEl.querySelectorAll(".notify-rule-row"))
-      .map(r => r._getRule())
-      // Rows are shown in chronological order so the list reads like a
-      // timetable; the backend is order-independent either way.
-      .sort((a, b) => a.time.localeCompare(b.time));
-  }
-
-  // Next rule that will fire, so the card can say when the switch moves
-  // on its own. Mirrors _last_rule_occurrence in app/notify_rules.py, but
-  // looking FORWARD instead of back; ties resolve to "off" the same way.
-  function _nextRuleOccurrence(rules){
-    if (!rules || !rules.length) return null;
-    const now = new Date();
-    const dow = (now.getDay() + 6) % 7;             // JS Sun=0 -> Mon=0
-    let best = null;
-    for (const r of rules){
-      const [hh, mm] = String(r.time || "").split(":").map(Number);
-      if (!isFinite(hh) || !isFinite(mm)) continue;
-      const action = r.action === "off" ? "off" : "on";
-      const days = (r.days && r.days.length) ? r.days : [0,1,2,3,4,5,6];
-      for (const d of days){
-        const fwd = (d - dow + 7) % 7;
-        const occ = new Date(now);
-        occ.setDate(occ.getDate() + fwd);
-        occ.setHours(hh, mm, 0, 0);
-        if (occ <= now) occ.setDate(occ.getDate() + 7);
-        if (best === null || occ < best.when || (+occ === +best.when && action === "off")){
-          best = { when: occ, action };
-        }
-      }
-    }
-    return best;
-  }
   // Close any open day-picker menu when clicking elsewhere.
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".sched-days")) $$(".sched-days-menu").forEach(m => m.classList.add("hidden"));
@@ -1914,78 +1833,37 @@
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
   });
 
-  // ----- Bildirimler tab: per-group cards (auto-save), no global switch -----
-  function _debounce(fn, ms){
-    let t;
-    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
-  }
-  // Mirrors the schedule half of group_notify_active in app/notify_rules.py:
-  // an EMPTY schedule means never, not "any time".
-  function _scheduleActiveNow(schedule){
-    if (!schedule || !schedule.length) return false;
-    const now = new Date();
-    const dow = (now.getDay() + 6) % 7; // JS Sun=0..Sat=6 -> Mon=0..Sun=6
-    const hm = now.getHours() * 60 + now.getMinutes();
-    for (const w of schedule){
-      const days = w.days || [];
-      if (days.length && !days.includes(dow)) continue;
-      const [sh, sm] = (w.start || "00:00").split(":").map(Number);
-      const [eh, em] = (w.end || "23:59").split(":").map(Number);
-      const s = sh * 60 + sm, e = eh * 60 + em;
-      if (e > s) { if (hm >= s && hm < e) return true; }
-      else { if (hm >= s || hm < e) return true; }
-    }
-    return false;
-  }
-  // ----- Shared iOS-style switch -----
-  // Built here rather than inline so the sidebar tree and the Bildirimler
-  // settings tab use one identical control (see .sw in style.css).
-  function makeSwitch(checked, title){
-    const label = document.createElement("label");
-    label.className = "sw";
-    if (title) label.title = title;
-    const input = document.createElement("input");
-    input.type = "checkbox"; input.checked = !!checked;
-    const track = document.createElement("span"); track.className = "sw-track";
-    const thumb = document.createElement("span"); thumb.className = "sw-thumb";
-    track.appendChild(thumb);
-    label.append(input, track);
-    label.input = input;
-    return label;
-  }
+  // ----- Bildirimler tab: per-group cards (auto-save) -----
+  // Whether a group notifies is no longer decided in RtcView at all — it
+  // mirrors one Home Assistant input_boolean entity's live on/off state
+  // (see HAManager.group_notify_active in app/homeassistant.py). This tab
+  // only lets you PICK which entity each group follows; turning it on/off,
+  // and any schedule for doing so automatically, happens entirely in HA.
 
-  // Single place that flips a group's notifications, so the sidebar tree
-  // and the settings tab can never disagree: it writes through the API,
-  // updates the shared state.groups entry, then re-renders both surfaces.
-  // On failure the caller's checkbox is reverted by re-rendering from the
-  // unchanged state.
-  async function setGroupNotify(groupId, enabled){
-    const g = state.groups.find(x => x.id === groupId);
-    if (!g) return;
-    try {
-      const updated = await api.put("/api/groups/" + groupId, { notify_enabled: enabled });
-      Object.assign(g, updated);
-    } catch (e) {
-      toast("Kaydedilemedi: " + e.message, "err");
-    }
-    renderSidebar();
-    if (!$("#settings-page").classList.contains("hidden")) renderNotifGroups();
-  }
+  // Cached input_boolean entity list, refreshed each time the tab opens
+  // (loadNotifSettingsTab) — read directly by renderNotifGroupCard so a
+  // background re-render (refreshGroups' 15s poll) doesn't need its own
+  // fetch.
+  let _haNotifyEntities = [];
 
   async function loadNotifSettingsTab(){
+    try {
+      const r = await api.get("/api/homeassistant/entities?domain=input_boolean");
+      _haNotifyEntities = r.error ? [] : (r.entities || []);
+    } catch { _haNotifyEntities = []; }
     renderNotifGroups();
   }
 
-  // The schedule moves the switches server-side, so a page left open must
-  // re-read them or the sidebar would keep showing a stale position after
-  // a rule fires. Cheap (groups are a handful of small records) and only
+  // A page left open must re-read group state periodically or the sidebar
+  // dot would keep showing a stale position after the linked input_boolean
+  // flips in HA. Cheap (groups are a handful of small records) and only
   // re-renders when something actually changed.
   async function refreshGroups(){
     if (document.hidden) return;
     try {
       const groups = await api.get("/api/groups");
-      const before = JSON.stringify(state.groups.map(g => [g.id, g.notify_enabled]));
-      const after = JSON.stringify((groups || []).map(g => [g.id, g.notify_enabled]));
+      const before = JSON.stringify(state.groups.map(g => [g.id, g.ha_notify_entity, g.notify_active]));
+      const after = JSON.stringify((groups || []).map(g => [g.id, g.ha_notify_entity, g.notify_active]));
       state.groups = groups || [];
       if (before !== after){
         renderSidebar();
@@ -1996,7 +1874,7 @@
 
   // Notification config lives entirely on the GROUP now (a camera in no
   // group gets no notifications; a camera in several groups notifies if
-  // ANY of them is active — see group_notify_active in app/notify_rules.py).
+  // ANY of them is active — see HAManager.group_notify_active).
   function renderNotifGroups(){
     const wrap = $("#notif-groups-list"); if (!wrap) return;
     wrap.innerHTML = "";
@@ -2015,59 +1893,47 @@
     const name = document.createElement("span"); name.className = "notif-group-name";
     const camCount = state.cameras.filter(c => (c.group_ids || []).includes(g.id)).length;
     name.textContent = g.name + (camCount ? ` (${camCount} kamera)` : " (kamera yok)");
-    // Same switch component as the sidebar tree, and the same shared
-    // handler, so toggling in either place updates the other.
-    const sw = makeSwitch(g.notify_enabled !== false, "Bildirimleri aç/kapat");
-    sw.input.addEventListener("change", () => setGroupNotify(g.id, sw.input.checked));
-    head.append(name, sw);
+    // Read-only — the pill reports Home Assistant's live state, it never
+    // sets it. Toggling notifications happens in HA now.
+    const pill = document.createElement("span"); pill.className = "notify-status-pill";
+    head.append(name, pill);
     card.appendChild(head);
 
-    // Current state is simply the switch — the rules move it rather than
-    // gating it separately — so the useful extra information is WHEN it
-    // moves next.
-    const stateLine = document.createElement("div");
-    stateLine.className = "notif-now";
     const paintState = () => {
-      const on = g.notify_enabled !== false;
-      stateLine.classList.toggle("is-off", !on);
-      const next = _nextRuleOccurrence(g.notify_schedule || []);
-      let txt = on ? "Şu an: bildirimler açık" : "Şu an: bildirimler kapalı";
-      if (next){
-        txt += ` · sıradaki: ${DAY_LABELS[(next.when.getDay() + 6) % 7]} `
-             + `${pad2(next.when.getHours())}:${pad2(next.when.getMinutes())} → `
-             + (next.action === "off" ? "kapat" : "aç");
-      }
-      stateLine.textContent = txt;
+      const hasEntity = !!(g.ha_notify_entity || "").trim();
+      const on = hasEntity && !!g.notify_active;
+      pill.classList.toggle("on", on);
+      pill.classList.toggle("off", hasEntity && !on);
+      pill.classList.toggle("unset", !hasEntity);
+      pill.textContent = !hasEntity ? "Değişken seçilmedi"
+        : (on ? "Bildirimler açık" : "Bildirimler kapalı");
     };
-    card.appendChild(stateLine);
 
-    const schedWrap = document.createElement("div"); schedWrap.className = "rec-schedule";
-    const schedRows = document.createElement("div");
-    renderNotifyRules(schedRows, g.notify_schedule || []);
-    const schedAdd = document.createElement("button");
-    schedAdd.type = "button"; schedAdd.className = "btn ghost small";
-    schedAdd.textContent = "+ Kural";
-    schedAdd.addEventListener("click", () =>
-      schedRows.appendChild(notifyRuleRow({ days: [], time: "09:00", action: "off" })));
-    schedWrap.append(schedRows, schedAdd);
-    card.appendChild(schedWrap);
-    const schedHint = document.createElement("small");
-    schedHint.textContent = "Her kural, belirtilen gün ve saatte bildirimleri açar veya kapatır. "
-      + "O an geçerli olan, en son gerçekleşen kuraldır. Hiç kural yoksa bildirimler açıktır. "
-      + "Değişiklik otomatik kaydedilir.";
-    card.appendChild(schedHint);
-    const saveSchedule = _debounce(async () => {
+    const pickerLabel = document.createElement("label"); pickerLabel.className = "notif-entity-picker";
+    pickerLabel.textContent = "Home Assistant değişkeni ";
+    const select = document.createElement("select");
+    const want = (g.ha_notify_entity || "").trim();
+    const opts = ['<option value="">— seçilmedi —</option>']
+      .concat(_haNotifyEntities.map(e =>
+        `<option value="${escapeHtml(e.entity_id)}">${escapeHtml(e.name)} (${escapeHtml(e.entity_id)})</option>`));
+    if (want && !_haNotifyEntities.some(e => e.entity_id === want)){
+      opts.push(`<option value="${escapeHtml(want)}">⚠ ${escapeHtml(want)} (HA'da bulunamadı)</option>`);
+    }
+    select.innerHTML = opts.join("");
+    select.value = want;
+    select.addEventListener("change", async () => {
       try {
-        const updated = await api.put("/api/groups/" + g.id,
-                                      { notify_schedule: readNotifyRules(schedRows) });
+        const updated = await api.put("/api/groups/" + g.id, { ha_notify_entity: select.value });
         Object.assign(g, updated);
         paintState();
-      } catch (e) { toast("Zamanlama kaydedilemedi: " + e.message, "err"); }
-    }, 500);
-    schedRows.addEventListener("change", saveSchedule);
-    // Row add (schedAdd click) and row delete (the ✕ inside the row) both
-    // just mutate schedRows' children — one observer covers both.
-    new MutationObserver(saveSchedule).observe(schedRows, { childList: true });
+        renderSidebar();
+      } catch (e) {
+        toast("Kaydedilemedi: " + e.message, "err");
+        renderNotifGroups();          // revert to last-known-good from state.groups
+      }
+    });
+    pickerLabel.appendChild(select);
+    card.appendChild(pickerLabel);
 
     paintState();
     card._paintState = paintState;
@@ -2615,24 +2481,37 @@
   }
 
   // ---------- Detected-events drawer ----------
-  // pb.detections holds raw motion/person intervals, and those routinely
-  // overlap — a person walking through trips the motion detector too, so
-  // the same moment arrives as two rows. Overlapping (or near-adjacent)
-  // intervals are merged into one event carrying the union of kinds, so
-  // the drawer lists things that HAPPENED rather than sensor readings.
-  const EVENT_MERGE_GAP_SEC = 3;
+  // pb.detections holds raw motion/person/vehicle intervals, and those
+  // routinely overlap or land seconds apart — a person walking through
+  // trips the motion detector too, so the same moment arrives as several
+  // rows. Merged into one event carrying the union of kinds using the
+  // same gap/minimum-duration constants as the timeline's detection bars
+  // (see DETECT_MERGE_GAP_SEC/DETECT_MIN_DUR_SEC, defined with
+  // _mergeDetectIntervals below) so the drawer and the timeline always
+  // agree on what counts as "one event".
+  const EVENT_HIGHLIGHT_TOLERANCE_SEC = 3;
 
   function _buildEvents(dets){
     const sorted = [...(dets || [])].sort((a, b) => a.started_at - b.started_at);
     const out = [];
     for (const d of sorted){
       const last = out[out.length - 1];
-      if (last && d.started_at <= last.end + EVENT_MERGE_GAP_SEC){
+      if (last && d.started_at <= last.end + DETECT_MERGE_GAP_SEC){
         last.end = Math.max(last.end, d.ended_at);
         last.kinds.add(d.kind);
       } else {
         out.push({ start: d.started_at, end: d.ended_at, kinds: new Set([d.kind]) });
       }
+    }
+    // Pad any event still shorter than DETECT_MIN_DUR_SEC, centered on
+    // its own midpoint, so a near-instant detection reads as a legible
+    // ~1 minute entry instead of vanishing to a fraction of a second —
+    // matching the timeline bar's minimum width.
+    for (const ev of out){
+      if (ev.end - ev.start >= DETECT_MIN_DUR_SEC) continue;
+      const mid = (ev.start + ev.end) / 2;
+      ev.start = mid - DETECT_MIN_DUR_SEC / 2;
+      ev.end = mid + DETECT_MIN_DUR_SEC / 2;
     }
     return out.reverse();          // newest first
   }
@@ -2680,10 +2559,9 @@
       });
       const dur = document.createElement("span");
       dur.className = "pb-event-dur";
-      // A single-sample detection has zero length; call it "anlık" rather
-      // than showing a bare 0:00.
-      const secs = Math.max(0, ev.end - ev.start);
-      dur.textContent = secs < 1 ? "anlık" : fmtDuration(secs);
+      // _buildEvents already pads every event to DETECT_MIN_DUR_SEC, so
+      // this is never a bare 0:00.
+      dur.textContent = fmtDuration(Math.max(0, ev.end - ev.start));
       meta.append(kinds, dur);
 
       row.append(time, meta);
@@ -2709,7 +2587,7 @@
     $$("#pb-events-list .pb-event").forEach(el => {
       const ev = pb.events[Number(el.dataset.idx)];
       el.classList.toggle("current",
-        !!ev && t >= ev.start - EVENT_MERGE_GAP_SEC && t <= ev.end + EVENT_MERGE_GAP_SEC);
+        !!ev && t >= ev.start - EVENT_HIGHLIGHT_TOLERANCE_SEC && t <= ev.end + EVENT_HIGHLIGHT_TOLERANCE_SEC);
     });
   }
 
