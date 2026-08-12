@@ -5,6 +5,18 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-12
+
+### Yıkıcı değişiklik
+- **ONVIF PullPoint tabanlı hareket/insan algılama motoru tamamen kaldırıldı, yerine Home Assistant entegrasyonu geldi.** RtcView artık kameralara ONVIF event bağlantısı kurmuyor — bunun yerine Home Assistant'taki `binary_sensor` varlıklarının durumunu tek bir kalıcı WebSocket bağlantısı üzerinden izliyor. Kaynak ne olursa olsun (Frigate, kameranın kendi entegrasyonu, herhangi bir sensör) HA'da bir `binary_sensor` olarak görünüyorsa RtcView'a bağlanabilir.
+- **Araç algılama eklendi** — hareket ve insanın yanına üçüncü bir algılama türü olarak. Playback timeline'ında ayrı renk (mor), ayrı bildirim türü, ayrı canlı durum göstergesi.
+- Kaldırılan dosya: `app/detection.py`. Yeni dosyalar: `app/homeassistant.py` (WebSocket bağlantısı + algılama), `app/notify_rules.py` (grup bildirim zamanlama motoru — detection.py'den bağımsız bir modüle taşındı, algılama kaynağından etkilenmez).
+- Kamera şeması değişti: `motion_detection_enabled`, `person_detection_enabled`, `motion_timeout_seconds` kaldırıldı; yerine `ha_motion_entity`, `ha_person_entity`, `ha_vehicle_entity` (her biri boş veya bir `binary_sensor.*` entity_id) geldi. `onvif_host`/`onvif_port`/`onvif_user`/`onvif_pass` **korundu** — PTZ hâlâ bunları kullanıyor, algılamayla ilgisi kalmadı.
+- Yeni config bölümü: `home_assistant` (`url`, `token`, `verify_ssl`) — tek bir HA örneğine bağlanmak için.
+- Kaldırılan API uç noktası: `POST /api/cameras/<id>/detection/test` (ONVIF'e özgüydü). Yeni uç noktalar: `GET/POST /api/homeassistant/settings`, `POST /api/homeassistant/test`, `GET /api/homeassistant/entities`.
+- Yeni bağımlılık: `websocket-client`. `onvif-zeep`/`zeep`/`lxml` **kaldırılmadı** — PTZ hâlâ ONVIF kullanıyor.
+- Ayarlar arayüzünde kamera formundaki "Hareket ve İnsan Algılama (ONVIF)" bölümü, üç Home Assistant sensör seçici + durum paneline dönüştürüldü; "durdu kabul etme süresi" ayarı ve "bağlantıyı test et" (kamera bazlı) kaldırıldı — artık gerek yok, HA sensörün durumunu anlık ve kesin bildiriyor. Ayarlar → Genel'e yeni bir "Home Assistant bağlantısı" bölümü eklendi.
+
 ## [2.0.0] - 2026-08-12
 
 ### Yıkıcı değişiklik
@@ -52,7 +64,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/ibrahimdoqn/RtcView/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ibrahimdoqn/RtcView/compare/v1.0.0...v1.1.0

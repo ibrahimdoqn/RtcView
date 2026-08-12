@@ -17,8 +17,7 @@ except Exception as _e:
 # onvif-zeep's WSDL files are a data directory shipped next to (not
 # inside) the installed `onvif` package, and that placement is known to
 # go missing depending on pip version/install method. Prefer this repo's
-# own bundled copy at app/wsdl (same tree app/detection.py uses — if it
-# ever moves, update both) over trusting wherever pip put onvif-zeep's.
+# own bundled copy at app/wsdl over trusting wherever pip put onvif-zeep's.
 _WSDL_DIR: Optional[str] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wsdl")
 if not os.path.isdir(_WSDL_DIR):
     _WSDL_DIR = None

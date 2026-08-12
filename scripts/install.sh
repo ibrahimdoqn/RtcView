@@ -118,8 +118,9 @@ info "Kaynak kopyalanıyor: $SRC_DIR -> $INSTALL_DIR"
 tar -C "$SRC_DIR" --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
   -cf - app requirements.txt scripts 2>/dev/null | tar -C "$INSTALL_DIR" -xf -
 
-# The vendored tapo_detector package was merged into app/detection.py and
-# its bundled ONVIF WSDL tree moved to app/wsdl. tar only adds files, so an
+# The vendored tapo_detector package was merged into app/detection.py
+# (itself later removed in favor of Home Assistant-based detection) and its
+# bundled ONVIF WSDL tree moved to app/wsdl. tar only adds files, so an
 # older install would keep a stale, now-unimported copy around — drop it.
 rm -rf "${INSTALL_DIR}/tapo_detector"
 

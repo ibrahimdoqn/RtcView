@@ -168,8 +168,10 @@
     setInterval(updateRecStatus, 4000);
     // Notifications drive the bell badge, which is how a detection
     // actually reaches the user — so this interval IS the perceived
-    // detection latency (the ONVIF side delivers events immediately via
-    // long-polling). Measured cost of the endpoint against a full 2000-row
+    // detection latency (Home Assistant delivers state changes to the
+    // backend instantly over its own WebSocket — see app/homeassistant.py
+    // — this poll is just how the browser learns about it). Measured
+    // cost of the endpoint against a full 2000-row
     // table: ~1.8 ms server-side, ~11 KB, so polling this often is cheap.
     // It's skipped entirely while the page is hidden and refreshed at once
     // when it comes back, so a backgrounded tab costs nothing.
@@ -1382,41 +1384,26 @@
   }
   function _fmtClock(t){ return t ? new Date(t * 1000).toLocaleTimeString("tr-TR") : "—"; }
   function renderMotionPanel(st){
-    const mBox = $("#ind-motion"), pBox = $("#ind-person");
+    const mBox = $("#ind-motion"), pBox = $("#ind-person"), vBox = $("#ind-vehicle");
     if (!st){
-      mBox.classList.remove("active"); pBox.classList.remove("active");
+      mBox.classList.remove("active"); pBox.classList.remove("active"); vBox.classList.remove("active");
       $("#motion-debug-info").textContent = "Kamerayı kaydettikten sonra canlı durum burada görünür.";
       $("#motion-debug-log").textContent = "—";
       return;
     }
     mBox.classList.toggle("active", !!st.motion_active);
     pBox.classList.toggle("active", !!st.person_active);
+    vBox.classList.toggle("active", !!st.vehicle_active);
     const lines = [
-      `Bağlantı: ${st.connected ? "Bağlı" : "Bağlı değil"}`,
-      `Abonelik: ${st.subscribed ? "Aktif" : "Yok"}`,
-      st.device_info ? `Cihaz: ${st.device_info}` : null,
+      `Home Assistant: ${st.connected ? (st.subscribed ? "Bağlı ve abone" : "Bağlı, abone değil") : "Bağlı değil"}`,
       `Son hareket: ${_fmtClock(st.last_motion_at)}`,
       `Son insan: ${_fmtClock(st.last_person_at)}`,
-      `"Durdu" kabul süresi: ${st.timeout_seconds ?? 15} sn`,
+      `Son araç: ${_fmtClock(st.last_vehicle_at)}`,
       st.last_error ? `Son hata: ${st.last_error}` : null,
     ].filter(Boolean);
     $("#motion-debug-info").textContent = lines.join("\n");
     $("#motion-debug-log").textContent = (st.log && st.log.length) ? st.log.slice(-40).join("\n") : "Henüz olay yok.";
   }
-  $("#motion-test-btn").addEventListener("click", async () => {
-    const id = form.id.value;
-    const resEl = $("#motion-test-result");
-    if (!id){ toast("Önce kamerayı kaydedin", "err"); return; }
-    resEl.textContent = "Test ediliyor…"; resEl.style.color = "";
-    try {
-      const r = await api.post(`/api/cameras/${id}/detection/test`, {});
-      resEl.textContent = r.ok ? `✓ ${r.device}` : `✗ ${r.error}`;
-      resEl.style.color = r.ok ? "var(--ok)" : "var(--danger)";
-    } catch (e) {
-      resEl.textContent = "✗ " + e.message;
-      resEl.style.color = "var(--danger)";
-    }
-  });
 
   async function loadStreamOptions(selected){
     const sel = $("#stream-select");
@@ -1433,6 +1420,43 @@
       sel.innerHTML = `<option value="">(go2rtc'ye erişilemiyor)</option>`;
       if (selected) sel.insertAdjacentHTML("beforeend",
         `<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)}</option>`);
+    }
+  }
+
+  // Populates the three motion/person/vehicle binary_sensor pickers from
+  // Home Assistant's live entity list. `selected` is
+  // {motion, person, vehicle} — each currently-assigned entity_id (or
+  // blank). An entity the camera is already wired to but that no longer
+  // exists in HA (renamed/removed there) is kept as a flagged extra
+  // option rather than silently disappearing from the dropdown — the
+  // admin should see and consciously fix that, not have it vanish.
+  async function loadHaEntityOptions(selected){
+    const selects = {
+      motion: form.ha_motion_entity, person: form.ha_person_entity, vehicle: form.ha_vehicle_entity,
+    };
+    for (const k in selects) selects[k].innerHTML = `<option value="">(yükleniyor…)</option>`;
+    try {
+      const r = await api.get("/api/homeassistant/entities");
+      if (r.error) throw new Error(r.error);
+      const entities = r.entities || [];
+      const baseOpts = '<option value="">— seçilmedi —</option>' + entities.map(e =>
+        `<option value="${escapeHtml(e.entity_id)}">${escapeHtml(e.name)} (${escapeHtml(e.entity_id)})</option>`
+      ).join("");
+      for (const k in selects){
+        const want = (selected && selected[k]) || "";
+        selects[k].innerHTML = baseOpts;
+        if (want && !entities.some(e => e.entity_id === want)){
+          selects[k].insertAdjacentHTML("beforeend",
+            `<option value="${escapeHtml(want)}">⚠ ${escapeHtml(want)} (HA'da bulunamadı)</option>`);
+        }
+        selects[k].value = want;
+      }
+    } catch {
+      for (const k in selects){
+        const want = (selected && selected[k]) || "";
+        selects[k].innerHTML = '<option value="">(Home Assistant bağlantısı yok)</option>'
+          + (want ? `<option value="${escapeHtml(want)}" selected>${escapeHtml(want)}</option>` : "");
+      }
     }
   }
 
@@ -1512,8 +1536,8 @@
   // ----- Notification rule editor (scheduled ON/OFF actions) -----
   // Deliberately NOT the window editor above: recording still describes
   // periods (record from X to Y), whereas notifications are now a list of
-  // "at this time, switch on/off" moments — see _notify_rules_active in
-  // detection.py for why. Same day picker, different payload.
+  // "at this time, switch on/off" moments — see apply_notify_rules in
+  // app/notify_rules.py for why. Same day picker, different payload.
   function notifyRuleRow(r){
     const row = document.createElement("div");
     row.className = "sched-row notify-rule-row";
@@ -1563,8 +1587,8 @@
   }
 
   // Next rule that will fire, so the card can say when the switch moves
-  // on its own. Mirrors _last_rule_occurrence in detection.py, but looking
-  // FORWARD instead of back; ties resolve to "off" the same way.
+  // on its own. Mirrors _last_rule_occurrence in app/notify_rules.py, but
+  // looking FORWARD instead of back; ties resolve to "off" the same way.
   function _nextRuleOccurrence(rules){
     if (!rules || !rules.length) return null;
     const now = new Date();
@@ -1621,20 +1645,20 @@
       form.record_mode.value = cam.record_mode || "off";
       form.record_audio.checked = !!cam.record_audio;
       form.retention_days_override.value = cam.retention_days_override || 0;
-      form.motion_detection_enabled.checked = !!cam.motion_detection_enabled;
-      form.person_detection_enabled.checked = !!cam.person_detection_enabled;
-      form.motion_timeout_seconds.value = cam.motion_timeout_seconds || 15;
       renderScheduleRows($("#rec-schedule-rows"), cam.record_schedule || []);
       renderCamGroupChips(cam.group_ids || []);
       loadStreamOptions(cam.stream || "");
+      loadHaEntityOptions({
+        motion: cam.ha_motion_entity, person: cam.ha_person_entity, vehicle: cam.ha_vehicle_entity,
+      });
       startMotionPoll(cam.id);
     } else {
       delBtn.classList.add("hidden");
       form.record_mode.value = "off";
-      form.motion_timeout_seconds.value = 15;
       renderScheduleRows($("#rec-schedule-rows"), []);
       renderCamGroupChips([]);
       loadStreamOptions("");
+      loadHaEntityOptions({});
       stopMotionPoll();
       renderMotionPanel(null);
     }
@@ -1663,9 +1687,8 @@
     // only submit it in that case.
     body.record_schedule = (form.record_mode.value === "schedule")
       ? readScheduleRows($("#rec-schedule-rows")) : [];
-    body.motion_detection_enabled = form.motion_detection_enabled.checked;
-    body.person_detection_enabled = form.person_detection_enabled.checked;
-    body.motion_timeout_seconds = parseInt(body.motion_timeout_seconds || 15);
+    // ha_motion_entity/ha_person_entity/ha_vehicle_entity are already in
+    // `body` via FormData — they're plain named <select> elements.
     body.group_ids = readGroupChips();
     if (!body.stream){ toast("Bir stream seçin", "err"); return; }
     const id = body.id; delete body.id;
@@ -1746,6 +1769,7 @@
   // killing every camera stream, just because the user happened to change
   // the theme in the same visit to this tab.
   let _g2rtcLoaded = false;
+  let _haLoaded = false;
   async function loadGenelTab(){
     $("#s-grid-cols").value = state.settings.grid_columns || 3;
     $("#s-theme").value = state.settings.theme || "dark";
@@ -1763,6 +1787,19 @@
     } catch {
       _g2rtcLoaded = false;
       toast("go2rtc ayarları yüklenemedi — bu sekmeyi tekrar açmadan kaydetmeyin", "err");
+    }
+    try {
+      const h = await api.get("/api/homeassistant/settings");
+      $("#s-ha-url").value = h.url || "";
+      $("#s-ha-token").value = "";
+      $("#s-ha-token").placeholder = h.token_set ? "•••••••• (değiştirmek için yazın)" : "HA profilinizden oluşturun";
+      $("#s-ha-token-hint").textContent = h.token_set ? "Bir jeton kayıtlı. Boş bırakırsanız değişmez." : "";
+      $("#s-ha-verify-ssl").checked = h.verify_ssl !== false;
+      $("#s-ha-test-result").textContent = "";
+      _haLoaded = true;
+    } catch {
+      _haLoaded = false;
+      toast("Home Assistant ayarları yüklenemedi — bu sekmeyi tekrar açmadan kaydetmeyin", "err");
     }
   }
   $("#s-save-genel").addEventListener("click", async () => {
@@ -1788,11 +1825,38 @@
           rtsp_port: parseInt($("#s-g2-rtsp").value || 8554),
         });
       }
+      if (_haLoaded){
+        const haBody = {
+          url: $("#s-ha-url").value.trim(),
+          token: $("#s-ha-token").value,   // blank = leave stored token as-is (see backend)
+          verify_ssl: $("#s-ha-verify-ssl").checked,
+        };
+        const h = await api.post("/api/homeassistant/settings", haBody);
+        $("#s-ha-token").value = "";
+        $("#s-ha-token").placeholder = h.token_set ? "•••••••• (değiştirmek için yazın)" : "HA profilinizden oluşturun";
+        $("#s-ha-token-hint").textContent = h.token_set ? "Bir jeton kayıtlı. Boş bırakırsanız değişmez." : "";
+      }
       applySettings();
       renderGrid();                     // pulls in new transport on restart
       toast(newTransport !== prevTransport ? "Yayın modu değiştirildi" : "Ayarlar kaydedildi", "ok");
       updateStatus();
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
+  });
+  $("#s-ha-test-btn").addEventListener("click", async () => {
+    const resEl = $("#s-ha-test-result");
+    resEl.textContent = "Test ediliyor…"; resEl.style.color = "";
+    // Tests whatever is currently SAVED server-side (same precedent as the
+    // old per-camera ONVIF test button) — unsaved form edits need Kaydet
+    // first. The token field is never echoed back after saving, so
+    // testing the live form wouldn't even have a token to send anyway.
+    try {
+      const r = await api.post("/api/homeassistant/test");
+      resEl.textContent = r.ok ? `✓ ${r.message || "Bağlantı başarılı"}` : `✗ ${r.error}`;
+      resEl.style.color = r.ok ? "var(--ok)" : "var(--danger)";
+    } catch (e) {
+      resEl.textContent = "✗ " + e.message;
+      resEl.style.color = "var(--danger)";
+    }
   });
 
   async function loadKayitTab(){
@@ -1855,7 +1919,7 @@
     let t;
     return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
   }
-  // Mirrors the schedule half of _group_notify_active in detection.py:
+  // Mirrors the schedule half of group_notify_active in app/notify_rules.py:
   // an EMPTY schedule means never, not "any time".
   function _scheduleActiveNow(schedule){
     if (!schedule || !schedule.length) return false;
@@ -1932,7 +1996,7 @@
 
   // Notification config lives entirely on the GROUP now (a camera in no
   // group gets no notifications; a camera in several groups notifies if
-  // ANY of them is active — see _group_notify_active in detection.py).
+  // ANY of them is active — see group_notify_active in app/notify_rules.py).
   function renderNotifGroups(){
     const wrap = $("#notif-groups-list"); if (!wrap) return;
     wrap.innerHTML = "";
@@ -2520,17 +2584,18 @@
     } catch { /* keep quiet — this is a background refresh */ }
   }
 
-  // Detection intervals (motion=orange / person=blue) for the currently
-  // selected camera + day. Only fetched for cameras that actually have
-  // ONVIF motion/person tracking turned on — no point polling cameras
-  // that never emit these events. These are painted directly onto the
-  // recording-segment bar itself (see renderTimeline) rather than a
-  // separate strip, so there's exactly one bar in the timeline.
+  // Detection intervals (motion=orange / person=blue / vehicle=purple) for
+  // the currently selected camera + day. Only fetched for cameras that
+  // actually have at least one Home Assistant sensor wired up — no point
+  // polling cameras that never emit these events. These are painted
+  // directly onto the recording-segment bar itself (see renderTimeline)
+  // rather than a separate strip, so there's exactly one bar in the
+  // timeline.
   async function loadDetections(from, to){
     const pb = state.playback;
     const camId = pb.camId;
     const cam = state.cameras.find(c => c.id === camId);
-    const enabled = !!(cam && (cam.motion_detection_enabled || cam.person_detection_enabled));
+    const enabled = !!(cam && (cam.ha_motion_entity || cam.ha_person_entity || cam.ha_vehicle_entity));
     pb.detectionEnabled = enabled;
     const legend = $("#pb-detect-legend");
     if (legend) legend.classList.toggle("hidden", !enabled);
@@ -2604,19 +2669,19 @@
 
       const meta = document.createElement("span"); meta.className = "pb-event-meta";
       const kinds = document.createElement("span"); kinds.className = "pb-event-kinds";
-      // Person first — it's the more specific, more interesting signal.
-      ["person", "motion"].forEach(k => {
+      // Most specific/interesting signal first.
+      const KIND_TAG_LABEL = { person: "İnsan", vehicle: "Araç", motion: "Hareket" };
+      ["person", "vehicle", "motion"].forEach(k => {
         if (!ev.kinds.has(k)) return;
         const tag = document.createElement("span");
         tag.className = "pb-event-kind " + k;
-        tag.textContent = k === "person" ? "İnsan" : "Hareket";
+        tag.textContent = KIND_TAG_LABEL[k];
         kinds.appendChild(tag);
       });
       const dur = document.createElement("span");
       dur.className = "pb-event-dur";
       // A single-sample detection has zero length; call it "anlık" rather
-      // than showing a bare 0:00 (see the zero-duration case in
-      // detection.py's _check_timeouts).
+      // than showing a bare 0:00.
       const secs = Math.max(0, ev.end - ev.start);
       dur.textContent = secs < 1 ? "anlık" : fmtDuration(secs);
       meta.append(kinds, dur);
@@ -3299,11 +3364,12 @@
       frag.appendChild(el);
     }
 
-    // ----- detection row (only for cameras with motion/person tracking
-    // on): a thin strip above the segment row, gray by default with
-    // orange/blue runs painted over whatever was detected. Drawn as
-    // children of the same #pb-track as everything else, so it's part
-    // of the one timeline box — no separate/overflowing element. -----
+    // ----- detection row (only for cameras with at least one Home
+    // Assistant sensor wired up): a thin strip above the segment row,
+    // gray by default with orange/purple/blue runs painted over whatever
+    // was detected. Drawn as children of the same #pb-track as
+    // everything else, so it's part of the one timeline box — no
+    // separate/overflowing element. -----
     if (pb.detectionEnabled){
       const base = document.createElement("div");
       base.className = "pb-detect-seg none";
@@ -3312,12 +3378,13 @@
       const addDetectBar = (s0, s1, cls) => {
         const vs0 = Math.max(s0, viewStart), vs1 = Math.min(s1, viewEnd);
         // NOT "<=" — a detection interval can legitimately have
-        // started_at === ended_at (a single ONVIF sample that never got a
-        // second "still active" poke before the silence timeout closed
-        // it — see _check_timeouts in detection.py, which closes using
-        // last_seen, not "now"). That's a real, valid, just very brief
-        // detection, and used to vanish from the timeline entirely here
-        // because a zero-width interval always satisfied "<=".
+        // started_at === ended_at (e.g. a Home Assistant sensor that
+        // flips on and off within the same tick, or a reconnect resync
+        // that closes an interval at the same instant a fresh event
+        // reopens it — see HAManager._resync in app/homeassistant.py).
+        // That's a real, valid, just very brief detection, and used to
+        // vanish from the timeline entirely here because a zero-width
+        // interval always satisfied "<=".
         if (vs1 < vs0) return;
         const x = (vs0 - viewStart) * pb.pxPerSec;
         const w = Math.max(1, (vs1 - vs0) * pb.pxPerSec);
@@ -3326,9 +3393,12 @@
         el.style.left = x + "px"; el.style.width = w + "px";
         frag.appendChild(el);
       };
-      // motion first, person drawn after so it visually wins on overlap
+      // Drawn in ascending specificity so the most interesting signal
+      // visually wins on overlap: motion first, then vehicle, then person.
       (pb.detections || []).filter(d => d.kind === "motion")
         .forEach(d => addDetectBar(d.started_at, d.ended_at, "motion"));
+      (pb.detections || []).filter(d => d.kind === "vehicle")
+        .forEach(d => addDetectBar(d.started_at, d.ended_at, "vehicle"));
       (pb.detections || []).filter(d => d.kind === "person")
         .forEach(d => addDetectBar(d.started_at, d.ended_at, "person"));
     }

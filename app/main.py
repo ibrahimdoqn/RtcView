@@ -17,7 +17,8 @@ from flask import Flask, Response, jsonify, render_template, request, send_from_
 from flask_cors import CORS
 
 from app.config import ConfigStore
-from app.detection import DetectionManager, ONVIF_AVAILABLE as ONVIF_EVENTS_AVAILABLE
+from app.homeassistant import HAManager, WEBSOCKET_AVAILABLE as HA_WEBSOCKET_AVAILABLE
+from app import homeassistant as ha_module
 from app.go2rtc_client import Go2RtcClient
 from app.netmon import NetworkMonitor
 from app.ptz import ptz_controller, ONVIF_AVAILABLE
@@ -65,6 +66,26 @@ def create_app(config_path: str) -> Flask:
 
     def _valid_cam_id(cam_id) -> bool:
         return bool(cam_id) and bool(_CAM_ID_RE.match(cam_id)) and cam_id not in (".", "..")
+
+    _HA_ENTITY_RE = re.compile(r"^binary_sensor\.[a-z0-9_]+$")
+
+    def _validate_ha_entities(body):
+        """Pull ha_{motion,person,vehicle}_entity out of a camera request
+        body. Empty string means "not wired up" (valid — a camera can
+        leave any/all of these blank). A non-empty value must be a real
+        binary_sensor.* entity_id (the only domain the sensor picker ever
+        offers — see app/homeassistant.py's fetch_entities) so a typo or a
+        pasted friendly-name doesn't silently sit there matching nothing
+        forever. Returns (dict_with_all_three_keys, None) or (None, error).
+        """
+        out = {}
+        for kind in ("motion", "person", "vehicle"):
+            key = f"ha_{kind}_entity"
+            val = str(body.get(key) or "").strip()
+            if val and not _HA_ENTITY_RE.match(val):
+                return None, f"invalid {key} — must be a binary_sensor.* entity id"
+            out[key] = val
+        return out, None
 
     def _validate_record_schedule(raw):
         """Normalize/validate a record_schedule value into the window shape
@@ -120,25 +141,25 @@ def create_app(config_path: str) -> Flask:
     go2rtc = Go2RtcClient(store)
     storage = Storage(store)
     recorder = RecordingManager(store, storage)
-    detector = DetectionManager(store, storage)
+    ha_mgr = HAManager(store, storage)
     netmon = NetworkMonitor()
 
     app.config["STORE"] = store
     app.config["GO2RTC"] = go2rtc
     app.config["STORAGE"] = storage
     app.config["RECORDER"] = recorder
-    app.config["DETECTOR"] = detector
+    app.config["HA_MANAGER"] = ha_mgr
     app.config["NETMON"] = netmon
 
     storage.start()
     recorder.start()
-    detector.start()
+    ha_mgr.start()
     netmon.start()
 
     def _shutdown():
         try: netmon.stop()
         except Exception: pass
-        try: detector.stop()
+        try: ha_mgr.stop()
         except Exception: pass
         try: recorder.stop()
         except Exception: pass
@@ -187,9 +208,9 @@ def create_app(config_path: str) -> Flask:
             "go2rtc_running": go2rtc.is_running(),
             "go2rtc": gc,
             "onvif_available": ONVIF_AVAILABLE,
-            "onvif_events_available": ONVIF_EVENTS_AVAILABLE,
+            "ha_websocket_available": HA_WEBSOCKET_AVAILABLE,
             "recording_enabled": store.get_recording().get("enabled", True),
-            "version": "1.1.0",
+            "version": "3.0.0",
         })
 
     @app.get("/api/config")
@@ -253,10 +274,9 @@ def create_app(config_path: str) -> Flask:
         stream = (body.get("stream") or "").strip()
         if not name or not stream:
             return jsonify({"error": "name and stream are required"}), 400
-        try:
-            motion_timeout = max(5, min(300, int(body.get("motion_timeout_seconds", 15) or 15)))
-        except (TypeError, ValueError):
-            motion_timeout = 15
+        ha_entities, err = _validate_ha_entities(body)
+        if err:
+            return jsonify({"error": err}), 400
         # cam_id becomes a directory name under every storage root
         # (_cam_dir in recorder.py) and a dict key workers are indexed by —
         # an unvalidated id from the client is a path-traversal vector
@@ -283,14 +303,12 @@ def create_app(config_path: str) -> Flask:
             "record_schedule": record_schedule,
             "record_audio": bool(body.get("record_audio", False)),
             "retention_days_override": int(body.get("retention_days_override", 0) or 0),
-            "motion_detection_enabled": bool(body.get("motion_detection_enabled", False)),
-            "person_detection_enabled": bool(body.get("person_detection_enabled", False)),
-            "motion_timeout_seconds": motion_timeout,
+            **ha_entities,
             "group_ids": [str(g) for g in (body.get("group_ids") or []) if str(g).strip()],
         }
         store.add_camera(cam)
         recorder.reload_camera(cam["id"])
-        detector.reload_camera(cam["id"])
+        ha_mgr.reload_camera(cam["id"])
         return jsonify(cam), 201
 
     @app.put("/api/cameras/<camera_id>")
@@ -310,11 +328,18 @@ def create_app(config_path: str) -> Flask:
         # avoids orphaning that camera's existing DB rows/on-disk files
         # from a renamed id even if a caller did send a well-formed one.
         body.pop("id", None)
-        if "motion_timeout_seconds" in body:
-            try:
-                body["motion_timeout_seconds"] = max(5, min(300, int(body["motion_timeout_seconds"] or 15)))
-            except (TypeError, ValueError):
-                return jsonify({"error": "invalid motion_timeout_seconds"}), 400
+        if any(k in body for k in ("ha_motion_entity", "ha_person_entity", "ha_vehicle_entity")):
+            ha_entities, err = _validate_ha_entities(body)
+            if err:
+                return jsonify({"error": err}), 400
+            # Only overwrite the keys actually present in the request —
+            # unlike POST /api/cameras (a full create), a PUT is a partial
+            # update and must leave an omitted entity field untouched
+            # rather than blanking it back to "".
+            for k in ("ha_motion_entity", "ha_person_entity", "ha_vehicle_entity"):
+                if k not in body:
+                    ha_entities.pop(k, None)
+            body.update(ha_entities)
         if "group_ids" in body:
             body["group_ids"] = [str(g) for g in (body.get("group_ids") or []) if str(g).strip()]
         if "record_schedule" in body:
@@ -327,7 +352,7 @@ def create_app(config_path: str) -> Flask:
             return jsonify({"error": "not found"}), 404
         ptz_controller.invalidate(camera_id)
         recorder.reload_camera(camera_id)
-        detector.reload_camera(camera_id)
+        ha_mgr.reload_camera(camera_id)
         return jsonify({"ok": True})
 
     @app.delete("/api/cameras/<camera_id>")
@@ -337,7 +362,7 @@ def create_app(config_path: str) -> Flask:
             return jsonify({"error": "not found"}), 404
         ptz_controller.invalidate(camera_id)
         recorder.reload_camera(camera_id)
-        detector.reload_camera(camera_id)
+        ha_mgr.reload_camera(camera_id)
         return jsonify({"ok": True})
 
     @app.post("/api/cameras/reorder")
@@ -377,7 +402,7 @@ def create_app(config_path: str) -> Flask:
             updates["notify_enabled"] = bool(body["notify_enabled"])
         if "notify_schedule" in body:
             # Scheduled on/off ACTIONS (not windows) — see
-            # _notify_rules_active in detection.py. Normalised here so a
+            # apply_notify_rules in app/notify_rules.py. Normalised here so a
             # malformed row can never reach the evaluator or the config
             # file: bad times are rejected outright rather than silently
             # ignored later, since a dropped rule changes when the user
@@ -409,7 +434,7 @@ def create_app(config_path: str) -> Flask:
             updates["notify_schedule"] = rules
             # notify_rule_applied_at is a monotone high-water mark on the
             # timestamp of the last-applied occurrence (see
-            # apply_notify_rules in detection.py) — it only ever compares
+            # apply_notify_rules in app/notify_rules.py) — it only ever compares
             # against occurrences of the CURRENT schedule. Editing the
             # schedule (e.g. moving a rule earlier in the day, or adding
             # one) can make "most recent occurrence <= now" compute to a
@@ -440,14 +465,14 @@ def create_app(config_path: str) -> Flask:
                 return c
         return None
 
-    # ---------- Motion / person detection (ONVIF) ----------
+    # ---------- Motion / person / vehicle detection (Home Assistant) ----------
     @app.get("/api/detection/status")
     def api_detection_status():
         # Optional ?cam=<id> narrows the response to one camera. Each entry
         # carries a long debug log, so the UI (which shows one camera at a
         # time) asks for just that one; omitting the arg keeps the original
         # all-cameras behaviour.
-        return jsonify(detector.status(cam_id=request.args.get("cam") or None))
+        return jsonify(ha_mgr.status(cam_id=request.args.get("cam") or None))
 
     @app.get("/api/detection/events")
     def api_detection_events():
@@ -460,12 +485,48 @@ def create_app(config_path: str) -> Flask:
         limit = _int_arg(request.args, "limit", 5000)
         return jsonify(storage.list_detections(cam_id=cam, t_from=t_from, t_to=t_to, limit=limit))
 
-    @app.post("/api/cameras/<camera_id>/detection/test")
-    def api_detection_test(camera_id):
-        cam = _find_camera(camera_id)
-        if not cam:
-            return jsonify({"error": "not found"}), 404
-        return jsonify(detector.test_connection(cam))
+    # ---------- Home Assistant integration ----------
+    @app.get("/api/homeassistant/settings")
+    def api_ha_settings_get():
+        cfg = dict(store.get_home_assistant())
+        # Never echo the access token back to the client — the settings
+        # form only needs to know one exists (to show "•••" / a "kayıtlı"
+        # state) and offer to replace it, not read the live value back.
+        cfg["token_set"] = bool(cfg.pop("token", ""))
+        return jsonify(cfg)
+
+    @app.post("/api/homeassistant/settings")
+    def api_ha_settings_set():
+        body = request.get_json(force=True) or {}
+        updates = {}
+        if "url" in body:
+            updates["url"] = str(body.get("url") or "").strip()
+        if "token" in body:
+            # Blank means "leave the stored token alone" — the form never
+            # has the real value to send back after api_ha_settings_get's
+            # redaction, so an empty submit must not wipe a working token.
+            token = str(body.get("token") or "").strip()
+            if token:
+                updates["token"] = token
+        if "verify_ssl" in body:
+            updates["verify_ssl"] = bool(body.get("verify_ssl"))
+        if updates:
+            store.update_home_assistant(updates)
+        cfg = dict(store.get_home_assistant())
+        cfg["token_set"] = bool(cfg.pop("token", ""))
+        return jsonify(cfg)
+
+    @app.post("/api/homeassistant/test")
+    def api_ha_test():
+        cfg = store.get_home_assistant()
+        return jsonify(ha_module.test_connection(
+            cfg.get("url"), cfg.get("token"), cfg.get("verify_ssl", True)))
+
+    @app.get("/api/homeassistant/entities")
+    def api_ha_entities():
+        cfg = store.get_home_assistant()
+        return jsonify(ha_module.fetch_entities(
+            cfg.get("url"), cfg.get("token"), cfg.get("verify_ssl", True)))
 
     # ---------- Notifications ----------
     # No global on/off or global snooze — notification config lives

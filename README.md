@@ -1,6 +1,6 @@
 # RtcView
 
-**Mevcut** bir go2rtc'ye bağlanan, Frigate benzeri, sıfır-gecikmeli (WebRTC) kamera izleme, **kayıt / playback**, **ONVIF hareket & insan algılama**, **grup bazlı bildirim** ve **ağ izleme** arayüzü.
+**Mevcut** bir go2rtc'ye bağlanan, Frigate benzeri, sıfır-gecikmeli (WebRTC) kamera izleme, **kayıt / playback**, **Home Assistant tabanlı hareket/insan/araç algılama**, **grup bazlı bildirim** ve **ağ izleme** arayüzü.
 Kendi başına stream sunmaz; go2rtc'de tanımlı stream'leri WHEP üzerinden alır ve gösterir, kayıt için RTSP çıkışını FFmpeg ile segmentler halinde diske yazar.
 PWA uyumludur, Ubuntu Noble (rk3399, arm64) üzerinde izole Python venv içinde çalışır — NanoPi R4S gibi SBC'ler dahil herhangi bir Linux/systemd cihazında çalışacak şekilde tasarlanmıştır.
 
@@ -9,6 +9,9 @@ PWA uyumludur, Ubuntu Noble (rk3399, arm64) üzerinde izole Python venv içinde 
 Ağınızda çalışan bir **go2rtc** olmalı (varsayılan API `http://127.0.0.1:1984`, RTSP `:8554`).
 Kameralar go2rtc'nin `streams:` bölümünde tanımlı olmalı.
 Kayıt için sistemde **`ffmpeg`** yüklü olmalı (installer otomatik kurar).
+Hareket/insan/araç algılama istiyorsanız (isteğe bağlı) ağınızda çalışan bir **Home Assistant** olmalı,
+kameralarınızın hareket/insan/araç durumu orada `binary_sensor` olarak görünüyor olmalı (Frigate, kameranızın
+kendi entegrasyonu, vb. — kaynak fark etmez).
 
 ## Özellikler
 
@@ -46,11 +49,13 @@ Kayıt için sistemde **`ffmpeg`** yüklü olmalı (installer otomatik kurar).
 - Bir segment silinirken dosya diskten fiilen kaldırılamazsa (geçici I/O hatası), bir sonraki temizlik turunda otomatik olarak disk yeniden taranır — index'te görünmeyen ama fiilen diskte duran dosyalar kendiliğinden yeniden kayda alınır
 - SQLite index (`<yol>/index.sqlite`), MP4 dosyaları `<yol>/<cam>/YYYY/MM/DD/`
 
-### Hareket & İnsan Algılama (ONVIF)
-- Kamera başına **ayrı ayrı** açılabilir: hareket algılama, insan algılama (ONVIF event stream üzerinden — go2rtc'ye ek yük bindirmez)
-- Playback timeline'ında **renkli algılama şeridi**: turuncu = hareket, mavi = insan, gri = algılama yok
-- Bazı kameralar (ör. Tapo) hareketin *bittiğini* bildirmiyor — bu yüzden kamera başına **"durdu" kabul etme süresi** (varsayılan 15 sn) ayarlanabilir: bu süre boyunca yeni olay gelmezse hareket/insan durmuş sayılır
-- Kamera ayarlarında canlı durum kutucukları (yanan/sönük) + **"Gelişmiş / Hata Ayıklama"** paneli: bağlantı durumu, son olay zamanları, ham olay logu, "bağlantıyı test et" butonu
+### Hareket, İnsan & Araç Algılama (Home Assistant)
+- Algılama artık RtcView'ın kameraya ONVIF event bağlantısı kurmasıyla değil, **Home Assistant**'taki `binary_sensor` varlıklarının durumunu izleyerek çalışır — Frigate, bir kameranın kendi entegrasyonu veya HA'da tanımlı herhangi bir sensör olabilir. RtcView'ın kendisi kameraya hiç bağlanmaz, sadece HA'nın WebSocket API'sine **tek bir kalıcı bağlantı** kurup ilgili sensörlerin `on`/`off` durumunu dinler
+- Ayarlar → Genel'den **tek bir HA örneğine** bağlanılır (URL + long-lived access token); her kameranın ayarlarında bu bağlantıdan çekilen `binary_sensor.*` listesinden **hareket / insan / araç** için ayrı ayrı sensör seçilir — hiçbiri zorunlu değil, istediğiniz kadarını boş bırakabilirsiniz
+- Playback timeline'ında **renkli algılama şeridi**: turuncu = hareket, mavi = insan, mor = araç, gri = algılama yok
+- Durum değişiklikleri HA'dan anlık (WebSocket push) gelir — RtcView tarafında ayrıca bir "durdu kabul etme süresi" ayarına gerek yoktur, sensörün kendi mantığı ne zaman "off" olacağına karar verir. Bağlantı koparsa, yeniden bağlanınca HA'daki güncel durumla otomatik senkronize olunur
+- Kamera ayarlarında canlı durum kutucukları (yanan/sönük) + **"Gelişmiş / Hata Ayıklama"** paneli: HA bağlantı durumu, son olay zamanları, ham olay logu
+- **Kurulum**: HA'da profilinizin altındaki *Uzun Ömürlü Erişim Jetonları* (Long-Lived Access Tokens) bölümünden bir jeton oluşturun → RtcView'da Ayarlar → Genel → Home Assistant bağlantısı'na URL'yi ve jetonu girip "Bağlantıyı test et" ile doğrulayın → her kameranın kendi ayarlarından ilgili sensörleri seçin
 
 ### Bildirimler (grup bazlı)
 - Bildirim ayarları **kamera değil, grup** bazında yapılır — bir kamera birden fazla gruba ait olabilir, gruplardan **herhangi biri** o an aktifse bildirim gönderilir
@@ -146,8 +151,8 @@ Ayarlar → **Kameralar** sekmesindeki **+ Kamera Ekle** ile:
 
 - **Ad**: örn. "Ön Kapı"
 - **go2rtc Stream**: dropdown'dan seçilir (↻ ile yenilenir)
-- **PTZ / ONVIF kimlik bilgileri**: host/port/user/pass — isteğe bağlı, PTZ ve hareket/insan algılama aynı bağlantı bilgilerini paylaşır
-- **Hareket & İnsan Algılama**: ayrı ayrı açma/kapama, "durdu" kabul etme süresi
+- **PTZ / ONVIF kimlik bilgileri**: host/port/user/pass — isteğe bağlı, yalnızca PTZ için kullanılır
+- **Hareket & Nesne Algılama**: hareket / insan / araç için ayrı ayrı Home Assistant `binary_sensor` seçimi (Ayarlar → Genel'den HA bağlantısı kurulmuş olmalı)
 - **Gruplar**: kameranın ait olduğu grup(lar) — bildirim ayarları buradan miras alınır
 - **Kayıt**: mod (kapalı/sürekli/zamanlı/manuel), haftalık zaman aralıkları, ses, retention override
 
@@ -181,11 +186,12 @@ Playback:
 │   ├── recorder.py     # ffmpeg segment kaydı
 │   ├── storage.py      # tek diskli depolama: sağlık, retention/kota/dolma-önleyici purge, playback index
 │   ├── netmon.py        # ağ arayüzü izleme (netlink olayları + bant genişliği)
-│   ├── detection.py    # ONVIF hareket/insan algılama + bildirim kuralları
+│   ├── homeassistant.py # Home Assistant WebSocket bağlantısı + hareket/insan/araç algılama
+│   ├── notify_rules.py  # grup bildirim zamanlama motoru (notify_schedule kuralları)
 │   ├── ptz.py           # ONVIF PTZ
 │   ├── go2rtc_client.py
 │   ├── config.py        # config.json okuma/yazma, şema göçü
-│   └── wsdl/            # ONVIF WSDL/XSD şemaları (detection + ptz bunu kullanır; bütün olarak taşınmalı)
+│   └── wsdl/            # ONVIF WSDL/XSD şemaları (yalnızca ptz.py kullanır)
 ├── venv/           # izole Python ortamı
 ├── config/config.json
 ├── logs/
@@ -199,7 +205,7 @@ Playback:
 
 Kök yardımcı script'ler `scripts/` altında: `install.sh`, `update.sh`, `uninstall.sh`, `self_update.sh`.
 
-ONVIF hareket/insan algılama motorunun tamamı `app/detection.py` içindedir (kamera ile PullPoint event konuşması, algılama aralıklarının yazılması, bildirim kural motoru). Ayarlanabilir değişkenler dosyanın başındaki "Tunables" bölümündedir.
+Home Assistant entegrasyonunun tamamı `app/homeassistant.py` içindedir (WebSocket bağlantısı, kimlik doğrulama, durum senkronizasyonu, algılama aralıklarının yazılması). Grup bildirim zamanlama motoru ayrıca `app/notify_rules.py`'dedir — algılama kaynağından bağımsız, hangi backend kullanılırsa kullanılsın aynı şekilde çalışır.
 
 ## API özeti
 
@@ -223,10 +229,14 @@ ONVIF hareket/insan algılama motorunun tamamı `app/detection.py` içindedir (k
 - `GET /api/recordings/<id>/download` · `DELETE /api/recordings/<id>` · `POST /api/recordings/<id>/lock`
 - `POST /api/snapshot/<cam_id>` · `GET /api/snapshots` · `GET /api/snapshots/<id>`
 
-**Hareket / İnsan Algılama**
-- `GET /api/detection/status` — kamera başına canlı algılama durumu (bağlantı, son olay, hata logu)
+**Hareket / İnsan / Araç Algılama**
+- `GET /api/detection/status` — kamera başına canlı algılama durumu (HA bağlantısı, son olay, hata logu)
 - `GET /api/detection/events?cam=<id>&from=<ts>&to=<ts>` — playback timeline'ı için algılama aralıkları
-- `POST /api/cameras/<id>/detection/test` — ONVIF bağlantısını anlık test eder
+
+**Home Assistant**
+- `GET /api/homeassistant/settings` · `POST /api/homeassistant/settings` — URL/token/verify_ssl (token asla geri okunmaz)
+- `POST /api/homeassistant/test` — bağlantıyı anlık test eder
+- `GET /api/homeassistant/entities` — `binary_sensor.*` varlık listesi (kamera sensör seçicisi için)
 
 **PTZ**
 - `POST /api/ptz/<id>/move` · `POST /api/ptz/<id>/stop`
@@ -238,7 +248,7 @@ ONVIF hareket/insan algılama motorunun tamamı `app/detection.py` içindedir (k
 - `DELETE /api/groups/<id>`
 - `GET /api/notifications?unread_only=&limit=` · `DELETE /api/notifications` · `POST /api/notifications/read-all`
 
-**Ağ
+**Ağ**
 - `GET /api/network/status` — arayüz listesi (durum, IP/MAC, bant genişliği, son bağlanma/kopma) + son olaylar
 
 **Sistem / Güncelleme**

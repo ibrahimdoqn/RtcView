@@ -29,6 +29,16 @@ DEFAULT_CONFIG = {
         "api_port": 1984,
         "rtsp_port": 8554,
     },
+    # Single Home Assistant instance RtcView pulls motion/person/vehicle
+    # detection state from, over its WebSocket API. token is a long-lived
+    # access token generated in HA's own user profile page. Stored in
+    # plain text in config.json, same trust model as onvif_pass/tapo
+    # fields elsewhere in this file — this app has no secrets vault.
+    "home_assistant": {
+        "url": "",
+        "token": "",
+        "verify_ssl": True,
+    },
     "recording": {
         "enabled": True,
         # Single recording root. Deliberately ONE disk, mounted by the
@@ -66,16 +76,26 @@ CAMERA_RECORDING_DEFAULTS = {
     "retention_days_override": 0,  # 0 = use global
 }
 
-# Per-camera ONVIF motion/person event-detection defaults. Opt-in per
-# camera since not every camera's ONVIF stack actually emits these
-# topics. motion_timeout_seconds handles cameras (e.g. Tapo) that only
-# ever send the "started" edge and never report motion stopping: if no
-# new event for a kind arrives within this window, it's treated as over.
+# Per-camera Home Assistant detection-source mapping. Each field is the
+# entity_id of a binary_sensor in HA (e.g. "binary_sensor.front_door_
+# motion") whose on/off state drives that camera's timeline/notifications
+# for that kind — empty string means "not wired up, ignore this kind for
+# this camera". Replaces the old ONVIF PullPoint-based motion/person
+# detection (removed entirely — RtcView no longer talks ONVIF events to
+# cameras itself, HA does that job and RtcView just consumes its state).
 CAMERA_DETECTION_DEFAULTS = {
-    "motion_detection_enabled": False,
-    "person_detection_enabled": False,
-    "motion_timeout_seconds": 15,
+    "ha_motion_entity": "",
+    "ha_person_entity": "",
+    "ha_vehicle_entity": "",
 }
+
+# Camera keys the old ONVIF-based detection engine used that nothing
+# reads any more. Stripped on load so a stale value can't sit in
+# config.json looking meaningful. onvif_host/port/user/pass are NOT here
+# — PTZ (app/ptz.py) still uses those independently of detection.
+CAMERA_DETECTION_LEGACY_KEYS = (
+    "motion_detection_enabled", "person_detection_enabled", "motion_timeout_seconds",
+)
 
 # Per-GROUP notification defaults (notifications are configured per group,
 # not per camera — a camera inherits from every group it belongs to, and a
@@ -111,7 +131,7 @@ def _migrate_notify_schedule(schedule):
     Old shape (same as record_schedule): {"days", "start", "end"} — a
     period during which notifications are on.
     New shape: {"days", "time", "action"} — a moment at which they are
-    switched on or off. See _notify_rules_active in detection.py.
+    switched on or off. See apply_notify_rules in app/notify_rules.py.
 
     A NON-wrapping window (end > start) converts exactly: ON at `start`,
     OFF at `end`, same days.
@@ -224,6 +244,8 @@ class ConfigStore:
                 cam.setdefault(k, json.loads(json.dumps(v)))
             for k, v in CAMERA_DETECTION_DEFAULTS.items():
                 cam.setdefault(k, json.loads(json.dumps(v)))
+            for k in CAMERA_DETECTION_LEGACY_KEYS:
+                cam.pop(k, None)
             cam.setdefault("group_ids", [])
         for g in self._data.get("groups", []):
             for k, v in GROUP_NOTIFICATION_DEFAULTS.items():
@@ -255,6 +277,14 @@ class ConfigStore:
     def update_go2rtc(self, updates: dict):
         with _lock:
             self._data["go2rtc"].update(updates)
+            self._save_locked()
+
+    def get_home_assistant(self):
+        return self._data["home_assistant"]
+
+    def update_home_assistant(self, updates: dict):
+        with _lock:
+            self._data["home_assistant"].update(updates)
             self._save_locked()
 
     def get_recording(self):
