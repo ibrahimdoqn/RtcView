@@ -895,46 +895,8 @@ kbd{
 .rec-health-error   .rec-health-dot { background:var(--danger); box-shadow:0 0 8px rgba(255,69,58,.7); }
 
 
-/* Multi-storage path list */
-.rec-paths{display:flex;flex-direction:column;gap:.35rem;margin-top:.25rem;}
-.rec-path-row{
-  display:grid;grid-template-columns:auto 1fr 88px auto;gap:.35rem;align-items:center;
-  background:var(--panel-2);border:1px solid var(--border-solid);
-  border-radius:9px;padding:.4rem .5rem;
-}
-.rec-path-row .rp-quota{
-  text-align:center;padding:.25rem .35rem;font-family:ui-monospace,monospace;
-  font-size:.78rem;background:rgba(255,255,255,.03);
-  border:1px solid var(--border);border-radius:6px;color:var(--text);
-  width:88px;
-  -moz-appearance:textfield;
-}
-.rec-path-row .rp-quota::-webkit-outer-spin-button,
-.rec-path-row .rp-quota::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
-.rec-path-row .rp-quota:focus{background:rgba(255,255,255,.06);}
-.rec-path-row .rp-badge{
-  width:20px;height:20px;border-radius:50%;font-size:.62rem;font-weight:700;
-  display:grid;place-items:center;background:rgba(255,255,255,.06);color:var(--muted);
-  border:1px solid var(--border);flex:0 0 auto;
-}
-.rec-path-row.primary .rp-badge{background:var(--accent);color:#fff;border-color:var(--accent);}
-.rec-path-row input{
-  background:transparent;border:0;color:var(--text);
-  font-family:ui-monospace,"SF Mono",monospace;font-size:.82rem;
-  padding:.3rem 0;outline:none;min-width:0;width:100%;
-}
-.rec-path-row input:focus{background:rgba(255,255,255,.05);border-radius:5px;padding-left:.35rem;}
-.rec-path-row .rp-free{color:var(--muted);font-size:.7rem;white-space:nowrap;font-family:ui-monospace,monospace;}
-.rec-path-row .rp-btn{
-  color:var(--muted);border-radius:7px;padding:.3rem .5rem;
-  transition:background .12s var(--ease-out), color .12s var(--ease-out);
-}
-.rec-path-row .rp-btn:hover{background:rgba(255,255,255,.08);color:var(--text);}
-.rec-path-row .rp-btn.rp-del:hover{background:rgba(255,69,58,.18);color:var(--danger);}
-.rec-path-row .rp-btn.rp-test-ok  { color:var(--ok);  }
-.rec-path-row .rp-btn.rp-test-err { color:var(--danger); }
-
-/* Depolama page: Disk Yönetimi card (physical block devices) */
+/* Ağ Durumu panel: per-interface cards (also shared by an older removed
+   feature's naming, kept generic — see the Sistem tab comment below) */
 .disk-list{display:flex;flex-direction:column;gap:.5rem;margin-top:.3rem;}
 .disk-row{
   background:var(--panel-2);border:1px solid var(--border-solid);
@@ -951,38 +913,17 @@ kbd{
 }
 .disk-row-tag.mounted{background:rgba(48,209,88,.14);border-color:rgba(48,209,88,.35);color:var(--ok);}
 .disk-row-tag.down{background:rgba(255,69,58,.14);border-color:rgba(255,69,58,.35);color:var(--danger);}
-.disk-row-actions{display:flex;gap:.4rem;margin-left:auto;flex-wrap:wrap;}
 .disk-row-empty{color:var(--muted);font-size:.82rem;padding:.5rem 0;}
 
-/* Sistem tab: Ağ Durumu panel (reuses .disk-list/.disk-row for the
-   per-interface cards, .log-view for the recent-events feed) */
+/* Sistem tab: Ağ Durumu panel (.log-view for the recent-events feed) */
 .net-events-title{
   color:var(--muted);font-size:.7rem;font-weight:600;text-transform:uppercase;
   letter-spacing:.06em;margin:.7rem 0 .3rem;
 }
 .net-iface-rate{display:flex;gap:.9rem;margin-top:.25rem;font-size:.75rem;color:var(--muted);}
 .net-iface-rate b{color:var(--text);font-family:ui-monospace,"SF Mono",monospace;font-weight:500;}
-.disk-format-panel{
-  margin-top:.55rem;padding-top:.55rem;border-top:1px solid var(--border);
-  display:flex;flex-direction:column;gap:.5rem;
-}
-.disk-format-warn{
-  background:rgba(255,69,58,.1);border:1px solid rgba(255,69,58,.3);color:var(--danger);
-  border-radius:8px;padding:.5rem .6rem;font-size:.78rem;font-weight:600;
-}
-.disk-format-fstypes{display:flex;gap:.9rem;font-size:.85rem;}
-.disk-format-fstypes label{display:flex;align-items:center;gap:.35rem;font-weight:400;}
-.disk-format-confirm-input{
-  font-family:ui-monospace,"SF Mono",monospace;
-}
-.disk-mount-panel{
-  margin-top:.55rem;padding-top:.55rem;border-top:1px solid var(--border);
-  display:flex;flex-direction:column;gap:.5rem;
-}
-.disk-job-status{font-size:.78rem;color:var(--muted);}
-.disk-job-status.err{color:var(--danger);}
 
-/* Per-disk fill bars in the storage-status section */
+/* Storage root's fill bar (Kayıt & Depolama) */
 .disk-bars{display:flex;flex-direction:column;gap:.5rem;margin-top:.4rem;}
 .disk-bar{
   background:var(--panel-2);border:1px solid var(--border-solid);

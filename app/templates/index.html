@@ -292,16 +292,16 @@
         <fieldset>
           <legend>Kayıt &amp; Depolama</legend>
           <label class="row"><input id="s-rec-enabled" type="checkbox" /> Kayıt sistemi aktif</label>
-          <label>Kayıt klasörleri (birden fazla ekleyebilirsiniz)
-            <div id="s-rec-paths" class="rec-paths"></div>
-            <button type="button" id="s-rec-path-add" class="btn ghost small">+ Klasör ekle</button>
-            <small>Her yeni segment en boş yola yazılır. Playback + retention tüm yollara yayılır.
-              Bir yol düşerse diğerleri kullanılmaya devam eder.</small>
+          <label>Kayıt klasörü
+            <input id="s-rec-path" type="text" placeholder="/opt/rtcview/recordings veya /mnt/harici-disk/rtcview" />
+            <small>Diski buraya işaret etmeden önce sisteme kendiniz bağlayın (RtcView disk biçimlendirme/bağlama
+              yapmaz — bkz. Kurulum). Kayıt yolunu değiştirmek servisi kısa süreliğine durdurup yeniden başlatır.</small>
           </label>
           <div class="grid2">
             <label>Segment (sn) <input id="s-rec-segment" type="number" min="30" max="3600" /></label>
             <label>Retention (gün) <input id="s-rec-retention" type="number" min="0" /></label>
           </div>
+          <label>Kota (GB, 0 = sınırsız) <input id="s-rec-quota" type="number" min="0" /></label>
           <div id="s-rec-usage-summary" class="usage-text">—</div>
           <div id="s-rec-disk-bars" class="disk-bars"></div>
           <div id="s-rec-health" class="rec-health rec-health-ok">
@@ -316,19 +316,6 @@
         <div class="modal-actions">
           <button type="button" id="s-save-kayit" class="btn primary">Kaydet</button>
         </div>
-
-        <fieldset>
-          <legend>Disk Yönetimi</legend>
-          <small>Bilgisayara bağlı fiziksel diskleri buradan biçimlendirebilir, bağlayabilir ve
-            ayırabilirsiniz. Sistem diski hiçbir zaman listelenmez. Yeni diskler
-            <code>/mnt/rtcview/</code> altına bağlanır ve <code>/etc/fstab</code>'a gerek kalmadan
-            her açılışta otomatik olarak yeniden bağlanır.</small>
-          <div class="row" style="gap:.4rem;margin:.4rem 0;">
-            <button type="button" id="disk-refresh" class="btn ghost small">Yenile</button>
-            <span id="disk-list-status" class="usage-text"></span>
-          </div>
-          <div id="disk-list" class="disk-list"></div>
-        </fieldset>
       </div>
 
       <!-- Sistem -->

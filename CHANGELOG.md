@@ -5,6 +5,23 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-12
+
+### Yıkıcı değişiklik
+- **Disk Yönetimi özelliği tamamen kaldırıldı.** RtcView artık disk biçimlendirme, bağlama veya ayırma yapmıyor — bir NanoPi R4S üzerinde harici bir USB diskin bağlantısı fiziksel olarak kararsız çıkması ve bunun üzerine otomatik root-bazlı temizlik mantığının duruma yanlış tepki vermesiyle ciddi bir olay yaşandıktan sonra bilinçli bir sadeleştirme kararı: tek bir diski elle (fstab ile) yönetmek, uygulamanın kendi kendine format/mount/unmount yapmasından çok daha öngörülebilir ve güvenli.
+- **Depolama artık tek bir kayıt köküne (`recording.storage_path`) sadeleştirildi** — önceki çoklu-disk `storage_paths` listesi, sıralı-doldurma (`pick_write_root`) mantığı ve buna bağlı tüm per-root purge/quota kodu kaldırıldı. Mevcut `config.json`'daki eski `storage_paths` girdisi ilk açılışta otomatik olarak tek bir `storage_path`'e göçürülür (ilk kayıtlı yol kullanılır).
+- Kaldırılan API uç noktaları: `GET /api/storage/devices`, `POST /api/storage/format`, `POST /api/storage/mount`, `POST /api/storage/unmount`, `GET /api/storage/job/<id>`. `POST /api/recording/settings` artık `storage_paths` (liste) değil `storage_path` (tek metin) kabul ediyor.
+- Kaldırılan dosyalar: `app/diskmgr.py`, `scripts/diskmgr_worker.py`, `scripts/diskmgr_boot.py`, ve bunlara bağlı `rtcview-diskmgr.path`/`.service`/`rtcview-diskmgr-boot.service` systemd birimleri (`update.sh` mevcut kurulumlarda bunları otomatik temizler).
+- Ayarlar arayüzünde "Disk Yönetimi" paneli ve çoklu-klasör ("+ Klasör ekle") listesi kaldırıldı; Kayıt & Depolama artık tek bir yol + kota alanı.
+
+### Eklendi
+- Kayıt kökü fiziksel olarak dolmaya yaklaştığında (boş alan güvenlik payının altına düştüğünde), en eski kayıtlar — global retention süresi (varsayılan 14 gün) dolmasını beklemeden — otomatik silinip yer açılıyor (tek-disk mimarisine taşınan, önceki root-bazlı önleyici temizliğin karşılığı).
+- Bir segment silinirken dosya diskten fiilen kaldırılamazsa, bir sonraki temizlik turunda otomatik olarak disk yeniden taranıyor — index'te görünmeyen ama fiilen diskte duran dosyalar kendiliğinden yeniden kayda alınıp temizlenebilir hale geliyor.
+
+### Düzeltildi
+- Depolama sağlığı artık disk gerçekten doluyken bazı dosya sistemlerinin (ör. f2fs) `ENOSPC` yerine `EIO` döndürmesini de "disk dolu" durumu olarak tanıyor; silinecek eski kayıt olduğu sürece sert hata yerine normal rolling-storage davranışı gösteriyor.
+- Tüm temizlik aşamaları, bir silme işlemi dosyayı fiilen serbest bırakmadığı anda o turdaki temizliği hemen durduruyor — bir kökün gerçekten silme dahi yapamayacak kadar dolu olduğu (üretimde arızalı bir USB bağlantısında gözlemlendi) durumlarda index'in tamamının boşuna boşaltılmasını önlüyor.
+
 ## [1.1.1] - 2026-08-12
 
 ### Düzeltildi
@@ -35,7 +52,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ibrahimdoqn/RtcView/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ibrahimdoqn/RtcView/releases/tag/v1.0.0

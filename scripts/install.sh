@@ -82,12 +82,7 @@ apt-get update -y
 apt-get install -y --no-install-recommends \
   python3 python3-venv python3-pip python3-dev \
   build-essential libxml2-dev libxslt1-dev libffi-dev \
-  curl ca-certificates tar ffmpeg \
-  util-linux e2fsprogs f2fs-tools
-
-if ! command -v mkfs.f2fs >/dev/null 2>&1; then
-  warn "mkfs.f2fs bulunamadı. Depolama sayfasında f2fs biçimlendirme seçeneği devre dışı kalır (ext4 etkilenmez)."
-fi
+  curl ca-certificates tar ffmpeg
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
   warn "ffmpeg bulunamadı. Kayıt çalışmayacak — kurun: sudo apt-get install ffmpeg"
@@ -165,7 +160,6 @@ if [ ! -f "$CONFIG_FILE" ]; then
   "recording": {
     "enabled": true,
     "storage_path": "${REC_PATH}",
-    "storage_paths": [{"path": "${REC_PATH}", "max_gb": 0}],
     "segment_seconds": 300,
     "retention_days": 14,
     "max_gb": 0,
@@ -186,16 +180,7 @@ d.setdefault("go2rtc", {}).update({"host": host, "api_port": gport, "rtsp_port":
 rec = d.setdefault("recording", {})
 rec.setdefault("enabled", True)
 rec["storage_path"] = recpath
-# Normalize storage_paths into the {path, max_gb} object schema.
-default_quota = int(rec.get("max_gb", 0) or 0)
-paths = rec.get("storage_paths") or [recpath]
-migrated = []
-for e in paths:
-    if isinstance(e, str):
-        migrated.append({"path": e, "max_gb": default_quota})
-    elif isinstance(e, dict) and e.get("path"):
-        migrated.append({"path": str(e["path"]), "max_gb": int(e.get("max_gb", default_quota) or 0)})
-rec["storage_paths"] = migrated or [{"path": recpath, "max_gb": 0}]
+rec.pop("storage_paths", None)
 rec.setdefault("segment_seconds", 300)
 rec.setdefault("retention_days", 14)
 rec.setdefault("max_gb", 0)
@@ -247,66 +232,6 @@ SVCUNIT
 
 systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}-updater.path"
-
-# ------------- disk management capability (job-queue-triggered root service) -------------
-# Same NoNewPrivileges constraint as above, extended: format/mount/unmount
-# are far more consequential than a self-update, so instead of a single
-# fire-and-forget trigger FILE this is a job-queue DIRECTORY with a
-# payload in and a result written back (see app/diskmgr.py's module
-# docstring, scripts/diskmgr_worker.py). rtcview-diskmgr-boot.service
-# additionally remounts every RtcView-managed disk on every boot — those
-# disks are deliberately mounted WITHOUT an /etc/fstab entry (the Depolama
-# page's whole point), so nothing else would ever remount them after a
-# reboot; it MUST run before rtcview.service since recorders need their
-# mountpoints to already exist and be writable.
-info "Disk yönetimi yetkisi kuruluyor (iş kuyruğu + açılış servisi)..."
-mkdir -p "${INSTALL_DIR}/diskmgr/jobs" "${INSTALL_DIR}/diskmgr/results"
-chown -R "$SERVICE_USER":"$SERVICE_USER" "${INSTALL_DIR}/diskmgr"
-chmod 0755 "${INSTALL_DIR}/scripts/diskmgr_worker.py" "${INSTALL_DIR}/scripts/diskmgr_boot.py" 2>/dev/null || true
-
-cat > "/etc/systemd/system/${SERVICE_NAME}-diskmgr.path" <<PATHUNIT
-[Unit]
-Description=RtcView disk-manager job queue watcher
-
-[Path]
-DirectoryNotEmpty=${INSTALL_DIR}/diskmgr/jobs
-Unit=${SERVICE_NAME}-diskmgr.service
-
-[Install]
-WantedBy=multi-user.target
-PATHUNIT
-
-cat > "/etc/systemd/system/${SERVICE_NAME}-diskmgr.service" <<SVCUNIT
-[Unit]
-Description=RtcView disk-manager job worker (format/mount/unmount)
-
-[Service]
-Type=oneshot
-Environment=RTCVIEW_HOME=${INSTALL_DIR}
-Environment=RTCVIEW_SERVICE_USER=${SERVICE_USER}
-ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/scripts/diskmgr_worker.py
-SVCUNIT
-
-cat > "/etc/systemd/system/${SERVICE_NAME}-diskmgr-boot.service" <<BOOTUNIT
-[Unit]
-Description=RtcView disk-manager boot-time remount (no /etc/fstab entries)
-After=local-fs.target
-Before=${SERVICE_NAME}.service
-
-[Service]
-Type=oneshot
-Environment=RTCVIEW_HOME=${INSTALL_DIR}
-Environment=RTCVIEW_CONFIG=${INSTALL_DIR}/config
-Environment=RTCVIEW_SERVICE_USER=${SERVICE_USER}
-ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/scripts/diskmgr_boot.py
-
-[Install]
-WantedBy=multi-user.target
-BOOTUNIT
-
-systemctl daemon-reload
-systemctl enable --now "${SERVICE_NAME}-diskmgr.path"
-systemctl enable --now "${SERVICE_NAME}-diskmgr-boot.service"
 
 # ------------- restart / reboot capability (trigger-file, root services) -------------
 # Same shape again: the app can't call systemctl or reboot itself
@@ -367,16 +292,13 @@ systemctl enable --now "${SERVICE_NAME}-reboot.path"
 # ------------- systemd -------------
 info "systemd servisi kuruluyor..."
 # ReadWritePaths includes INSTALL_DIR, the chosen REC_PATH, and common mount
-# roots (/mnt /media /srv /var/lib) so the user can later switch to any of
-# those from the UI without needing a systemd unit change. New disks the
-# Depolama page mounts default under /mnt/rtcview/, already covered here.
-# After= on the diskmgr-boot unit guarantees ordering explicitly rather
-# than relying on WantedBy= alone -- recorders need their mountpoints to
-# already exist by the time this service starts.
+# roots (/mnt /media /srv /var/lib) so the user can point recording at a
+# disk they mount themselves (see README's Kurulum) without needing a
+# systemd unit change.
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNIT
 [Unit]
 Description=RtcView — go2rtc camera viewer + recorder
-After=network-online.target ${SERVICE_NAME}-diskmgr-boot.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]

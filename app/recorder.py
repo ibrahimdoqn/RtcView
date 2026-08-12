@@ -677,10 +677,7 @@ class RecordingManager:
         if not shutil.which(ffmpeg) and not os.path.isfile(ffmpeg):
             log.warning("ffmpeg not available at %r — recording disabled for %s", ffmpeg, cam["id"])
             return None
-        # Multi-root: at least ONE configured root must be usable. The
-        # recorder itself picks a specific root at start() time from
-        # storage.pick_write_root() so a full/failed root is skipped.
-        if not any(_is_root_usable(r) for r in self.storage.roots()):
+        if not _is_root_usable(self.storage.root()):
             log.warning("no usable storage root — skipping recorder for %s", cam["id"])
             return None
         return CameraRecorder(

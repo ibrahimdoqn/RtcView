@@ -1731,237 +1731,13 @@
     if (name === "genel") loadGenelTab();
     else if (name === "kameralar") showCameraList();
     else if (name === "bildirimler") loadNotifSettingsTab();
-    else if (name === "kayit"){ loadKayitTab(); refreshDiskList(); }
+    else if (name === "kayit") loadKayitTab();
     else if (name === "sistem") loadMemCeiling();
   }
   $$(".settings-tab-btn").forEach(btn => btn.addEventListener("click", () => switchSettingsTab(btn.dataset.tab)));
   $("#btn-settings").addEventListener("click", () => openSettingsPage("genel"));
   $("#settings-close").addEventListener("click", closeSettingsPage);
   _bindBackdropClose($("#settings-backdrop"), closeSettingsPage);
-
-  // -------- Disk Yönetimi (Ayarlar → Kayıt & Depolama tab) --------
-  let _diskDevices = [];
-  let _diskF2fsAvailable = false;
-
-  async function refreshDiskList(){
-    const statusEl = $("#disk-list-status");
-    const listEl = $("#disk-list");
-    statusEl.textContent = "Yükleniyor…";
-    try {
-      const r = await api.get("/api/storage/devices");
-      if (r.error){
-        listEl.innerHTML = `<div class="disk-row-empty">${escapeHtml(r.error)}</div>`;
-        statusEl.textContent = "";
-        return;
-      }
-      _diskDevices = r.devices || [];
-      _diskF2fsAvailable = !!r.f2fs_available;
-      renderDiskList();
-      statusEl.textContent = _diskDevices.length ? `${_diskDevices.length} disk` : "";
-    } catch (e) {
-      listEl.innerHTML = `<div class="disk-row-empty">Hata: ${escapeHtml(e.message)}</div>`;
-      statusEl.textContent = "";
-    }
-  }
-  $("#disk-refresh").addEventListener("click", refreshDiskList);
-
-  function _diskKey(d){ return d.path.replace(/[^a-zA-Z0-9]/g, "_"); }
-
-  function renderDiskList(){
-    const listEl = $("#disk-list");
-    if (!_diskDevices.length){
-      listEl.innerHTML = `<div class="disk-row-empty">Uygun disk bulunamadı (sistem diski hariç tutulur).</div>`;
-      return;
-    }
-    listEl.innerHTML = _diskDevices.map(d => _diskRowHtml(d)).join("");
-    _diskDevices.forEach(d => _wireDiskRow(d));
-  }
-
-  function _diskRowHtml(d){
-    const mounted = !!d.mountpoint;
-    const hasFs = !!d.fstype;
-    // "managed" (from GET /api/storage/devices, cross-referenced against
-    // config.disks) means RtcView itself mounted this. A device mounted
-    // by something else entirely -- a hand-set-up NFS share, a log2ram
-    // zram mount at /var/log, /home on its own partition -- must never
-    // offer Ayır/"add as recording folder": unmounting it could break
-    // whatever put it there, and recording onto e.g. a RAM-backed log
-    // mount would be actively harmful. The backend already refuses an
-    // unmount for an unrecognised uuid (POST /api/storage/unmount 404s),
-    // so this isn't a safety gap either way -- just not worth offering a
-    // button guaranteed to fail with a confusing error.
-    let actions;
-    if (mounted && d.managed){
-      actions = `<button type="button" class="btn ghost small disk-btn-addroot">Kayıt klasörü olarak ekle</button>
-        <button type="button" class="btn ghost small disk-btn-unmount">Ayır</button>`;
-    } else if (mounted){
-      actions = "";
-    } else if (hasFs){
-      actions = `<button type="button" class="btn ghost small disk-btn-mount">Bağla</button>
-        <button type="button" class="btn ghost small disk-btn-format">Formatla</button>`;
-    } else {
-      actions = `<button type="button" class="btn ghost small disk-btn-format">Formatla</button>`;
-    }
-    return `
-      <div class="disk-row" data-key="${_diskKey(d)}">
-        <div class="disk-row-head">
-          <span class="disk-row-path">${escapeHtml(d.path)}</span>
-          <span class="disk-row-meta">${fmtBytes(d.size)}</span>
-          <span class="disk-row-tag">${hasFs ? escapeHtml(d.fstype) + (d.label ? " · " + escapeHtml(d.label) : "") : "boş"}</span>
-          ${mounted ? `<span class="disk-row-tag mounted">${escapeHtml(d.mountpoint)}${d.managed ? "" : " (harici)"}</span>` : ""}
-          <div class="disk-row-actions">${actions}</div>
-        </div>
-        <div class="disk-row-expand"></div>
-      </div>`;
-  }
-
-  function _diskDefaultMountpoint(d){
-    const base = (d.label || d.path.split("/").pop() || "disk").replace(/[^a-zA-Z0-9_-]/g, "_");
-    return `/mnt/rtcview/${base}`;
-  }
-
-  function _wireDiskRow(d){
-    const row = $(`.disk-row[data-key="${_diskKey(d)}"]`);
-    if (!row) return;
-    const expand = row.querySelector(".disk-row-expand");
-
-    const fmtBtn = row.querySelector(".disk-btn-format");
-    if (fmtBtn) fmtBtn.addEventListener("click", () => _openFormatPanel(d, expand));
-
-    const mountBtn = row.querySelector(".disk-btn-mount");
-    if (mountBtn) mountBtn.addEventListener("click", () => _openMountPanel(d, expand));
-
-    const unmountBtn = row.querySelector(".disk-btn-unmount");
-    if (unmountBtn) unmountBtn.addEventListener("click", () => _unmountDisk(d));
-
-    const addRootBtn = row.querySelector(".disk-btn-addroot");
-    if (addRootBtn) addRootBtn.addEventListener("click", () => {
-      _renderRecPaths([..._readRecPaths(), { path: d.mountpoint, max_gb: 0 }]);
-      toast("Kayıt klasörlerine eklendi — kaydetmeyi unutmayın", "ok");
-      $("#s-rec-paths").scrollIntoView({ behavior: "smooth", block: "center" });
-    });
-  }
-
-  function _openFormatPanel(d, expand){
-    const hasFs = !!d.fstype;
-    const radioName = `fmt-fstype-${_diskKey(d)}`;
-    expand.innerHTML = `
-      <div class="disk-format-panel">
-        ${hasFs ? `<div class="disk-format-warn">Bu cihazda zaten veri var (${escapeHtml(d.fstype)}${d.label ? ", etiket: " + escapeHtml(d.label) : ""}) — TÜMÜ SİLİNECEK.</div>` : ""}
-        <div class="disk-format-fstypes">
-          <label><input type="radio" name="${radioName}" value="ext4" checked /> ext4</label>
-          <label><input type="radio" name="${radioName}" value="f2fs" ${_diskF2fsAvailable ? "" : "disabled"} /> f2fs${_diskF2fsAvailable ? "" : " (kurulu değil)"}</label>
-        </div>
-        <label>Etiket (isteğe bağlı) <input type="text" class="fmt-label" maxlength="16" placeholder="rtcview" /></label>
-        <label>Onaylamak için cihaz yolunu yazın: <code>${escapeHtml(d.path)}</code>
-          <input type="text" class="fmt-confirm disk-format-confirm-input" placeholder="${escapeHtml(d.path)}" autocomplete="off" />
-        </label>
-        <div class="row" style="gap:.4rem;">
-          <button type="button" class="btn danger small fmt-go" disabled>Formatla</button>
-          <button type="button" class="btn ghost small fmt-cancel">Vazgeç</button>
-        </div>
-        <div class="disk-job-status"></div>
-      </div>`;
-    const confirmInput = expand.querySelector(".fmt-confirm");
-    const goBtn = expand.querySelector(".fmt-go");
-    confirmInput.addEventListener("input", () => {
-      goBtn.disabled = confirmInput.value.trim() !== d.path;
-    });
-    expand.querySelector(".fmt-cancel").addEventListener("click", () => { expand.innerHTML = ""; });
-    goBtn.addEventListener("click", async () => {
-      const fstype = expand.querySelector(`input[name="${radioName}"]:checked`).value;
-      const label = expand.querySelector(".fmt-label").value.trim();
-      goBtn.disabled = true;
-      const statusEl = expand.querySelector(".disk-job-status");
-      statusEl.textContent = "Formatlanıyor…"; statusEl.classList.remove("err");
-      try {
-        const r = await api.post("/api/storage/format", { device: d.path, fstype, label });
-        _pollDiskJob(r.job_id, statusEl, () => { refreshDiskList(); });
-      } catch (e) {
-        statusEl.textContent = "Hata: " + e.message; statusEl.classList.add("err");
-        goBtn.disabled = false;
-      }
-    });
-  }
-
-  function _openMountPanel(d, expand){
-    expand.innerHTML = `
-      <div class="disk-mount-panel">
-        <label>Bağlama yolu <input type="text" class="mnt-path" value="${escapeHtml(_diskDefaultMountpoint(d))}" /></label>
-        <div class="row" style="gap:.4rem;">
-          <button type="button" class="btn primary small mnt-go">Bağla</button>
-          <button type="button" class="btn ghost small mnt-cancel">Vazgeç</button>
-        </div>
-        <div class="disk-job-status"></div>
-      </div>`;
-    expand.querySelector(".mnt-cancel").addEventListener("click", () => { expand.innerHTML = ""; });
-    expand.querySelector(".mnt-go").addEventListener("click", async () => {
-      const mountpoint = expand.querySelector(".mnt-path").value.trim();
-      const goBtn = expand.querySelector(".mnt-go");
-      const statusEl = expand.querySelector(".disk-job-status");
-      if (!mountpoint.startsWith("/")){
-        statusEl.textContent = "Mutlak bir yol girin (ör. /mnt/rtcview/disk1)";
-        statusEl.classList.add("err");
-        return;
-      }
-      goBtn.disabled = true;
-      statusEl.textContent = "Bağlanıyor…"; statusEl.classList.remove("err");
-      try {
-        const r = await api.post("/api/storage/mount", { device: d.path, mountpoint, label: d.label || "" });
-        _pollDiskJob(r.job_id, statusEl, () => { refreshDiskList(); });
-      } catch (e) {
-        statusEl.textContent = "Hata: " + e.message; statusEl.classList.add("err");
-        goBtn.disabled = false;
-      }
-    });
-  }
-
-  async function _unmountDisk(d){
-    if (!confirm(`${d.mountpoint} ayrılsın mı?`)) return;
-    try {
-      const r = await api.post("/api/storage/unmount", { uuid: d.uuid });
-      toast("Ayırma başlatıldı", "ok");
-      _pollDiskJob(r.job_id, null, () => { refreshDiskList(); });
-    } catch (e) { toast("Ayırma başlatılamadı: " + e.message, "err"); }
-  }
-
-  // Polls GET /api/storage/job/<id> (ok:null while pending) every second
-  // until resolved, up to a ~120s ceiling -- format/mount are usually a
-  // few seconds on modern ext4/f2fs but can run longer on slow SBC
-  // storage controllers. Stops silently (no error, no callback) once
-  // Ayarlar is closed -- no cancellation token needed for at most one or
-  // two concurrent polls.
-  function _pollDiskJob(jobId, statusEl, onSuccess){
-    const start = Date.now();
-    const setStatus = (text, isErr) => {
-      if (!statusEl) return;
-      statusEl.textContent = text;
-      statusEl.classList.toggle("err", !!isErr);
-    };
-    const tick = async () => {
-      if ($("#settings-page").classList.contains("hidden")) return;
-      let res;
-      try { res = await api.get(`/api/storage/job/${jobId}`); }
-      catch (e) { setStatus("Hata: " + e.message, true); return; }
-      if (res.ok === null){
-        if (Date.now() - start > 120000){
-          setStatus("Zaman aşımı — işlem hâlâ sürüyor olabilir, listeyi yenileyin.", true);
-          return;
-        }
-        setTimeout(tick, 1000);
-        return;
-      }
-      if (res.ok){
-        setStatus("Tamamlandı", false);
-        toast("İşlem tamamlandı", "ok");
-        onSuccess();
-      } else {
-        setStatus("Hata: " + (res.error || "bilinmeyen hata"), true);
-        toast("İşlem başarısız: " + (res.error || "bilinmeyen hata"), "err");
-      }
-    };
-    tick();
-  }
 
   // Tracks whether the go2rtc fields actually loaded from the server. If a
   // transient fetch failure leaves them at their empty HTML defaults, the
@@ -2024,29 +1800,22 @@
       const r = await api.get("/api/recording/settings");
       state.recording = r;
       $("#s-rec-enabled").checked = r.enabled !== false;
-      // storage_paths is now a list of {path, max_gb}. Older configs
-      // return list of strings — normalise here so the row renderer
-      // always sees objects.
-      let paths = (r.storage_paths && r.storage_paths.length)
-                     ? r.storage_paths
-                     : (r.storage_path ? [r.storage_path] : [""]);
-      paths = paths.map(x => (typeof x === "string")
-        ? { path: x, max_gb: 0 }
-        : { path: x.path || "", max_gb: parseInt(x.max_gb || 0) || 0 });
-      _renderRecPaths(paths);
+      $("#s-rec-path").value = r.storage_path || "";
       $("#s-rec-segment").value = r.segment_seconds || 300;
       $("#s-rec-retention").value = r.retention_days || 14;
+      $("#s-rec-quota").value = parseInt(r.max_gb || 0) || 0;
     } catch {}
     refreshUsageBar();
   }
   $("#s-save-kayit").addEventListener("click", async () => {
-    const paths = _readRecPaths();
-    if (!paths.length){ toast("En az bir kayıt klasörü ekleyin", "err"); return; }
+    const path = $("#s-rec-path").value.trim();
+    if (!path){ toast("Kayıt klasörü boş olamaz", "err"); return; }
     const recBody = {
       enabled: $("#s-rec-enabled").checked,
-      storage_paths: paths,
+      storage_path: path,
       segment_seconds: parseInt($("#s-rec-segment").value || 300),
       retention_days: parseInt($("#s-rec-retention").value || 14),
+      max_gb: Math.max(0, parseInt($("#s-rec-quota").value || 0) || 0),
     };
     try {
       state.recording = await api.post("/api/recording/settings", recBody);
@@ -2245,35 +2014,26 @@
     try {
       const s = await api.get("/api/recording/status");
       const st = s.storage || {};
-      const roots = st.roots || [];
       const disk = st.disk || {};
-      const rootCount = roots.length;
-      // Özet satır: toplam kayıt boyutu + kaç yol + toplam disk bilgisi.
+      // Özet satır: toplam kayıt boyutu + disk bilgisi.
       const summary = $("#s-rec-usage-summary");
       if (summary) {
         const oldest = st.oldest_started_at
           ? ` · en eski kayıt: ${new Date(st.oldest_started_at * 1000).toLocaleString("tr-TR")}`
           : "";
         summary.textContent =
-          `${fmtBytes(st.bytes_used || 0)} kayıt · ${rootCount} yol · ` +
-          `toplam ${fmtBytes(disk.free || 0)} boş / ${fmtBytes(disk.total || 0)}` +
+          `${fmtBytes(st.bytes_used || 0)} kayıt · ` +
+          `${fmtBytes(disk.free || 0)} boş / ${fmtBytes(disk.total || 0)}` +
           ` · ${st.segment_count || 0} segment` + oldest +
           (s.ffmpeg_available ? "" : " · ⚠ ffmpeg bulunamadı");
       }
-      // Per-disk bar list.
       const list = $("#s-rec-disk-bars");
-      if (list) {
-        if (!roots.length) {
-          list.innerHTML = '<div class="disk-bar-empty">Kayıt klasörü yok</div>';
-        } else {
-          list.innerHTML = roots.map(r => _diskBarHtml(r)).join("");
-        }
-      }
+      if (list) list.innerHTML = st.root ? _diskBarHtml(st) : '<div class="disk-bar-empty">Kayıt klasörü yok</div>';
       _renderStorageHealth(s.health);
     } catch {}
   }
-  // Renders one per-disk fill bar: disk-total bar with recording usage
-  // overlaid, plus a smaller quota indicator. Handles unlimited quota.
+  // Renders the storage root's fill bar: disk-total bar with recording
+  // usage overlaid, plus a smaller quota indicator. Handles unlimited quota.
   function _diskBarHtml(r){
     const disk = r.disk || {};
     const total = disk.total || 0;
@@ -2284,7 +2044,7 @@
     const recDiskPct = total ? Math.max(0, Math.min(100, (recUsed / total) * 100)) : 0;
     let diskCls = "";
     if (diskPct >= 90) diskCls = "crit"; else if (diskPct >= 75) diskCls = "warn";
-    // Quota row: only shown when a quota is set for this disk.
+    // Quota row: only shown when a quota is set.
     let quotaHtml = "";
     if (maxBytes > 0) {
       const qPct = Math.max(0, Math.min(100, (recUsed / maxBytes) * 100));
@@ -2307,7 +2067,7 @@
     return `
       <div class="disk-bar">
         <div class="disk-bar-head">
-          <span class="disk-bar-path" title="${escapeHtml(r.path)}">${escapeHtml(r.path)}</span>
+          <span class="disk-bar-path" title="${escapeHtml(r.root)}">${escapeHtml(r.root)}</span>
         </div>
         <div class="disk-bar-line">
           <span class="disk-bar-label">Disk</span>
@@ -2340,93 +2100,6 @@
     txt.textContent = lines.join("\n") || "Durum bilinmiyor";
   }
 
-  // ---------- Multi-storage path list ----------
-  function _rowFreeText(path, storageStatus){
-    // storageStatus.roots = [{ path, disk: {total, free, used} }]
-    const roots = (storageStatus && storageStatus.roots) || [];
-    const match = roots.find(r => r.path === path);
-    if (!match || !match.disk || !match.disk.total) return "";
-    return `${fmtBytes(match.disk.free)} boş / ${fmtBytes(match.disk.total)}`;
-  }
-  // paths is a list of {path, max_gb} — the entry-normaliser at the
-  // settings-open callsite ensures the shape even from legacy configs.
-  function _renderRecPaths(paths, storageStatus){
-    const wrap = $("#s-rec-paths"); wrap.innerHTML = "";
-    if (!paths.length) paths = [{ path: "", max_gb: 0 }];
-    paths.forEach((entry, idx) => {
-      const p = entry.path || "";
-      const quota = parseInt(entry.max_gb || 0) || 0;
-      const row = document.createElement("div");
-      row.className = "rec-path-row" + (idx === 0 ? " primary" : "");
-      const badge = idx === 0 ? "1°" : String(idx + 1);
-      row.innerHTML = `
-        <span class="rp-badge" title="${idx === 0 ? 'Birincil (DB burada)' : 'Ek yol'}">${badge}</span>
-        <input type="text" class="rp-path" value="${escapeHtml(p)}" placeholder="/mnt/nas/rtcview veya /media/usb/rtcview" />
-        <input type="number" class="rp-quota" min="0" step="1" value="${quota}" title="Bu disk için kota (GB) — 0 = kotasız" placeholder="Kota GB" />
-        <span class="rp-actions">
-          <button type="button" class="rp-btn rp-test" title="Yolu doğrula">✓</button>
-          <button type="button" class="rp-btn rp-del"  title="Yolu sil">✕</button>
-        </span>`;
-      row.querySelector(".rp-test").addEventListener("click", async () => {
-        const val = row.querySelector(".rp-path").value.trim();
-        const q   = Math.max(0, parseInt(row.querySelector(".rp-quota").value || 0) || 0);
-        if (!val){ toast("Boş yol", "err"); return; }
-        try {
-          // Index into the UNFILTERED row list (idx is a DOM position),
-          // then drop blanks only from what's kept. Indexing into the
-          // blank-dropped list here silently excluded the wrong disk root
-          // whenever an earlier row was empty — the request could end up
-          // duplicating one root and dropping another.
-          const others = _readRecPathsAll().filter((_, i) => i !== idx).filter(e => e.path);
-          await api.post("/api/recording/settings", {
-            storage_paths: [{ path: val, max_gb: q }, ...others],
-          });
-          const btn = row.querySelector(".rp-test");
-          btn.classList.add("rp-test-ok"); btn.textContent = "✓";
-          setTimeout(() => { btn.classList.remove("rp-test-ok"); }, 1200);
-          toast("Yol geçerli", "ok");
-          refreshUsageBar();
-        } catch (e) {
-          const btn = row.querySelector(".rp-test");
-          btn.classList.add("rp-test-err"); btn.textContent = "!";
-          setTimeout(() => { btn.classList.remove("rp-test-err"); btn.textContent = "✓"; }, 2500);
-          toast("Yol reddedildi: " + e.message, "err");
-        }
-      });
-      row.querySelector(".rp-del").addEventListener("click", () => {
-        // Same index hazard as the ✓ handler above: splice into the
-        // unfiltered per-row list (idx is a DOM position), and only count
-        // REAL paths toward the "keep at least one" rule — a blank
-        // placeholder row shouldn't be able to block itself from deletion.
-        const all = _readRecPathsAll();
-        const realCount = all.filter(e => e.path).length;
-        const deletingReal = !!(all[idx] && all[idx].path);
-        if (deletingReal && realCount <= 1){ toast("En az bir yol olmalı", "err"); return; }
-        all.splice(idx, 1);
-        _renderRecPaths(all, storageStatus);
-      });
-      wrap.appendChild(row);
-    });
-  }
-  function _readRecPathsAll(){
-    // Every row, including ones the user hasn't filled a path into yet.
-    // Callers that need to exclude "this row" by its DOM position (idx)
-    // must index into this, not the blank-dropped list below — an earlier
-    // blank row would otherwise shift every following index and the wrong
-    // disk root gets dropped or kept.
-    return $$("#s-rec-paths .rec-path-row").map(row => ({
-      path:   (row.querySelector(".rp-path")  || {value: ""}).value.trim(),
-      max_gb: Math.max(0, parseInt((row.querySelector(".rp-quota") || {value: 0}).value || 0) || 0),
-    }));
-  }
-  function _readRecPaths(){
-    // Returns list of {path, max_gb} in row order, dropping blank paths —
-    // the shape actually sent to /api/recording/settings on Kaydet.
-    return _readRecPathsAll().filter(e => e.path);
-  }
-  $("#s-rec-path-add").addEventListener("click", () => {
-    _renderRecPaths([..._readRecPaths(), { path: "", max_gb: 0 }]);
-  });
   $("#s-rec-rescan").addEventListener("click", async () => {
     try {
       const r = await api.post("/api/recording/rescan");

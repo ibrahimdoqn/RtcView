@@ -1,6 +1,6 @@
 # RtcView
 
-**Mevcut** bir go2rtc'ye bağlanan, Frigate benzeri, sıfır-gecikmeli (WebRTC) kamera izleme, **kayıt / playback**, **ONVIF hareket & insan algılama**, **grup bazlı bildirim**, **disk yönetimi** ve **ağ izleme** arayüzü.
+**Mevcut** bir go2rtc'ye bağlanan, Frigate benzeri, sıfır-gecikmeli (WebRTC) kamera izleme, **kayıt / playback**, **ONVIF hareket & insan algılama**, **grup bazlı bildirim** ve **ağ izleme** arayüzü.
 Kendi başına stream sunmaz; go2rtc'de tanımlı stream'leri WHEP üzerinden alır ve gösterir, kayıt için RTSP çıkışını FFmpeg ile segmentler halinde diske yazar.
 PWA uyumludur, Ubuntu Noble (rk3399, arm64) üzerinde izole Python venv içinde çalışır — NanoPi R4S gibi SBC'ler dahil herhangi bir Linux/systemd cihazında çalışacak şekilde tasarlanmıştır.
 
@@ -38,12 +38,12 @@ Kayıt için sistemde **`ffmpeg`** yüklü olmalı (installer otomatik kurar).
 - Segment bazında: indir / sil / kilitle / karesini kaydet
 - Tarih navigasyonu (◀ önceki / bugün / sonraki ▶)
 
-### Depolama & Disk Yönetimi
-- Kayıt yolu **birden fazla** klasör olabilir; her yeni segment en boş yola yazılır, bir yol düşerse diğerleri kullanılmaya devam eder
-- UI'dan (Ayarlar → Kayıt & Depolama) canlı olarak yol ekleme/çıkarma, kota, retention değiştirilir
+### Depolama
+- **Tek bir kayıt diski/klasörü** kullanılır — RtcView disk biçimlendirme, bağlama veya ayırma yapmaz; hedef diski işletim sisteminde siz bağlarsınız (bkz. [Kurulum](#kurulum)), RtcView sadece o yola yazar
+- UI'dan (Ayarlar → Kayıt & Depolama) canlı olarak yol, kota (GB) ve retention değiştirilir
 - Disk kullanım çubuğu, en eski kaydın tarih/saati, "diski yeniden tara" ve "şimdi temizle" butonları
-- **Depolama sağlığı akıllıdır**: disk dolması normal, rolling-storage davranışıdır — silinecek eski segment olduğu sürece hata/uyarı göstermez, yalnızca gerçekten çıkmaz sokaktaysa (silinecek hiçbir şey kalmadıysa veya izin/donanım sorunu varsa) kırmızı uyarı verir
-- **Disk Yönetimi** paneli: bilgisayara bağlı fiziksel diskleri listeler (sistem/önyükleme diski hiçbir zaman gösterilmez), **ext4 veya f2fs** olarak biçimlendirir, `/etc/fstab`'a hiç dokunmadan `/mnt/rtcview/` altına bağlar, ayırır — UUID bazlı bağlama sayesinde her açılışta doğru disk otomatik yeniden bağlanır
+- **Depolama sağlığı akıllıdır**: disk dolması normal, rolling-storage davranışıdır — silinecek eski segment olduğu sürece hata/uyarı göstermez; disk fiziksel olarak güvenlik payının (1 GB) altına düştüğünde retention süresi dolmasa bile en eski kayıtlar otomatik silinip yer açılır. Yalnızca gerçekten çıkmaz sokaktaysa (silinecek hiçbir şey kalmadıysa veya izin/donanım sorunu varsa) kırmızı uyarı verir
+- Bir segment silinirken dosya diskten fiilen kaldırılamazsa (geçici I/O hatası), bir sonraki temizlik turunda otomatik olarak disk yeniden taranır — index'te görünmeyen ama fiilen diskte duran dosyalar kendiliğinden yeniden kayda alınır
 - SQLite index (`<yol>/index.sqlite`), MP4 dosyaları `<yol>/<cam>/YYYY/MM/DD/`
 
 ### Hareket & İnsan Algılama (ONVIF)
@@ -72,12 +72,12 @@ Ayarlar → **Sistem** sekmesinde, açılır panel şeklinde:
 - **Kayıt Bekçisi** — bir kameranın ffmpeg süreci ayarlanabilir bellek sınırını aşarsa otomatik yeniden başlatılır (sızıntı koruması)
 - **Sıcaklık Sensörü** — okunacak sysfs `thermal_zone` yolu cihaza göre ayarlanabilir (her cihazda aynı numarada olmayabilir), Sistem Kaynakları panelinde gösterilir
 - **Güncelleme** — bkz. [Otomatik Güncelleme](#otomatik-güncelleme-github)
-- **Yeniden Başlatma** — tek tuşla yalnızca RtcView servisini (kameralar birkaç saniyede geri gelir) veya cihazın tamamını yeniden başlatır; bağlı diskler açılışta otomatik yeniden bağlanır
+- **Yeniden Başlatma** — tek tuşla yalnızca RtcView servisini (kameralar birkaç saniyede geri gelir) veya cihazın tamamını yeniden başlatır
 - **Loglar** — servis kayıtlarını (journalctl) filtreli görüntüleme + panoya kopyalama
 
 ### Otomatik Güncelleme (GitHub)
 - Ayarlar → Sistem → **Güncelleme** panelinde mevcut sürüm (git commit) gösterilir ve tek bir **"Şimdi Güncelle"** butonuyla GitHub'daki en son sürüm çekilip kurulur, servis yeniden başlatılır
-- Uygulama kendi başına `sudo` çalıştırmaz (systemd sandbox'ı buna izin vermez) — sadece kendi yazma izni olan bir dosyaya dokunur, ayrı ve bağımsız çalışan bir sistem servisi bu dosyayı görüp güncellemeyi kendisi yürütür. Disk biçimlendirme/bağlama ve yeniden başlatma/kapatma da aynı desenle (tetik dosyası → ayrı root servisi) çalışır
+- Uygulama kendi başına `sudo` çalıştırmaz (systemd sandbox'ı buna izin vermez) — sadece kendi yazma izni olan bir dosyaya dokunur, ayrı ve bağımsız çalışan bir sistem servisi bu dosyayı görüp güncellemeyi kendisi yürütür. Yeniden başlatma/kapatma da aynı desenle (tetik dosyası → ayrı root servisi) çalışır
 - Bu özelliğin çalışması için cihazda **bir kez** `sudo bash scripts/update.sh` çalıştırılmış olması yeterli (aşağıdaki [Güncelleme](#güncelleme) bölümüne bakın) — gerekli sistem servisleri o sırada otomatik kurulur
 
 ## Kurulum
@@ -91,9 +91,9 @@ Kurulum sırasında sırayla sorulur:
 - **RtcView portu** (varsayılan `5000`)
 - **go2rtc API host / port** (varsayılan `127.0.0.1:1984`)
 - **go2rtc RTSP portu** (varsayılan `8554`) — kayıt için
-- **Kayıt klasörü** (varsayılan `/opt/rtcview/recordings`) — istediğiniz mutlak yol
+- **Kayıt klasörü** (varsayılan `/opt/rtcview/recordings`) — istediğiniz mutlak yol; harici bir diske kaydetmek isterseniz o diski bu adıma gelmeden önce siz mount etmiş olmalısınız (RtcView disk biçimlendirme/bağlama yapmaz, bkz. altta "Mount önerileri")
 
-İzole `python3 -m venv` oluşturur, `ffmpeg`/`f2fs-tools` paketlerini kurar, `rtcview` sistem kullanıcısı yaratır, systemd birimi ile açılışta başlatır. Ayrıca disk yönetimi (biçimlendirme/bağlama), otomatik güncelleme ve yeniden başlatma/kapatma için gereken root-yetkili yardımcı systemd birimlerini de kurar.
+İzole `python3 -m venv` oluşturur, `ffmpeg` paketini kurar, `rtcview` sistem kullanıcısı yaratır, systemd birimi ile açılışta başlatır. Ayrıca otomatik güncelleme ve yeniden başlatma/kapatma için gereken root-yetkili yardımcı systemd birimlerini de kurar.
 
 Servisin systemd sandbox'ı **/opt/rtcview**, seçtiğiniz kayıt yolu, ve `/mnt`, `/media`, `/srv`, `/var/lib` altına yazma yetkisi ile kurulur. Kayıt yolunu daha sonra bu dört kökten birinin altına yeni bir dizine değiştirmek istiyorsanız UI'dan doğrudan yapabilirsiniz. Başka bir yola geçmek isterseniz:
 
@@ -103,7 +103,9 @@ sudo rtcview-set-recording-path /istediginiz/mutlak/yol
 
 ## Kayıt yolu değiştirme
 
-**UI'dan:** Ayarlar → "Kayıt & Depolama" → "+ Klasör ekle" ile yol ekleyin (yazılabilir mi kontrol edilir) → Kaydet. Ya da Disk Yönetimi panelinden bağladığınız bir diski doğrudan kayıt klasörü olarak ekleyin.
+Harici bir diske geçmek istediğinizde: diski önce siz `/etc/fstab` ile (kalıcı, önerilen) veya elle mount edin, sonra RtcView'a o yolu gösterin.
+
+**UI'dan:** Ayarlar → "Kayıt & Depolama" → yolu değiştirip (yazılabilir mi kontrol edilir) → Kaydet.
 
 **Komut satırından (sandbox dışında bir yol için):**
 
@@ -112,7 +114,7 @@ sudo rtcview-set-recording-path /mnt/harici-disk/rtcview
 # Ardından UI'dan da bu yolu ayarlar bölümüne girin.
 ```
 
-**Mount önerileri:** Disk Yönetimi panelini kullanmıyorsanız ve NAS/USB'yi elle `/etc/fstab`'a ekliyorsanız, `uid=rtcview,gid=rtcview` veya `umask=002` seçenekleriyle mount edin ki servis kullanıcısı yazabilsin.
+**Mount önerileri:** `/etc/fstab`'a `uid=rtcview,gid=rtcview` veya `umask=002` seçenekleriyle ekleyin ki servis kullanıcısı yazabilsin, ve makine her açıldığında disk otomatik bağlansın. RtcView diski kendisi bağlamaz/biçimlendirmez — bu bilinçli bir tercih: tek bir diski elle yönetmek, uygulamanın kendi kendine format/mount yapmasından çok daha öngörülebilir ve güvenlidir.
 
 ## Güncelleme
 
@@ -126,7 +128,6 @@ Otomatik olarak: config yedeği alır, servisi durdurur, `app/`, `requirements.t
 
 Aynı çalıştırma ayrıca şunları da kurar/yeniler:
 - **Ayarlar → Sistem → Güncelleme** panelindeki tek-tuşlu "Şimdi Güncelle" özelliği: `rtcview-updater.path`/`.service` birimleri, GitHub'daki `origin` uzak deposunun HEAD'ini `<kurulum-dizini>-src` altında tutulan ayrı bir git kopyasına çekip `scripts/update.sh`'ı otomatik çalıştırır
-- **Disk Yönetimi**: `rtcview-diskmgr.path`/`.service` (biçimlendirme/bağlama/ayırma işlerini kuyruk dosyasından işler) ve `rtcview-diskmgr-boot.service` (açılışta önceden bağlanmış diskleri UUID ile otomatik yeniden bağlar)
 - **Yeniden Başlatma**: `rtcview-restart.path`/`.service` ve `rtcview-reboot.path`/`.service`
 
 Bu birimlerin hepsi root olarak, `rtcview.service`'den bağımsız ayrı cgroup'larda çalışır — ana servis hiçbir zaman `sudo` çalıştırmaz (systemd sandbox'ı `NoNewPrivileges=yes` ile buna izin vermez), sadece kendi yazma izni olduğu bir dosyaya/dizine dokunur ve bu ayrı birimler o değişikliği görüp işi kendileri yürütür.
@@ -178,8 +179,7 @@ Playback:
 ├── app/            # Flask kaynak
 │   ├── main.py         # route'lar, uygulama fabrikası
 │   ├── recorder.py     # ffmpeg segment kaydı
-│   ├── storage.py      # disk sağlığı, retention/kota purge, playback index
-│   ├── diskmgr.py      # blok cihaz listeleme + format/mount/unmount iş kuyruğu (yetkisiz taraf)
+│   ├── storage.py      # tek diskli depolama: sağlık, retention/kota/dolma-önleyici purge, playback index
 │   ├── netmon.py        # ağ arayüzü izleme (netlink olayları + bant genişliği)
 │   ├── detection.py    # ONVIF hareket/insan algılama + bildirim kuralları
 │   ├── ptz.py           # ONVIF PTZ
@@ -193,12 +193,11 @@ Playback:
     ├── index.sqlite       # segment index + detections + notifications tabloları
     ├── _snapshots/<cam>/YYYY/MM/DD/*.jpg
     └── <cam>/YYYY/MM/DD/<cam>_<ts>_NNNNN.mp4
-/mnt/rtcview/<disk>/   # Disk Yönetimi panelinden biçimlendirilip bağlanan diskler (fstab'sız, UUID bazlı)
 /opt/rtcview-src/   # otomatik güncelleme için tutulan ayrı git kopyası (yalnızca "Şimdi Güncelle" kullanıldıysa oluşur)
 ```
-> Not: go2rtc **bu dizinde değildir**; ağınızdaki mevcut go2rtc kullanılır.
+> Not: go2rtc **bu dizinde değildir**; ağınızdaki mevcut go2rtc kullanılır. Kayıt yolu harici bir diske ayarlıysa (`/mnt/...` gibi) o disk `/etc/fstab` ile sizin tarafınızdan bağlanmış olmalı — bkz. [Kayıt yolu değiştirme](#kayıt-yolu-değiştirme).
 
-Kök yardımcı script'ler `scripts/` altında: `install.sh`, `update.sh`, `uninstall.sh`, `diskmgr_worker.py` (disk iş kuyruğunu işleyen root servisi), `diskmgr_boot.py` (açılışta disk yeniden bağlama), `self_update.sh`.
+Kök yardımcı script'ler `scripts/` altında: `install.sh`, `update.sh`, `uninstall.sh`, `self_update.sh`.
 
 ONVIF hareket/insan algılama motorunun tamamı `app/detection.py` içindedir (kamera ile PullPoint event konuşması, algılama aralıklarının yazılması, bildirim kural motoru). Ayarlanabilir değişkenler dosyanın başındaki "Tunables" bölümündedir.
 
@@ -239,12 +238,7 @@ ONVIF hareket/insan algılama motorunun tamamı `app/detection.py` içindedir (k
 - `DELETE /api/groups/<id>`
 - `GET /api/notifications?unread_only=&limit=` · `DELETE /api/notifications` · `POST /api/notifications/read-all`
 
-**Depolama / Disk Yönetimi**
-- `GET /api/storage/devices` — bağlı fiziksel diskler (sistem diski hariç)
-- `POST /api/storage/format` · `POST /api/storage/mount` · `POST /api/storage/unmount`
-- `GET /api/storage/job/<job_id>` — asenkron disk işleminin sonucu
-
-**Ağ**
+**Ağ
 - `GET /api/network/status` — arayüz listesi (durum, IP/MAC, bant genişliği, son bağlanma/kopma) + son olaylar
 
 **Sistem / Güncelleme**

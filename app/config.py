@@ -31,16 +31,15 @@ DEFAULT_CONFIG = {
     },
     "recording": {
         "enabled": True,
-        # List of storage roots, each with ITS OWN quota. New segments go
-        # to whichever writable root has the most free space at start
-        # time (skipping any that have hit their own quota); playback +
-        # purge span every root. Each entry: {"path": str, "max_gb": int}
-        # where max_gb=0 means unlimited for that specific disk.
-        "storage_paths": [{"path": "/opt/rtcview/recordings", "max_gb": 0}],
+        # Single recording root. Deliberately ONE disk, mounted by the
+        # admin outside the app (see README's Kurulum) — RtcView never
+        # formats, mounts, or manages disks itself. Point this at
+        # wherever that disk is mounted.
+        "storage_path": "/opt/rtcview/recordings",
         "segment_seconds": 300,
         "retention_days": 14,
-        # Legacy global quota — kept for backward compat only. Used as
-        # the default for freshly added roots that don't set max_gb.
+        # 0 = unlimited (bounded only by physical disk size + the
+        # near-full rolling purge in storage.py).
         "max_gb": 0,
         "purge_interval_seconds": 60,
         "ffmpeg_path": "ffmpeg",
@@ -55,14 +54,6 @@ DEFAULT_CONFIG = {
     },
     "cameras": [],
     "groups": [],  # [{"id": "grp_xxxxxxxx", "name": "İç Mekan"}]
-    # Physical disks RtcView itself formatted/mounted (Depolama page's Disk
-    # Yönetimi card) and is responsible for remounting on every boot, since
-    # they're deliberately mounted WITHOUT an /etc/fstab entry — see
-    # scripts/diskmgr_boot.sh, the root-owned oneshot unit that reads this
-    # list at boot and resolves each uuid via /dev/disk/by-uuid. Keyed by
-    # filesystem UUID (stable across /dev/sdX renumbering), not device path.
-    # [{"uuid": str, "mountpoint": str, "fstype": "ext4"|"f2fs", "label": str}]
-    "disks": [],
 }
 
 # Per-camera recording defaults merged when a camera is loaded. Live
@@ -208,29 +199,26 @@ class ConfigStore:
             elif isinstance(v, dict):
                 for sk, sv in v.items():
                     self._data[k].setdefault(sk, sv)
-        # storage_paths schema evolution:
-        #  1) legacy scalar recording.storage_path (very old)
-        #  2) list of strings  ["/mnt/a", "/mnt/b"]
-        #  3) list of objects  [{"path": "/mnt/a", "max_gb": 500}]  ← current
-        # Migrate 1→2 and 2→3 in place. The legacy global recording.max_gb
-        # is used as the default per-disk quota when upgrading from #2.
+        # storage_path schema evolution: an earlier version supported
+        # multiple storage roots via recording.storage_paths (a list of
+        # {"path", "max_gb"} — or, before that, of bare strings). RtcView
+        # is single-disk only now — collapse any of those old shapes down
+        # to the one path a pre-existing config.json might still carry.
+        # The disk that path pointed at keeps working exactly as before;
+        # only the "add another folder" capability is gone.
         rec = self._data.get("recording", {})
-        legacy = rec.get("storage_path")
-        paths = rec.get("storage_paths") or []
-        if legacy and not paths:
-            rec["storage_paths"] = [legacy]
-            paths = rec["storage_paths"]
-        default_quota = int(rec.get("max_gb", 0) or 0)
-        migrated = []
-        for entry in paths:
-            if isinstance(entry, str):
-                migrated.append({"path": entry, "max_gb": default_quota})
-            elif isinstance(entry, dict) and entry.get("path"):
-                migrated.append({
-                    "path": str(entry["path"]),
-                    "max_gb": int(entry.get("max_gb", default_quota) or 0),
-                })
-        rec["storage_paths"] = migrated or [{"path": "/opt/rtcview/recordings", "max_gb": 0}]
+        legacy_paths = rec.pop("storage_paths", None)
+        # legacy_paths, when present, always wins over whatever the
+        # defaults-merge loop above just filled storage_path with — an old
+        # config never had storage_path set at all, only storage_paths.
+        if legacy_paths:
+            first = legacy_paths[0] if legacy_paths else None
+            if isinstance(first, dict) and first.get("path"):
+                rec["storage_path"] = str(first["path"])
+            elif isinstance(first, str) and first:
+                rec["storage_path"] = first
+        rec.setdefault("storage_path", "/opt/rtcview/recordings")
+        self._data.pop("disks", None)
         for cam in self._data.get("cameras", []):
             for k, v in CAMERA_RECORDING_DEFAULTS.items():
                 cam.setdefault(k, json.loads(json.dumps(v)))
@@ -306,28 +294,6 @@ class ConfigStore:
                     gids = cam.get("group_ids") or []
                     if group_id in gids:
                         cam["group_ids"] = [g for g in gids if g != group_id]
-                self._save_locked()
-            return removed
-
-    def get_disks(self):
-        return self._data["disks"]
-
-    def add_disk(self, disk: dict):
-        with _lock:
-            # uuid is the natural key (stable across /dev/sdX renumbering,
-            # unlike device path) -- replace rather than duplicate if this
-            # uuid is somehow already known (e.g. a re-mount after an
-            # unmount that failed to clean up its config entry).
-            self._data["disks"] = [d for d in self._data["disks"] if d.get("uuid") != disk.get("uuid")]
-            self._data["disks"].append(disk)
-            self._save_locked()
-
-    def remove_disk(self, uuid: str) -> bool:
-        with _lock:
-            before = len(self._data["disks"])
-            self._data["disks"] = [d for d in self._data["disks"] if d.get("uuid") != uuid]
-            removed = len(self._data["disks"]) != before
-            if removed:
                 self._save_locked()
             return removed
 

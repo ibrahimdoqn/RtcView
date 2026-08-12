@@ -100,28 +100,19 @@ with open(cfg_path) as f: d = json.load(f)
 d.setdefault("go2rtc", {}).setdefault("rtsp_port", 8554)
 rec = d.setdefault("recording", {})
 rec.setdefault("enabled", True)
+# Single-disk schema: an older version supported multiple storage roots
+# via recording.storage_paths (a list of {"path", "max_gb"}) — collapse
+# that down to the one path a pre-existing config.json might still carry.
+legacy_paths = rec.pop("storage_paths", None)
+if legacy_paths and not rec.get("storage_path"):
+    first = legacy_paths[0] if legacy_paths else None
+    if isinstance(first, dict) and first.get("path"):
+        rec["storage_path"] = str(first["path"])
+    elif isinstance(first, str) and first:
+        rec["storage_path"] = first
 rec.setdefault("storage_path", os.path.join(install_dir, "recordings"))
-# Multi-storage schema evolution:
-#   old scalar recording.storage_path  →  ["path"]
-#   list of strings                    →  [{"path": ..., "max_gb": <legacy max_gb>}]
-# The legacy global recording.max_gb becomes the per-disk default for
-# the very first migration, then future edits are per-disk from the UI.
-if not rec.get("storage_paths"):
-    rec["storage_paths"] = [rec["storage_path"]]
-default_quota = int(rec.get("max_gb", 0) or 0)
-migrated = []
-for entry in rec["storage_paths"]:
-    if isinstance(entry, str):
-        migrated.append({"path": entry, "max_gb": default_quota})
-    elif isinstance(entry, dict) and entry.get("path"):
-        migrated.append({
-            "path": str(entry["path"]),
-            "max_gb": int(entry.get("max_gb", default_quota) or 0),
-        })
-rec["storage_paths"] = migrated or [{"path": rec["storage_path"], "max_gb": 0}]
 rec.setdefault("segment_seconds", 300)
 rec.setdefault("retention_days", 14)
-# Legacy scalar retained for backward compat; UI no longer edits it.
 rec.setdefault("max_gb", 0)
 rec.setdefault("purge_interval_seconds", 60)
 rec.setdefault("ffmpeg_path", "ffmpeg")
@@ -130,10 +121,10 @@ for cam in d.get("cameras", []):
     cam.setdefault("record_schedule", [])
     cam.setdefault("record_audio", False)
     cam.setdefault("retention_days_override", 0)
-for _entry in rec["storage_paths"]:
-    os.makedirs(_entry["path"], exist_ok=True)
+d.pop("disks", None)
+os.makedirs(rec["storage_path"], exist_ok=True)
 with open(cfg_path, "w") as f: json.dump(d, f, indent=2)
-print("recording.storage_paths =", rec["storage_paths"])
+print("recording.storage_path =", rec["storage_path"])
 PY
 fi
 
@@ -192,77 +183,43 @@ SVCUNIT
 systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}-updater.path"
 
-# ------------- disk management capability (job-queue-triggered root service) -------------
-# Same mechanism as install.sh's own copy of this block (search there for
-# the full rationale) — duplicated here because update.sh is how an
-# EXISTING install picks up new code (via "Şimdi Güncelle" / self_update.sh)
-# without ever re-running install.sh, so anything install.sh sets up as a
-# one-time root/systemd side effect has to be (re)created here too or an
-# upgraded instance silently ends up missing it. This exact gap is why an
-# already-running install could queue disk-management jobs that just sit
-# forever with no rtcview-diskmgr.path/.service present to process them.
-info "Disk yönetimi yetkisi kuruluyor/güncelleniyor (iş kuyruğu + açılış servisi)..."
-if ! command -v mkfs.f2fs >/dev/null 2>&1; then
-  apt-get install -y --no-install-recommends f2fs-tools >/dev/null 2>&1 || \
-    warn "f2fs-tools kurulamadı — Depolama sayfasında f2fs seçeneği devre dışı kalır (ext4 etkilenmez)."
+# ------------- remove disk management capability (feature removed) -------------
+# RtcView no longer formats/mounts/unmounts disks itself — that whole
+# capability (job-queue directory + rtcview-diskmgr.path/.service +
+# rtcview-diskmgr-boot.service, installed by an older version of this
+# script) is torn down here so an existing install ends up clean instead
+# of carrying orphaned root-owned units that nothing submits jobs to
+# anymore. Recording now always points at a single path the admin mounts
+# and manages themselves (see README's Kurulum) — existing config.json
+# storage_paths entries are migrated to storage_path automatically by
+# app/config.py on next start, using the first configured path.
+if [ -f "/etc/systemd/system/${SERVICE_NAME}-diskmgr.path" ] || \
+   [ -f "/etc/systemd/system/${SERVICE_NAME}-diskmgr.service" ] || \
+   [ -f "/etc/systemd/system/${SERVICE_NAME}-diskmgr-boot.service" ] || \
+   [ -f "/etc/systemd/system/${SERVICE_NAME}.service.d/diskmgr-order.conf" ]; then
+  info "Disk yönetimi özelliği kaldırıldı — eski birimler temizleniyor..."
+  systemctl disable --now "${SERVICE_NAME}-diskmgr.path" 2>/dev/null || true
+  systemctl disable --now "${SERVICE_NAME}-diskmgr.service" 2>/dev/null || true
+  systemctl disable --now "${SERVICE_NAME}-diskmgr-boot.service" 2>/dev/null || true
+  rm -f "/etc/systemd/system/${SERVICE_NAME}-diskmgr.path" \
+        "/etc/systemd/system/${SERVICE_NAME}-diskmgr.service" \
+        "/etc/systemd/system/${SERVICE_NAME}-diskmgr-boot.service" \
+        "/etc/systemd/system/${SERVICE_NAME}.service.d/diskmgr-order.conf"
+  rm -rf "${INSTALL_DIR}/diskmgr"
+  systemctl daemon-reload
 fi
-mkdir -p "${INSTALL_DIR}/diskmgr/jobs" "${INSTALL_DIR}/diskmgr/results"
-chown -R "$SERVICE_USER":"$SERVICE_USER" "${INSTALL_DIR}/diskmgr"
-chmod 0755 "${INSTALL_DIR}/scripts/diskmgr_worker.py" "${INSTALL_DIR}/scripts/diskmgr_boot.py" 2>/dev/null || true
-
-cat > "/etc/systemd/system/${SERVICE_NAME}-diskmgr.path" <<PATHUNIT
-[Unit]
-Description=RtcView disk-manager job queue watcher
-
-[Path]
-DirectoryNotEmpty=${INSTALL_DIR}/diskmgr/jobs
-Unit=${SERVICE_NAME}-diskmgr.service
-
-[Install]
-WantedBy=multi-user.target
-PATHUNIT
-
-cat > "/etc/systemd/system/${SERVICE_NAME}-diskmgr.service" <<SVCUNIT
-[Unit]
-Description=RtcView disk-manager job worker (format/mount/unmount)
-
-[Service]
-Type=oneshot
-Environment=RTCVIEW_HOME=${INSTALL_DIR}
-Environment=RTCVIEW_SERVICE_USER=${SERVICE_USER}
-ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/scripts/diskmgr_worker.py
-SVCUNIT
-
-cat > "/etc/systemd/system/${SERVICE_NAME}-diskmgr-boot.service" <<BOOTUNIT
-[Unit]
-Description=RtcView disk-manager boot-time remount (no /etc/fstab entries)
-After=local-fs.target
-Before=${SERVICE_NAME}.service
-
-[Service]
-Type=oneshot
-Environment=RTCVIEW_HOME=${INSTALL_DIR}
-Environment=RTCVIEW_CONFIG=${INSTALL_DIR}/config
-Environment=RTCVIEW_SERVICE_USER=${SERVICE_USER}
-ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/scripts/diskmgr_boot.py
-
-[Install]
-WantedBy=multi-user.target
-BOOTUNIT
-
-# Ordering drop-in rather than rewriting the base unit (update.sh never
-# regenerates rtcview.service itself, only patches it via drop-ins, so an
-# admin's own edits to the base file survive updates) -- After= is
-# additive across drop-ins, so this doesn't disturb network-online.target.
-mkdir -p "/etc/systemd/system/${SERVICE_NAME}.service.d"
-cat > "/etc/systemd/system/${SERVICE_NAME}.service.d/diskmgr-order.conf" <<ORDERCONF
-[Unit]
-After=${SERVICE_NAME}-diskmgr-boot.service
-ORDERCONF
-
-systemctl daemon-reload
-systemctl enable --now "${SERVICE_NAME}-diskmgr.path"
-systemctl enable --now "${SERVICE_NAME}-diskmgr-boot.service"
+# An install made with an even older install.sh baked the diskmgr-boot
+# ordering directly into rtcview.service's own After= line (before it
+# moved to the drop-in cleaned up above) — update.sh never rewrites the
+# base unit file, so strip that dangling reference out in place if it's
+# still there. Harmless either way (systemd just ignores an After= on a
+# unit that doesn't exist), but leaving it looks like an incomplete
+# removal.
+BASE_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
+if [ -f "$BASE_UNIT" ] && grep -q "${SERVICE_NAME}-diskmgr-boot.service" "$BASE_UNIT"; then
+  sed -i "s/ ${SERVICE_NAME}-diskmgr-boot\.service//" "$BASE_UNIT"
+  systemctl daemon-reload
+fi
 
 # ------------- restart / reboot capability (trigger-file, root services) -------------
 # Same duplication reasoning as every other block in this section: an
