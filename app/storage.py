@@ -103,6 +103,13 @@ class Storage:
         self._disk_cache: dict[str, tuple[float, dict]] = {}   # per-root
         self._stats_cache: Optional[tuple[float, dict]] = None
         self._health_cache: Optional[tuple[float, dict]] = None
+        # Set when delete_segment() drops an index row but the file itself
+        # fails to unlink (transient I/O hiccup, disk briefly unwritable) —
+        # the file is now an untracked orphan still taking up space. The
+        # purge loop rescans on its next tick to re-register it so it's
+        # visible (and purgeable) again, instead of silently sitting there
+        # forever until someone notices and clicks "Diski yeniden tara".
+        self._orphan_suspected = False
         self._ensure_roots()
 
     # ---------- Root / DB ----------
@@ -458,6 +465,7 @@ class Storage:
             Path(seg["path"]).unlink(missing_ok=True)
         except Exception as e:
             log.warning("delete_segment: unlink failed %s: %s", seg["path"], e)
+            self._orphan_suspected = True
         # Invalidate everything: emergency purge / write picker rely on
         # fresh per-root byte totals AND disk_usage numbers.
         self._invalidate_caches()
@@ -611,53 +619,63 @@ class Storage:
             if not exists:
                 r_errs.append(f"Klasör yok: {r}")
             else:
+                # Disk usage first — the write-test error below needs to
+                # know whether free space is already critically low, since
+                # some filesystems (f2fs in particular, once it runs out of
+                # free segments for a checkpoint) return EIO instead of
+                # ENOSPC for what is still fundamentally a "disk is full"
+                # condition, not a permissions/hardware fault.
+                du = None
+                try:
+                    du = shutil.disk_usage(str(r))
+                    disk = {"total": du.total, "free": du.free, "used": du.used}
+                    free_pct = (du.free / du.total) * 100 if du.total else 0
+                except Exception as e:
+                    r_errs.append(f"Disk okunamadı: {e}")
+                near_full = du is not None and du.free < 1 * 1024**3
                 test = r / ".rtcview_write_test"
+                write_err: Optional[Exception] = None
                 try:
                     test.write_text("ok"); test.unlink()
                     writable = True
-                except OSError as e:
-                    if e.errno == errno.ENOSPC:
-                        # A disk so full even the tiny write-test probe
-                        # can't land is the SAME "disk kapasitesine yakın"
-                        # story as the free-space check below, just past
-                        # zero bytes instead of under the 1 GB margin —
-                        # the rolling/retention purge doesn't care how it
-                        # got full, only that something old enough still
-                        # exists to reclaim. A real problem here (wrong
-                        # permissions, read-only fs, hardware fault) is
-                        # NOT something purging can ever fix, so anything
-                        # other than ENOSPC stays a hard error below,
-                        # unconditionally.
+                except Exception as e:
+                    write_err = e
+                if write_err is not None:
+                    is_space_related = near_full or (
+                        isinstance(write_err, OSError) and write_err.errno == errno.ENOSPC
+                    )
+                    if is_space_related:
+                        # A disk this full — whether the write-test hit
+                        # ENOSPC directly or disk_usage() already shows it
+                        # under the 1 GB margin — is the SAME "disk
+                        # kapasitesine yakın" story: the rolling/retention
+                        # purge doesn't care how it got full, only that
+                        # something old enough still exists to reclaim. A
+                        # write failure on a root that ISN'T actually low
+                        # on space is NOT something purging can ever fix
+                        # (wrong permissions, read-only fs, hardware
+                        # fault), so that stays a hard error, unconditionally.
                         if not self._has_purgeable_segments():
                             r_errs.append(
                                 "Yazılamıyor: disk dolu — silinecek kayıt kalmadı, kayıt durabilir"
                             )
                     else:
-                        r_errs.append(f"Yazılamıyor: {e}")
-                except Exception as e:
-                    r_errs.append(f"Yazılamıyor: {e}")
-                try:
-                    du = shutil.disk_usage(str(r))
-                    disk = {"total": du.total, "free": du.free, "used": du.used}
-                    free_pct = (du.free / du.total) * 100 if du.total else 0
-                    if du.free < 1 * 1024**3 and not self._has_purgeable_segments():
-                        # A root sitting right at capacity is the EXPECTED
-                        # steady state for an unlimited-quota (max_gb=0)
-                        # root once its footage volume outgrows the disk —
-                        # the emergency purge in purge_once() keeps deleting
-                        # the oldest segments to hold this root just above
-                        # SAFETY_MARGIN_BYTES, forever, by design (a rolling
-                        # buffer bounded by physical disk size rather than
-                        # by retention_days alone). Not worth flagging at
-                        # all while that's still working (stays "ok"/green)
-                        # — only a genuine dead end, nothing left anywhere
-                        # to purge, is actually actionable.
-                        r_errs.append(
-                            f"Disk doldu: {du.free // (1024*1024)} MB boş — "
-                            "silinecek kayıt kalmadı, kayıt durabilir"
-                        )
-                except Exception as e:
-                    r_errs.append(f"Disk okunamadı: {e}")
+                        r_errs.append(f"Yazılamıyor: {write_err}")
+                elif near_full and not self._has_purgeable_segments():
+                    # A root sitting right at capacity is the EXPECTED
+                    # steady state for an unlimited-quota (max_gb=0) root
+                    # once its footage volume outgrows the disk — purge_once()
+                    # keeps deleting the oldest segments (globally AND now
+                    # per-root) to hold it just above SAFETY_MARGIN_BYTES,
+                    # forever, by design (a rolling buffer bounded by
+                    # physical disk size rather than by retention_days
+                    # alone). Not worth flagging at all while that's still
+                    # working (stays "ok"/green) — only a genuine dead end,
+                    # nothing left anywhere to purge, is actually actionable.
+                    r_errs.append(
+                        f"Disk doldu: {du.free // (1024*1024)} MB boş — "
+                        "silinecek kayıt kalmadı, kayıt durabilir"
+                    )
             used_by_rec = self._bytes_used_under(entry["path"])
             if entry["max_bytes"] > 0:
                 q_pct = round((used_by_rec / entry["max_bytes"]) * 100, 1)
@@ -819,6 +837,17 @@ class Storage:
             self._stop.wait(int(self._rec_cfg().get("purge_interval_seconds", 60)))
 
     def purge_once(self) -> dict:
+        if self._orphan_suspected:
+            # A previous delete_segment() dropped a row but couldn't
+            # unlink the file — re-register whatever's still sitting on
+            # disk untracked before this tick's purge logic runs, so it's
+            # visible to retention/quota/per-root reclaim below instead of
+            # invisibly holding onto space forever.
+            self._orphan_suspected = False
+            try:
+                self.rescan()
+            except Exception as e:
+                log.warning("purge_once: auto-rescan for suspected orphan failed: %s", e)
         rc = self._rec_cfg()
         removed = 0; freed = 0
         retention = int(rc.get("retention_days", 14))
@@ -930,6 +959,52 @@ class Storage:
                 b = int(b or 0)
                 if self.delete_segment(sid):
                     over -= b; freed += b; removed += 1
+
+        # Per-root rolling-buffer reclaim: a root without a configured
+        # quota is still a physically finite disk. Waiting for
+        # retention_days to age footage out, or for EVERY root to run out
+        # simultaneously (the global emergency purge below), left a single
+        # full root stuck indefinitely as long as some other root still
+        # had room — recording just silently stopped using it instead of
+        # reclaiming its own old footage. This mirrors what a quota
+        # already gives a capped root, driven by physical free space
+        # instead: once THIS root specifically drops under the safety
+        # margin, age its own oldest unlocked segments out until it has
+        # room again, independent of every other root's state.
+        #
+        # Ground truth is shutil.disk_usage(), not the write-test's errno:
+        # some filesystems (f2fs once it runs out of free segments for a
+        # checkpoint, in particular) return EIO instead of ENOSPC for what
+        # is still fundamentally "disk is full" — but a low disk_usage()
+        # free reading means the same thing regardless of which errno the
+        # filesystem happened to surface.
+        for entry in roots_q:
+            try:
+                free = shutil.disk_usage(entry["path"]).free
+            except Exception:
+                continue                        # root unreadable — not a purge-fixable problem
+            if free >= SAFETY_MARGIN_BYTES:
+                continue
+            pattern = self._like_escape(entry["path"] + os.sep) + "%"
+            BATCH = 5
+            while not self._stop.is_set():
+                with self._lock:
+                    batch = self._db.execute(
+                        "SELECT id, bytes FROM segments"
+                        " WHERE locked = 0 AND path LIKE ? ESCAPE '\\'"
+                        " ORDER BY started_at ASC LIMIT ?",
+                        (pattern, BATCH)
+                    ).fetchall()
+                if not batch:
+                    break                        # nothing tracked on this root left to reclaim
+                for sid, b in batch:
+                    if self.delete_segment(sid):
+                        removed += 1; freed += int(b or 0)
+                try:
+                    if shutil.disk_usage(entry["path"]).free >= SAFETY_MARGIN_BYTES:
+                        break
+                except Exception:
+                    break
 
         # Emergency global purge: when NO writable root has room, delete
         # globally-oldest UNLOCKED segments (regardless of which disk

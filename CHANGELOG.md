@@ -5,6 +5,15 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-12
+
+### Eklendi
+- **Root bazlı önleyici temizlik**: bir kayıt kökü (`storage_paths` girdisi) fiziksel olarak dolmaya yaklaştığında (boş alan güvenlik payının altına düştüğünde), o kökün kendi en eski kayıtları — global retention süresi (varsayılan 14 gün) dolmasını beklemeden — otomatik silinip yer açılıyor. Önceden bu yalnızca *tüm* kökler aynı anda dolduğunda devreye giren küresel bir "acil durum" temizliğiyle sınırlıydı; artık her kök birbirinden bağımsız olarak kendi kendine yer açabiliyor.
+- Bir segment silinirken dosya diskten fiilen kaldırılamazsa (geçici I/O hatası vb.), bir sonraki temizlik turunda otomatik olarak disk yeniden taranıyor — index'te görünmeyen ama fiilen diskte duran "hayalet" dosyalar kendiliğinden yeniden kayda alınıp temizlenebilir hale geliyor.
+
+### Düzeltildi
+- Depolama sağlığı (`Ayarlar → Kayıt & Depolama`) artık disk gerçekten doluyken bazı dosya sistemlerinin (ör. f2fs, boş segment kalmadığında) `ENOSPC` yerine `EIO` ("Input/output error") döndürmesini de "disk dolu" durumu olarak tanıyor; silinecek eski kayıt olduğu sürece bunu sert hata yerine normal rolling-storage davranışı olarak gösteriyor. Gerçekten alanla ilgisi olmayan bir yazma hatası (izin/donanım) hâlâ sert hata olarak kalıyor.
+
 ## [1.0.0] - 2026-08-11
 
 İlk etiketlenmiş sürüm. Bu noktaya kadarki tüm geliştirme geçmişini kapsar.
@@ -21,5 +30,6 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/ibrahimdoqn/RtcView/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ibrahimdoqn/RtcView/releases/tag/v1.0.0
