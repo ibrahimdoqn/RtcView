@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-12
+
+### Düzeltildi
+- **Kritik**: 1.1.0'daki root bazlı önleyici temizlik, bir kök gerçekten silme işlemi bile başaramayacak kadar dolu olduğunda (üretimde f2fs'te gözlemlendi — disk o kadar dolu ki dosya silmenin kendi meta veri yazması bile `EIO` ile başarısız oluyordu) her turda o kökteki **neredeyse tüm** kayıtları, hiçbir gerçek alan kazanmadan, index'ten düşürüyordu — kayıtlar diskten silinmiyordu ama uygulama artık onları göremiyordu (playback/timeline'da "kayboluyorlardı"). Tüm temizlik aşamaları (retention, kota, root bazlı, küresel acil durum) artık bir silme işlemi dosyayı fiilen serbest bırakmadığı anda o turdaki temizliği hemen durduruyor, tüm tabloyu tüketmek yerine. Etkilenen kayıtlar bir sonraki "Diski yeniden tara" ile geri kazanılabilir (dosyalar fiziksel olarak diskte duruyor, yalnızca index kaydı gitmişti).
+
 ## [1.1.0] - 2026-08-12
 
 ### Eklendi
@@ -30,6 +35,7 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/ibrahimdoqn/RtcView/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ibrahimdoqn/RtcView/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ibrahimdoqn/RtcView/releases/tag/v1.0.0

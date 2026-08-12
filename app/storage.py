@@ -853,6 +853,30 @@ class Storage:
         retention = int(rc.get("retention_days", 14))
         now_ts = time.time()
 
+        def _delete_and_keep_going(sid, b) -> tuple[bool, bool]:
+            """Delete one segment. Returns (freed_ok, keep_going).
+
+            keep_going turns False the instant a delete drops the index
+            row without actually freeing the file (e.g. a filesystem so
+            completely full that even unlink()'s own metadata write
+            fails — observed in production on f2fs): every purge phase
+            below must stop right there instead of ploughing through its
+            whole remaining batch/table, since continuing only turns more
+            of the root's tracked history into untracked orphans for zero
+            space gained. The next tick's auto-rescan (top of this
+            function) recovers whatever got orphaned this way.
+
+            freed_ok is True only when the file was genuinely deleted, so
+            callers doing their own byte accounting (the per-disk quota
+            loop's running `over`) don't have to re-derive success."""
+            nonlocal removed, freed
+            if not self.delete_segment(sid):
+                return False, True   # already gone/locked — not a failure, keep going
+            if self._orphan_suspected:
+                return False, False  # row dropped, file NOT freed — stop this phase
+            removed += 1; freed += int(b or 0)
+            return True, True
+
         # Per-camera retention_days_override (0 = "use the global
         # default" — this was previously accepted/persisted by the
         # camera-add/update API and shown in the UI but never actually
@@ -871,7 +895,6 @@ class Storage:
                 overrides[c["id"]] = ov
 
         def _purge_segments_older_than(days: int, cam_id: Optional[str]):
-            nonlocal removed, freed
             cutoff = now_ts - days * 86400
             with self._lock:
                 if cam_id is not None:
@@ -893,8 +916,9 @@ class Storage:
                         (cutoff,)
                     ).fetchall()
             for sid, b in rows:
-                if self.delete_segment(sid):
-                    removed += 1; freed += int(b or 0)
+                _, keep_going = _delete_and_keep_going(sid, b)
+                if not keep_going:
+                    break
 
         if retention > 0:
             _purge_segments_older_than(retention, cam_id=None)
@@ -957,8 +981,11 @@ class Storage:
             for sid, b in rows:
                 if over <= 0: break
                 b = int(b or 0)
-                if self.delete_segment(sid):
-                    over -= b; freed += b; removed += 1
+                freed_ok, keep_going = _delete_and_keep_going(sid, b)
+                if freed_ok:
+                    over -= b
+                if not keep_going:
+                    break
 
         # Per-root rolling-buffer reclaim: a root without a configured
         # quota is still a physically finite disk. Waiting for
@@ -997,9 +1024,14 @@ class Storage:
                     ).fetchall()
                 if not batch:
                     break                        # nothing tracked on this root left to reclaim
+                stop_phase = False
                 for sid, b in batch:
-                    if self.delete_segment(sid):
-                        removed += 1; freed += int(b or 0)
+                    _, keep_going = _delete_and_keep_going(sid, b)
+                    if not keep_going:
+                        stop_phase = True
+                        break
+                if stop_phase:
+                    break
                 try:
                     if shutil.disk_usage(entry["path"]).free >= SAFETY_MARGIN_BYTES:
                         break
@@ -1051,9 +1083,15 @@ class Storage:
                 if not batch:
                     log.error("emergency purge: nothing left to delete — all segments locked")
                     break
+                stop_phase = False
                 for sid, b in batch:
-                    if self.delete_segment(sid):
-                        removed += 1; freed += int(b or 0)
+                    _, keep_going = _delete_and_keep_going(sid, b)
+                    if not keep_going:
+                        stop_phase = True
+                        break
+                if stop_phase:
+                    log.warning("emergency purge: a delete stopped freeing real space — pausing this tick")
+                    break
                 if _any_has_room():
                     break
 
