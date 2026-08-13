@@ -358,7 +358,12 @@ class HAManager:
             with self._lock:
                 self._open_ids[(cam_id, kind)] = new_id
             if not was_active:
-                self._note(f"[{cam_id}] {KIND_LABEL[kind]} başladı")
+                # In-app debug panel only (see _log_line) — not the system
+                # log. Motion/person/vehicle edges fire routinely, often
+                # every few seconds across several cameras; journalctl is
+                # for things that need attention, not routine sensor
+                # chatter. Errors still go through _note/_fail as before.
+                self._log_line(f"[{cam_id}] {KIND_LABEL[kind]} başladı")
                 self._maybe_notify(cam_id, kind, ts)
         else:
             self.storage.extend_detection(det_id, ts)
@@ -373,7 +378,7 @@ class HAManager:
         if was_active and det_id is not None:
             self.storage.extend_detection(det_id, end_ts)
         if was_active:
-            self._note(f"[{cam_id}] {KIND_LABEL[kind]} durdu ({reason})")
+            self._log_line(f"[{cam_id}] {KIND_LABEL[kind]} durdu ({reason})")
 
     def _close_all_active(self, ts: float, reason: str):
         with self._lock:

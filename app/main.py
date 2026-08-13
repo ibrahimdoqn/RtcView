@@ -1221,7 +1221,7 @@ def main():
         log.error("Port %s is already in use on %s.", port, host)
         sys.exit(2)
 
-    log.info("RtcView starting on http://%s:%s", host, port)
+    log.info("RtcView başladı — http://%s:%s adresinde dinleniyor", host, port)
     if args.dev:
         app.run(host=host, port=port, debug=True, use_reloader=False)
     else:

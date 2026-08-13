@@ -332,7 +332,21 @@ class CameraRecorder:
                 # ceiling and logs a warning on every single frame's
                 # worth of encoding. 48k asks for exactly what's
                 # achievable: same audio, no per-frame clamp warning spam.
-                cmd += ["-c:a", "aac", "-b:a", "48k", "-ac", "1"]
+                #
+                # -use_wallclock_as_timestamps above stamps every packet
+                # (video AND audio) with its real arrival time rather than
+                # a synthesized clock. Video tolerates that fine since it's
+                # stream-copied, but the audio ENCODER needs strictly
+                # increasing input timestamps — RTSP network jitter alone
+                # is enough to occasionally hand it a timestamp that's
+                # equal to or behind the previous one, which surfaces as
+                # constant "Non-monotonic DTS" / "Queue input is backward
+                # in time" warnings once transcoding starts (self-
+                # corrected by ffmpeg, but log-spammy and a source of tiny
+                # cumulative A/V drift). aresample=async=1 absorbs that
+                # jitter by resampling onto a smooth, monotonic timeline
+                # before the AAC encoder ever sees it.
+                cmd += ["-af", "aresample=async=1", "-c:a", "aac", "-b:a", "48k", "-ac", "1"]
             cmd += [
                 "-f", "segment",
                 "-segment_time", str(self.segment_seconds),

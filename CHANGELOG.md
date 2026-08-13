@@ -5,6 +5,13 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-08-13
+
+### Düzeltildi
+- Ses kaydı açık kameralarda sürekli tekrarlayan `Non-monotonic DTS` / `Queue input is backward in time` ffmpeg uyarıları giderildi. Sebep: `-use_wallclock_as_timestamps` her paketi (video + ses) gerçek varış zamanıyla damgalıyor; video stream-copy olduğu için bundan etkilenmiyor ama AAC encoder'a giden ses zaman damgaları ağ jitter'ı yüzünden ara sıra monoton olmayabiliyor. Ses akışına `-af aresample=async=1` eklendi — encoder'a ulaşmadan önce zaman damgalarını düzgün bir eksene resample ediyor, hem log gürültüsünü hem de küçük ses/görüntü kayma birikimi riskini ortadan kaldırıyor.
+- Home Assistant tabanlı hareket/insan/araç algılamasının "başladı"/"durdu" satırları artık sistem logunu (journalctl) doldurmuyor — bu bilgi hâlâ kamera ayarlarındaki "Gelişmiş / Hata Ayıklama" panelinde canlı olarak görünüyor, sadece gerçek hatalar (bağlantı kopması, kimlik doğrulama hatası vb.) artık sistem loguna düşüyor.
+- Servis başlatma logu artık `RtcView başladı — http://host:port adresinde dinleniyor` şeklinde, tüm bağımlı bileşenler (kayıt, Home Assistant bağlantısı, ağ izleme) hazır olduktan sonra yazılıyor — servisin gerçekten ayağa kalktığını journalctl'den net görmek için.
+
 ## [4.0.0] - 2026-08-12
 
 ### Yıkıcı değişiklik
