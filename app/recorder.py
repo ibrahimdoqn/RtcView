@@ -202,7 +202,7 @@ class CameraRecorder:
     """State + subprocess for a single camera."""
 
     def __init__(self, cam: dict, ffmpeg_path: str, segment_seconds: int,
-                 rtsp_url: str, storage, container: str = "mp4",
+                 rtsp_url: str, storage,
                  mem_ceiling_mb: int = MEM_RSS_CEILING_MB):
         self.cam = cam
         self.cam_id = cam["id"]
@@ -215,15 +215,17 @@ class CameraRecorder:
         self.segment_seconds = max(30, int(segment_seconds))
         self.rtsp_url = rtsp_url
         self.storage = storage
-        self.container = container
         self.proc: Optional[subprocess.Popen] = None
         self.started_at: Optional[float] = None
         self.day_dir: Optional[Path] = None
         self.pattern: Optional[str] = None
+        # Fixed, not user-configurable — every recorder always writes MP4.
+        # Kept as an attribute (rather than a "mp4" literal repeated at
+        # each of its three call sites) purely so those stay in sync if
+        # this ever needs to change.
         self.ext: str = "mp4"
-        # Chosen fresh at each start() call from storage.pick_write_root().
-        # Multi-root aware: different sessions of the same camera may end
-        # up on different disks depending on free-space at spawn time.
+        # Chosen fresh at each start() call from storage.pick_write_root()
+        # (single storage root — see storage.py's module docstring).
         self.root: Optional[Path] = None
         self.manual_until: float = 0.0  # unix ts; > now means manual override on
         self.trigger: str = "schedule"
@@ -260,7 +262,6 @@ class CameraRecorder:
             self.root = self.storage.pick_write_root()
             self.day_dir = _cam_dir(self.root, self.cam_id)
             self.day_dir.mkdir(parents=True, exist_ok=True)
-            self.ext = "mp4" if self.container == "mp4" else "mkv"
             # Filename encodes each segment's own wall-clock start time via
             # ffmpeg's -strftime 1. Second resolution is unique because
             # segment_time >= 30 s.
@@ -350,7 +351,7 @@ class CameraRecorder:
             cmd += [
                 "-f", "segment",
                 "-segment_time", str(self.segment_seconds),
-                "-segment_format", "mp4" if self.ext == "mp4" else "matroska",
+                "-segment_format", "mp4",
                 "-reset_timestamps", "1",
                 "-strftime", "1",
                 "-movflags", "+faststart",
@@ -467,7 +468,6 @@ class CameraRecorder:
         rolled = (self._last_latest_started is not None and latest_started > self._last_latest_started)
         self._last_latest_started = latest_started
 
-        get_by_path = getattr(self.storage, "get_segment_by_path", None)
         for i, (f, started) in enumerate(files):
             path = str(f.resolve())
             try:
@@ -478,7 +478,7 @@ class CameraRecorder:
             if not (final or not is_latest):
                 # Latest file is still being written; register on rollover.
                 continue
-            if get_by_path and get_by_path(path):
+            if self.storage.get_segment_by_path(path):
                 continue
             if not is_latest:
                 ended = files[i+1][1]  # next segment's start = this one's close
@@ -486,7 +486,7 @@ class CameraRecorder:
                 ended = st.st_mtime  # final flush
             if ended <= started:
                 ended = started + max(1.0, st.st_size / 500_000.0)
-            playable = _mp4_has_moov(f) if self.ext == "mp4" else True
+            playable = _mp4_has_moov(f)
             if not playable:
                 log.warning("[%s] segment closed without a valid trailer (unplayable): %s", self.cam_id, f)
             self.storage.register_segment(self.cam_id, path, started, ended, trigger=self.trigger, playable=playable)
@@ -566,13 +566,6 @@ class RecordingManager:
         self._sup_thread: Optional[threading.Thread] = None
         self._watch_thread: Optional[threading.Thread] = None
         self._reload_timer: Optional[threading.Timer] = None
-        # Patch a convenience lookup onto storage without touching its module.
-        if not hasattr(storage, "get_segment_by_path"):
-            def _by_path(p, _s=storage):
-                with _s._lock:
-                    r = _s._db.execute("SELECT id FROM segments WHERE path = ?", (str(Path(p).resolve()),)).fetchone()
-                return {"id": r[0]} if r else None
-            storage.get_segment_by_path = _by_path  # type: ignore[attr-defined]
 
     # ---------- lifecycle ----------
     def start(self):

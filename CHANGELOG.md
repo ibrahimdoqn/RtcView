@@ -5,6 +5,19 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.0.2] - 2026-08-13
+
+### Düzeltildi
+- Sidebar bildirim listesi araç (vehicle) algılamalarını yanlışlıkla "Hareket algılandı" olarak gösteriyordu ve nokta rengi tanımsızdı (`.notif-dot.vehicle` CSS kuralı eksikti) — araç bildirimi artık doğru etiket ve mor renkle görünüyor.
+- `POST /api/recording/settings`: geçersiz bir `storage_path` gönderildiğinde, aynı istekteki diğer alanlar (`retention_days`, `max_gb` vb.) artık kalıcı olarak kaydedilmiyor — önceden istek 400 dönerken bu alanlar sessizce zaten kaydedilmiş oluyordu, kısmi/tutarsız bir durum bırakıyordu.
+- Kamera `onvif_port`/`retention_days_override` alanları artık hem `POST /api/cameras` hem `PUT /api/cameras/<id>`'de düzgün doğrulanıyor: bozuk bir değer (ör. sayısal olmayan bir metin) POST'ta önceden yakalanmamış bir hataya (500) düşüyordu, PUT'ta ise hiç dönüştürülmeden olduğu gibi kaydedilip yalnızca PTZ kullanılınca sonradan patlıyordu — ikisi de artık temiz bir 400 döndürüyor.
+- `record_mode` artık `POST`/`PUT /api/cameras`'ta geçerli değerlerle (`off`/`always`/`schedule`/`manual`) sınırlandırılıyor; önceden geçersiz bir değer sessizce kabul edilip kamerayı hiç kayıt yapmaz hale getiriyordu.
+
+### Temizlendi
+- `storage.get_segment_by_path`, artık `Storage` sınıfının gerçek bir metodu — önceden `RecordingManager.__init__` içinde `storage._db`/`storage._lock`'a doğrudan erişerek monkey-patch ile ekleniyordu.
+- `CameraRecorder`'ın hiçbir yerden kullanılmayan `container`/mkv desteği (config'te hiç alanı yoktu, her zaman varsayılan "mp4") kaldırıldı — ölü kod.
+- `recorder.py`/`storage.py`'deki artık yanlış olan yorumlar güncellendi: çoklu-disk döneminden kalan bir yorum (v2.0.0'dan beri geçersiz) ve `detections`/`notifications` tablolarının `kind` sütununun hâlâ yalnızca `'motion' | 'person'` olduğunu söyleyen yorumlar (araç türü v3.0.0'dan beri var).
+
 ## [4.0.1] - 2026-08-13
 
 ### Düzeltildi
@@ -88,7 +101,9 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.0...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.2...HEAD
+[4.0.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.1...v4.0.2
+[4.0.1]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/ibrahimdoqn/RtcView/compare/v3.0.1...v4.0.0
 [3.0.1]: https://github.com/ibrahimdoqn/RtcView/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/ibrahimdoqn/RtcView/compare/v2.0.0...v3.0.0

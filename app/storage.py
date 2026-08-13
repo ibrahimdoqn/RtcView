@@ -55,7 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_snap_cam_time ON snapshots(cam_id, taken_at);
 CREATE TABLE IF NOT EXISTS detections (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     cam_id     TEXT    NOT NULL,
-    kind       TEXT    NOT NULL,   -- 'motion' | 'person'
+    kind       TEXT    NOT NULL,   -- 'motion' | 'person' | 'vehicle'
     started_at REAL    NOT NULL,
     ended_at   REAL    NOT NULL
 );
@@ -64,7 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_det_cam_time ON detections(cam_id, started_at);
 CREATE TABLE IF NOT EXISTS notifications (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     cam_id     TEXT    NOT NULL,
-    kind       TEXT    NOT NULL,   -- 'motion' | 'person'
+    kind       TEXT    NOT NULL,   -- 'motion' | 'person' | 'vehicle'
     event_ts   REAL    NOT NULL,   -- wall-clock instant of the detection edge (for playback jump)
     created_at REAL    NOT NULL,   -- row insert time (for retention pruning)
     read       INTEGER NOT NULL DEFAULT 0
@@ -361,6 +361,21 @@ class Storage:
             r = self._db.execute(
                 "SELECT id, cam_id, path, started_at, ended_at, duration, bytes, locked, trigger, playable"
                 " FROM segments WHERE id = ?", (seg_id,)
+            ).fetchone()
+        if not r: return None
+        cols = ["id","cam_id","path","started_at","ended_at","duration","bytes","locked","trigger","playable"]
+        return dict(zip(cols, r))
+
+    def get_segment_by_path(self, path: str) -> Optional[dict]:
+        """Same as get_segment, keyed by the file's own path instead of
+        its row id — for callers (recorder.py's _scan_and_register) that
+        only know the path, not whatever id a previous register_segment()
+        call returned."""
+        abs_path = str(Path(path).resolve())
+        with self._lock:
+            r = self._db.execute(
+                "SELECT id, cam_id, path, started_at, ended_at, duration, bytes, locked, trigger, playable"
+                " FROM segments WHERE path = ?", (abs_path,)
             ).fetchone()
         if not r: return None
         cols = ["id","cam_id","path","started_at","ended_at","duration","bytes","locked","trigger","playable"]

@@ -1180,7 +1180,7 @@
     wrap.innerHTML = state.notifications.map(n => {
       const cam = state.cameras.find(c => c.id === n.cam_id);
       const camName = cam ? escapeHtml(cam.name) : "Bilinmeyen kamera";
-      const kindLabel = n.kind === "person" ? "İnsan algılandı" : "Hareket algılandı";
+      const kindLabel = { person: "İnsan algılandı", vehicle: "Araç algılandı" }[n.kind] || "Hareket algılandı";
       return `<div class="notif-row${n.read ? "" : " unread"}" data-id="${n.id}" data-cam="${escapeHtml(n.cam_id)}" data-ts="${n.event_ts}">
         <span class="notif-dot ${n.kind}"></span>
         <span class="notif-body">

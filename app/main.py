@@ -69,6 +69,7 @@ def create_app(config_path: str) -> Flask:
 
     _HA_ENTITY_RE = re.compile(r"^binary_sensor\.[a-z0-9_]+$")
     _HA_NOTIFY_ENTITY_RE = re.compile(r"^input_boolean\.[a-z0-9_]+$")
+    _RECORD_MODES = ("off", "always", "schedule", "manual")
 
     def _validate_ha_entities(body):
         """Pull ha_{motion,person,vehicle}_entity out of a camera request
@@ -87,6 +88,25 @@ def create_app(config_path: str) -> Flask:
                 return None, f"invalid {key} — must be a binary_sensor.* entity id"
             out[key] = val
         return out, None
+
+    def _validate_int_field(body, key, default=0):
+        """Coerce body[key] to int, defaulting when the key is absent or
+        blank. Returns (value, None) or (None, error). Camera fields like
+        onvif_port/retention_days_override used to go straight through
+        int(...) with no try/except on POST (a non-numeric value crashed
+        with an uncaught ValueError -> 500 instead of a clean 400) and
+        with no coercion at all on PUT (a partial update just stores
+        whatever type the client sent, e.g. a string "abc", which then
+        breaks later when ptz.py does int(camera["onvif_port"]))."""
+        if key not in body:
+            return default, None
+        raw = body.get(key)
+        if raw is None or raw == "":
+            return default, None
+        try:
+            return int(raw), None
+        except (TypeError, ValueError):
+            return None, f"invalid {key}"
 
     def _validate_record_schedule(raw):
         """Normalize/validate a record_schedule value into the window shape
@@ -291,19 +311,28 @@ def create_app(config_path: str) -> Flask:
         record_schedule, err = _validate_record_schedule(body.get("record_schedule"))
         if err:
             return jsonify({"error": err}), 400
+        onvif_port, err = _validate_int_field(body, "onvif_port", 80)
+        if err:
+            return jsonify({"error": err}), 400
+        retention_days_override, err = _validate_int_field(body, "retention_days_override", 0)
+        if err:
+            return jsonify({"error": err}), 400
+        record_mode = body.get("record_mode", "off")
+        if record_mode not in _RECORD_MODES:
+            return jsonify({"error": f"invalid record_mode — must be one of {_RECORD_MODES}"}), 400
         cam = {
             "id": cam_id,
             "name": name,
             "stream": stream,
             "ptz_enabled": bool(body.get("ptz_enabled", False)),
             "onvif_host": body.get("onvif_host", ""),
-            "onvif_port": int(body.get("onvif_port", 80) or 80),
+            "onvif_port": onvif_port,
             "onvif_user": body.get("onvif_user", ""),
             "onvif_pass": body.get("onvif_pass", ""),
-            "record_mode": body.get("record_mode", "off"),
+            "record_mode": record_mode,
             "record_schedule": record_schedule,
             "record_audio": bool(body.get("record_audio", False)),
-            "retention_days_override": int(body.get("retention_days_override", 0) or 0),
+            "retention_days_override": retention_days_override,
             **ha_entities,
             "group_ids": [str(g) for g in (body.get("group_ids") or []) if str(g).strip()],
         }
@@ -348,6 +377,19 @@ def create_app(config_path: str) -> Flask:
             if err:
                 return jsonify({"error": err}), 400
             body["record_schedule"] = clean
+        if "record_mode" in body and body["record_mode"] not in _RECORD_MODES:
+            return jsonify({"error": f"invalid record_mode — must be one of {_RECORD_MODES}"}), 400
+        # PUT is a partial update whose body gets merged straight into the
+        # stored camera dict (store.update_camera below) — unlike POST,
+        # nothing here used to coerce these to int, so a malformed client
+        # value (a stray string) landed in config.json as-is and only
+        # broke later when ptz.py did int(camera["onvif_port"]).
+        for key, default in (("onvif_port", 80), ("retention_days_override", 0)):
+            if key in body:
+                v, err = _validate_int_field(body, key, default)
+                if err:
+                    return jsonify({"error": err}), 400
+                body[key] = v
         ok = store.update_camera(camera_id, body)
         if not ok:
             return jsonify({"error": "not found"}), 404
@@ -620,22 +662,27 @@ def create_app(config_path: str) -> Flask:
             # makes it a busy loop pegging a core forever.
             clean["purge_interval_seconds"] = max(5, clean["purge_interval_seconds"])
         if "enabled" in clean: clean["enabled"] = bool(clean["enabled"])
-        # Storage-path change is atomic + recorder-safe: stop cleanly, swap,
-        # start again. Current segment is finalised via the graceful stop.
+        # Storage-path change is validated + applied FIRST, and everything
+        # else in this request is only persisted once that succeeds — a
+        # rejected path (unwritable, uncreatable) must leave every other
+        # field in this same request untouched rather than saving them
+        # alongside the 400, which used to happen because update_recording
+        # ran on `clean` before set_root got a chance to reject the path.
         moving_root = False
         if new_path is not None:
             wanted = str(Path(str(new_path)).expanduser().resolve())
             moving_root = wanted != str(storage.root())
         if moving_root:
             recorder.stop()
-        if clean: store.update_recording(clean)
         if new_path is not None:
-            # max_gb (if present) was already persisted just above via
-            # `clean` — set_root only needs to move the path itself.
-            ok, msg = storage.set_root(new_path)
+            # set_root persists storage_path (and max_gb, if given here)
+            # in one shot — pulled out of `clean` so a rejected path can
+            # never leave max_gb saved without it.
+            ok, msg = storage.set_root(new_path, max_gb=clean.pop("max_gb", None))
             if not ok:
                 if moving_root: recorder.start()
                 return jsonify({"error": msg}), 400
+        if clean: store.update_recording(clean)
         if moving_root:
             recorder.start()
         else:
