@@ -890,19 +890,28 @@
       const video = p.video;
       const msg = tile.querySelector("[data-msg]");
       video.srcObject = null;
-      // The 'mp4' query param must be present (even empty) for go2rtc's
-      // stream.mp4 handler (pkg/mp4/helpers.go ParseQuery) to run its
-      // codec-aware audio filter at all — with no param, it falls through
-      // to the generic parser and audio silently never makes it into the
-      // fMP4 output. Deliberately using the empty/legacy value (AAC only)
-      // rather than mp4=all/mp4=flac: those offer go2rtc's PCM-family
-      // codecs, which it then wraps as FLAC via pkg/pcm.FLACEncoder — a
-      // path that has crashed go2rtc in production (nil pointer panic at
-      // pkg/pcm/flac.go:149, only reachable from that PCM→FLAC branch in
-      // pkg/mp4/consumer.go AddTrack). Cameras sending PCM-family audio
-      // just get transcoded to AAC instead, same as RtcView's own
-      // recorder.py already does for storage.
-      const url = `/go2rtc/api/stream.mp4?src=${encodeURIComponent(cam.stream || cam.id)}&mp4=`;
+      // mp4=all is required to get audio at all here: go2rtc's stream.mp4
+      // handler (pkg/mp4/helpers.go ParseQuery) only applies its
+      // codec-aware audio filter when a 'mp4' query param is present at
+      // all — with none, it falls through to the generic parser and audio
+      // silently never makes it into the fMP4 output. mp4=all requests the
+      // broadest codec set (AAC + the PCMA/PCMU/PCM family most cheap IP
+      // cameras actually send + Opus/MP3).
+      //
+      // NOTE: go2rtc has NO PCM->AAC transcoder — it only repackages a
+      // codec the camera already sends. Cameras sending raw PCM-family
+      // audio only get audio at all via mp4=all/mp4=flac, which is exactly
+      // what makes go2rtc wrap that PCM into FLAC via pkg/pcm.FLACEncoder
+      // for the fMP4 output — a path that has crashed go2rtc in production
+      // (nil pointer panic at pkg/pcm/flac.go:149). Tried dropping to
+      // mp4= (empty, AAC-only) to dodge that crash, but it silently killed
+      // audio for these cameras entirely (no AAC source, no negotiation).
+      // Traded back: keep audio, accept that go2rtc may occasionally crash
+      // and self-restart (~2s, live-view only — recording is unaffected).
+      // A real fix would transcode camera audio to AAC upstream in
+      // go2rtc's own stream config (ffmpeg:rtsp://...#audio=aac), outside
+      // this repo.
+      const url = `/go2rtc/api/stream.mp4?src=${encodeURIComponent(cam.stream || cam.id)}&mp4=all`;
       console.log(`[${cam.id}] MSE HTTP fMP4:`, url);
       video.src = url; video.load();
       let settled = false;

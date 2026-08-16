@@ -5,10 +5,15 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.1.2] - 2026-08-16
+
+### Düzeltildi
+- 4.1.1'deki `mp4=` (boş) değişikliği geri alındı — canlı izlemede (MSE) sesi tamamen sessiz bırakıyordu. Sebep: go2rtc'nin `pkg/mp4/consumer.go`'daki ses işleme mantığı gerçek bir transcoder değil, sadece kameranın **zaten gönderdiği** codec'i paketliyor (AAC → doğrudan paketleme, PCM ailesi → FLAC'a sarma). `mp4=` isteği go2rtc'ye "bana sadece AAC ver" dedirtiyor; kameralar ham PCM (PCMA/PCMU) gönderdiği için eşleşen codec bulunamıyor ve ses hattı hiç kurulmuyordu. `stream.mp4` isteği tekrar `mp4=all` kullanıyor — ses geri geldi, 4.1.1'in önlemeye çalıştığı go2rtc çökme riski (bkz. aşağı) bilinçli olarak kabul edildi: go2rtc arada bir çöküp ~2 sn içinde kendiliğinden yeniden başlayabiliyor, kayıt hattı bundan etkilenmiyor, sadece canlı izleme kısa bir kesinti yaşayabiliyor. Kalıcı çözüm için go2rtc'nin kendi stream tanımında (bu repo dışında, `go2rtc.yaml`) kamera sesini `ffmpeg:...#audio=aac` ile önceden AAC'ye çevirmek gerekiyor.
+
 ## [4.1.1] - 2026-08-16
 
 ### Düzeltildi
-- Canlı izlemedeki (MSE/fMP4) sürekli tekrarlanan go2rtc çökmesi giderildi: `stream.mp4` isteği `mp4=all` parametresiyle go2rtc'ye PCM ailesi (PCMA/PCMU/PCM/PCML) ses codec'lerini de teklif ediyordu, go2rtc bunu fMP4 çıktısı için FLAC'a sarmaya çalışırken (`pkg/pcm.FLACEncoder`) çöküp yeniden başlıyordu — bu sırada RtcView'a bağlı tüm kameraların RTSP beslemesi birkaç saniyeliğine kesiliyordu (kayıt tarafı otomatik toparlanıyordu, ama canlı izleme daha uzun etkileniyordu). İstek artık `mp4=` (boş/legacy, sadece AAC) kullanıyor — PCM ailesi hiç teklif edilmediği için go2rtc'nin FLAC encoder'ı bu yoldan hiç tetiklenmiyor; kameranın ham PCM sesi bunun yerine AAC'ye çevriliyor (RtcView'ın kendi kayıt hattının zaten yaptığı gibi).
+- Canlı izlemedeki (MSE/fMP4) sürekli tekrarlanan go2rtc çökmesini önlemeye çalışan bir değişiklik yapıldı: `stream.mp4` isteği `mp4=all` parametresiyle go2rtc'ye PCM ailesi (PCMA/PCMU/PCM/PCML) ses codec'lerini de teklif ediyordu, go2rtc bunu fMP4 çıktısı için FLAC'a sarmaya çalışırken (`pkg/pcm.FLACEncoder`) çöküp yeniden başlıyordu — bu sırada RtcView'a bağlı tüm kameraların RTSP beslemesi birkaç saniyeliğine kesiliyordu (kayıt tarafı otomatik toparlanıyordu, ama canlı izleme daha uzun etkileniyordu). İstek `mp4=` (boş/legacy, sadece AAC) olarak değiştirildi. **Bu değişiklik 4.1.2'de geri alındı** — aşağıya bakın.
 
 ## [4.1.0] - 2026-08-16
 
@@ -115,7 +120,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.1...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.2...HEAD
+[4.1.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.1...v4.1.2
 [4.1.1]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.0...v4.1.1
 [4.1.0]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.2...v4.1.0
 [4.0.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.1...v4.0.2
