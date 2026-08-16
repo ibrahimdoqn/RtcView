@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-08-16
+
+### Düzeltildi
+- Canlı izlemedeki (MSE/fMP4) sürekli tekrarlanan go2rtc çökmesi giderildi: `stream.mp4` isteği `mp4=all` parametresiyle go2rtc'ye PCM ailesi (PCMA/PCMU/PCM/PCML) ses codec'lerini de teklif ediyordu, go2rtc bunu fMP4 çıktısı için FLAC'a sarmaya çalışırken (`pkg/pcm.FLACEncoder`) çöküp yeniden başlıyordu — bu sırada RtcView'a bağlı tüm kameraların RTSP beslemesi birkaç saniyeliğine kesiliyordu (kayıt tarafı otomatik toparlanıyordu, ama canlı izleme daha uzun etkileniyordu). İstek artık `mp4=` (boş/legacy, sadece AAC) kullanıyor — PCM ailesi hiç teklif edilmediği için go2rtc'nin FLAC encoder'ı bu yoldan hiç tetiklenmiyor; kameranın ham PCM sesi bunun yerine AAC'ye çevriliyor (RtcView'ın kendi kayıt hattının zaten yaptığı gibi).
+
 ## [4.1.0] - 2026-08-16
 
 ### Eklendi
@@ -110,7 +115,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.0...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.1...HEAD
+[4.1.1]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.0...v4.1.1
 [4.1.0]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.2...v4.1.0
 [4.0.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.1...v4.0.2
 [4.0.1]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.0...v4.0.1
