@@ -32,6 +32,23 @@ logging.basicConfig(
 log = logging.getLogger("rtcview")
 
 
+def _read_app_version() -> str:
+    """Single source of truth for the app's semver: app/VERSION, kept in
+    sync with the latest CHANGELOG.md entry (see CLAUDE.md's Sürümleme
+    section). Previously /api/status returned a hardcoded string here
+    that had to be remembered on every release and had already drifted
+    out of sync with CHANGELOG across several versions before this file
+    existed. Read once at import time — a version bump only ever lands
+    via a fresh deploy/restart, never while this process is running."""
+    try:
+        return (Path(__file__).resolve().parent / "VERSION").read_text().strip() or "0.0.0"
+    except Exception:
+        return "0.0.0"
+
+
+APP_VERSION = _read_app_version()
+
+
 def resolve_paths():
     install_dir = os.environ.get("RTCVIEW_HOME", "/opt/rtcview")
     config_dir = os.environ.get("RTCVIEW_CONFIG", os.path.join(install_dir, "config"))
@@ -231,7 +248,7 @@ def create_app(config_path: str) -> Flask:
             "onvif_available": ONVIF_AVAILABLE,
             "ha_websocket_available": HA_WEBSOCKET_AVAILABLE,
             "recording_enabled": store.get_recording().get("enabled", True),
-            "version": "4.0.0",
+            "version": APP_VERSION,
         })
 
     @app.get("/api/config")

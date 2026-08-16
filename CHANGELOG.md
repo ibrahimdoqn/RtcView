@@ -5,6 +5,15 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-08-16
+
+### Eklendi
+- Kayıt oynatma (Geçmiş Kayıt) ekranına ses aç/kapat kontrolü eklendi. Varsayılan olarak **kapalı** geliyor — eski kayıtları izlerken beklenmedik bir sesle karşılaşmamak için — istenirse kontrol çubuğundaki hoparlör düğmesiyle açılabiliyor. Seçim, playback paneli açık kaldığı sürece segmentler/saatler arasında geçiş yaparken korunuyor; panel her kapatılıp yeniden açıldığında tekrar kapalıya dönüyor.
+- `app/VERSION` dosyası eklendi — uygulamanın sürümü için tek gerçek kaynak. `/api/status`'un `version` alanı ve Ayarlar → Sistem → Güncelleme paneli artık buradan okuyor; önceden `main.py` içinde elle güncellenmesi gereken sabit bir metin vardı ve birkaç sürümdür CHANGELOG'un gerisinde kalmıştı.
+
+### Düzeltildi
+- `/api/status`'taki uygulama sürümü, gerçek CHANGELOG sürümünden geride kalmıştı (`app/VERSION` eklenmeden önce elle senkronize edilen sabit bir metindi) — artık her zaman tek kaynaktan okunuyor.
+
 ## [4.0.2] - 2026-08-13
 
 ### Düzeltildi
@@ -101,7 +110,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.2...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.0...HEAD
+[4.1.0]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.2...v4.1.0
 [4.0.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.1...v4.0.2
 [4.0.1]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/ibrahimdoqn/RtcView/compare/v3.0.1...v4.0.0

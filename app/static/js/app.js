@@ -230,6 +230,8 @@
       const el = $("#status-indicator");
       if (s.go2rtc_running){ el.classList.add("ok"); el.classList.remove("err"); $("#status-text").textContent = "go2rtc aktif"; }
       else { el.classList.add("err"); el.classList.remove("ok"); $("#status-text").textContent = "go2rtc kapalı"; }
+      const verEl = $("#s-app-version");
+      if (verEl && s.version) verEl.textContent = `RtcView sürümü: v${s.version}`;
     } catch { $("#status-indicator").classList.add("err"); $("#status-text").textContent = "Sunucuya bağlanılamıyor"; }
   }
 
@@ -2388,6 +2390,11 @@
     pb.pendingSeek = (target && target.atTime != null) ? target.atTime : null;
     pb.date = pb.pendingSeek != null ? _dateStrFromUnix(pb.pendingSeek) : (pb.date || todayLocal());
     $("#pb-date").value = pb.date;
+    // Audio always starts off on a fresh open — see the audioOn comment
+    // in initPlayback.
+    pb.audioOn = false;
+    $("#pb-video").muted = true;
+    updatePbAudioIcon();
     $("#playback").classList.remove("hidden");
     loadDay();
     // While the panel is open, refresh the day's segment list so newly
@@ -2640,6 +2647,12 @@
       pxPerSec: null,
       scrubbing: false,   // true while user is dragging the timeline
       videoZoom: 1, videoPanX: 0, videoPanY: 0,
+      // Playback audio defaults OFF every time the panel opens (see
+      // openPlayback) — reviewing old footage shouldn't surprise you with
+      // sound. #pb-audio toggles it; the choice then persists across
+      // segments/scrubbing within THIS playback session (loadSegment
+      // never touches it), only resetting on the next open.
+      audioOn: false,
     };
     $("#pb-close").addEventListener("click", closePlayback);
     $("#pb-events-btn").addEventListener("click", togglePbEvents);
@@ -2655,6 +2668,7 @@
     $("#pb-play").addEventListener("click", () => { v.paused ? v.play() : v.pause(); });
     v.addEventListener("play",  updatePlayPauseIcon);
     v.addEventListener("pause", updatePlayPauseIcon);
+    $("#pb-audio").addEventListener("click", togglePbAudio);
     $("#pb-back").addEventListener("click", (e) => { e.preventDefault(); seekRelative(-10); });
     $("#pb-fwd").addEventListener("click",  (e) => { e.preventDefault(); seekRelative(10);  });
     $("#pb-speed").addEventListener("change", (e) => applyPlaybackSpeed(e.target.value));
@@ -3375,6 +3389,11 @@
       renderTimeline();
     };
     if (changing){
+      // Re-assert the user's audio choice on every new segment — .muted
+      // is a plain element property so it normally survives a src swap
+      // on its own, but this keeps it correct even if a browser resets
+      // it on load() (some do, for a fresh resource).
+      v.muted = !pb.audioOn;
       v.src = seg.url;
       v.load();
       if (pb._resetVideoZoom) pb._resetVideoZoom();
@@ -3448,6 +3467,25 @@
     icon.innerHTML = v && !v.paused
       ? '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>'   // pause
       : '<path d="M8 5v14l11-7z"/>';                // play
+  }
+
+  // Playback audio toggle — see the audioOn comment in initPlayback for
+  // why this defaults off every time the panel opens rather than
+  // remembering a preference across sessions.
+  function togglePbAudio(){
+    const pb = state.playback; if (!pb) return;
+    pb.audioOn = !pb.audioOn;
+    $("#pb-video").muted = !pb.audioOn;
+    updatePbAudioIcon();
+  }
+  function updatePbAudioIcon(){
+    const btn = $("#pb-audio"); if (!btn) return;
+    const on = !!(state.playback && state.playback.audioOn);
+    btn.classList.toggle("on", on);
+    btn.title = on ? "Sesi kapat" : "Ses aç (varsayılan kapalı)";
+    btn.innerHTML = on
+      ? `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="4 9 8 9 12 5 12 19 8 15 4 15" fill="currentColor" stroke="none"/><path d="M16 8.5a5 5 0 010 7"/><path d="M18.5 6a8.5 8.5 0 010 12"/></svg>`
+      : `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="4 9 8 9 12 5 12 19 8 15 4 15" fill="currentColor" stroke="none"/><line x1="16.5" y1="8.5" x2="21.5" y2="15.5"/><line x1="21.5" y1="8.5" x2="16.5" y2="15.5"/></svg>`;
   }
 
   function bestDuration(seg, v){

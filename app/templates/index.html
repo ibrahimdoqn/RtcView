@@ -439,6 +439,7 @@
                 </span>
               </summary>
               <div class="sys-row-body">
+                <div id="s-app-version" class="usage-text">—</div>
                 <div id="s-update-info" class="usage-text">—</div>
                 <div class="row" style="gap:.4rem;margin-top:.5rem;flex-wrap:wrap;">
                   <button type="button" id="s-update-refresh" class="btn ghost small">Yenile</button>
@@ -562,7 +563,7 @@
       <span id="pb-status" class="pb-status">—</span>
     </header>
     <div class="pb-stage" id="pb-stage">
-      <video id="pb-video" playsinline preload="metadata"></video>
+      <video id="pb-video" playsinline preload="metadata" muted></video>
       <div id="pb-zoom-info" class="pb-zoom-info" style="display:none">1.0×</div>
       <div id="pb-empty" class="pb-empty hidden">Bu gün için kayıt yok.</div>
       <!-- Algılanan olaylar çekmecesi: masaüstünde sağdan, mobilde alttan
@@ -594,6 +595,9 @@
           <path d="M9.4 6.2 L 14 5.5 M 9.4 6.2 L 10 10.8"/>
           <text x="16" y="20" font-size="9.5" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none" style="font-family:-apple-system,BlinkMacSystemFont,sans-serif">10</text>
         </svg>
+      </button>
+      <button id="pb-audio" class="pb-btn" title="Ses aç (varsayılan kapalı)" aria-label="Ses aç/kapat">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="4 9 8 9 12 5 12 19 8 15 4 15" fill="currentColor" stroke="none"/><line x1="16.5" y1="8.5" x2="21.5" y2="15.5"/><line x1="21.5" y1="8.5" x2="16.5" y2="15.5"/></svg>
       </button>
       <select id="pb-speed" class="pb-select" title="Hız">
         <option value="0.5">0.5×</option>

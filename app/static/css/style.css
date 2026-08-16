@@ -1053,6 +1053,7 @@ kbd{
 }
 .pb-events-badge.hidden{display:none;}
 .pb-events-btn.active{color:var(--accent);}
+#pb-audio.on{color:var(--accent);}
 
 /* Desktop: the drawer is a side rail with its own opaque glass background,
    not a sheet over the video — a dimming scrim here would darken the whole

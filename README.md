@@ -37,6 +37,7 @@ kendi entegrasyonu, vb. — kaynak fark etmez).
 - **24 saatlik timeline şeridi** — segmentler renkli barlar (mavi = normal, sarı = kilitli, kırmızı = manuel, yeşil = oynatılan)
 - Fare tekerleği ile timeline zoom, sürükleyerek pan, tıkla → o zamana seek
 - Player: oynat/duraklat, ±10 sn, hız (0.5×–32×), kare-kare (<kbd>,</kbd>/<kbd>.</kbd>)
+- **Ses aç/kapat** kontrolü — varsayılan kapalı (eski kayıtları izlerken beklenmedik ses olmasın diye), istenirse hoparlör düğmesiyle açılır; panel her açılışında yeniden kapalıya döner
 - **Segmentler otomatik sıralı oynanır** (kesintisiz)
 - Segment bazında: indir / sil / kilitle / karesini kaydet
 - Tarih navigasyonu (◀ önceki / bugün / sonraki ▶)
@@ -190,6 +191,7 @@ Playback:
 │   ├── ptz.py           # ONVIF PTZ
 │   ├── go2rtc_client.py
 │   ├── config.py        # config.json okuma/yazma, şema göçü
+│   ├── VERSION          # uygulama sürümü için tek gerçek kaynak (bkz. CHANGELOG.md)
 │   └── wsdl/            # ONVIF WSDL/XSD şemaları (yalnızca ptz.py kullanır)
 ├── venv/           # izole Python ortamı
 ├── config/config.json
