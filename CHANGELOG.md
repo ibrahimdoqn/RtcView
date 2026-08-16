@@ -5,6 +5,19 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-08-16
+
+### Eklendi
+- **RtcView artık kendi go2rtc'sini kurar ve yönetir** — kurulum go2rtc'yi harici/mevcut bir servis olarak varsaymıyor, kendi `go2rtc.service`'ini kuruyor (`vendor/go2rtc`'den, aynı `rtcview` kullanıcısıyla, `NoNewPrivileges=yes` altında). Yeni Ayarlar → **go2rtc** sekmesi: bağlantı ayarları (host/port, eski Genel sekmesinden taşındı), ham `go2rtc.yaml` yapılandırma editörü (kaydet + yeniden başlat), ve go2rtc'nin systemd loglarını gösteren bir log görüntüleyici. Yeni backend uçları: `GET/POST /api/go2rtc/config`, `POST /api/go2rtc/restart`, `GET /api/go2rtc/logs` — hepsi `app/go2rtc_config.py`'de, mevcut tetik-dosyası + root-yetkili systemd birimi deseniyle (self-update/restart/reboot ile aynı mekanizma).
+- **go2rtc'nin gerçek bir çökme hatası düzeltildi — client-side bir geçici çözüm değil, kaynağında bir yama.** Bu oturumda kök neden tam olarak tespit edildi: `pkg/core/writebuffer.go`'daki bir nil-pointer panic, bir tüketicinin (consumer) HTTP yanıtı arka planda kapatılırken (istemci bağlantıyı kesince, ya da stream yeniden yüklenince) hâlâ göndermede olan bir paket varsa go2rtc'nin **TÜM sürecini** çökertiyor — tek bir kameranın akışını değil, o an bağlı olan her kamerayı. Bu, PCM/FLAC ses koduna özgü değil (H264/H265 video Sender'ları üzerinden de tetiklenebiliyor, bkz. upstream issue `AlexxIT/go2rtc#1261`'deki üç ayrı panic raporu — üçü de aynı nil-pointer adresini paylaşıyor). `scripts/go2rtc-writebuffer-recover.patch`, `WriteBuffer.Write()`'a bir `recover()` koruması ekliyor — çökmeyi tüm sürece yaymak yerine tek bir tüketicinin hatası olarak sınırlıyor. Patch, go2rtc'nin tam olarak üretimde çalışan sürümüne (`v1.9.14`/`b5948cf`) karşı yazıldı, derlendi (linux/amd64 + linux/arm64) ve regresyon testiyle doğrulandı (`scripts/go2rtc-writebuffer-recover_test.go`: patch'siz sürümde gerçek çökmeyi birebir tekrarlıyor, patch'li sürümde temiz bir hata dönüyor). `scripts/build_go2rtc.sh` bu derlemeyi yeniden üretilebilir kılıyor.
+
+### Değişti
+- MSE canlı izleme (`stream.mp4?...&mp4=all`) artık bilinçli olarak kabul edilen bir risk taşımıyor — 4.1.1/4.1.2'de tartışılan "ses mi, kararlılık mı" ikilemi ortadan kalktı: patch sayesinde go2rtc artık PCM ses paketlerini FLAC'a sararken çökmüyor, bu yüzden hem ses çalışıyor hem de çökme riski yok.
+- Ayarlar → Genel'deki "go2rtc bağlantısı" fieldset'i yeni go2rtc sekmesine taşındı.
+
+### Belgeler
+- `README.md`: "Ön koşul", kurulum adımları, dosya ağacı ve API tablosu artık go2rtc'nin RtcView tarafından kurulup yönetildiğini yansıtıyor; zaten elle kurulmuş bir go2rtc'den geçiş için not eklendi.
+
 ## [4.1.2] - 2026-08-16
 
 ### Düzeltildi
@@ -120,7 +133,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.2...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.0...HEAD
+[4.2.0]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.2...v4.2.0
 [4.1.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.1...v4.1.2
 [4.1.1]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.0...v4.1.1
 [4.1.0]: https://github.com/ibrahimdoqn/RtcView/compare/v4.0.2...v4.1.0

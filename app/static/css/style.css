@@ -528,6 +528,17 @@ input,select{font:inherit;color:inherit;}
 }
 .log-view.err{color:#ff453a;}
 
+/* go2rtc config.yaml editor — same monospace/panel look as .log-view, but editable */
+.config-editor{
+  width:100%;min-width:0;box-sizing:border-box;resize:vertical;
+  min-height:220px;
+  background:var(--panel-2);border:1px solid var(--border-solid);border-radius:9px;
+  padding:.55rem .7rem;margin:0;
+  font-family:ui-monospace,"SF Mono",monospace;font-size:.78rem;
+  line-height:1.45;color:var(--text);
+}
+.config-editor:focus{outline:none;border-color:var(--accent);}
+
 .kbd-list{margin:.4rem 0 0;padding:0 0 0 1.1rem;color:var(--muted);font-size:.84rem;}
 .kbd-list li{margin:.28rem 0;}
 kbd{

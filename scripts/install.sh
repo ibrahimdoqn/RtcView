@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # RtcView installer — Ubuntu Noble (aarch64/rk3399) friendly.
 # Creates an isolated Python venv and installs a systemd service.
-# Assumes go2rtc is ALREADY running elsewhere (locally or on your network).
+# Also installs and manages its own go2rtc (RtcView's patched build, see
+# vendor/go2rtc and scripts/go2rtc-writebuffer-recover.patch — a real
+# go2rtc crash fix, not a fork for its own sake) as go2rtc.service.
 set -euo pipefail
 
 info(){ printf "\033[1;34m[INFO]\033[0m %s\n" "$*"; }
@@ -44,23 +46,29 @@ if port_in_use "$USER_PORT"; then
 fi
 info "Port $USER_PORT boş — devam ediliyor."
 
-# ------------- go2rtc endpoint -------------
-read -r -p "Mevcut go2rtc API host [${DEFAULT_G2_HOST}]: " G2_HOST
-G2_HOST="${G2_HOST:-$DEFAULT_G2_HOST}"
-read -r -p "Mevcut go2rtc API port [${DEFAULT_G2_PORT}]: " G2_PORT
+# ------------- go2rtc ports -------------
+# go2rtc is installed and run BY this script now (go2rtc.service, below) —
+# these just pick its ports; RtcView talks to it over the same host it
+# runs on.
+read -r -p "go2rtc API portu [${DEFAULT_G2_PORT}]: " G2_PORT
 G2_PORT="${G2_PORT:-$DEFAULT_G2_PORT}"
 if ! [[ "$G2_PORT" =~ ^[0-9]+$ ]]; then die "Geçersiz go2rtc portu: $G2_PORT"; fi
 read -r -p "go2rtc RTSP portu (kayıt için) [${DEFAULT_G2_RTSP}]: " G2_RTSP
 G2_RTSP="${G2_RTSP:-$DEFAULT_G2_RTSP}"
 if ! [[ "$G2_RTSP" =~ ^[0-9]+$ ]]; then die "Geçersiz RTSP portu: $G2_RTSP"; fi
+G2_HOST="$DEFAULT_G2_HOST"
 
-# Best-effort connectivity check (non-fatal)
-if command -v curl >/dev/null 2>&1; then
-  if curl -fsS --max-time 2 "http://${G2_HOST}:${G2_PORT}/api" >/dev/null 2>&1; then
-    info "go2rtc erişilebilir: http://${G2_HOST}:${G2_PORT}"
-  else
-    warn "go2rtc'ye şu an ulaşılamıyor: http://${G2_HOST}:${G2_PORT} (kuruluma devam ediliyor)"
-  fi
+# If something is already listening on go2rtc's ports, it's very likely a
+# pre-existing go2rtc install (manual systemd unit, Docker, tmux, ...) that
+# predates this feature and needs to be stopped/disabled first — the new
+# go2rtc.service below binds the same ports and would otherwise fail to
+# start.
+if port_in_use "$G2_PORT" || port_in_use "$G2_RTSP"; then
+  warn "Port ${G2_PORT} veya ${G2_RTSP} zaten kullanımda — muhtemelen daha önce"
+  warn "elle kurduğunuz bir go2rtc çalışıyor. RtcView artık kendi go2rtc'sini"
+  warn "yönetiyor; devam etmeden önce eski go2rtc'yi durdurup (ör. systemctl"
+  warn "stop <eski-servis>, veya docker stop <container>) devre dışı bırakın,"
+  warn "aksi halde aşağıda kurulacak go2rtc.service başlayamayabilir."
 fi
 
 # ------------- recording path -------------
@@ -116,7 +124,7 @@ fi
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 info "Kaynak kopyalanıyor: $SRC_DIR -> $INSTALL_DIR"
 tar -C "$SRC_DIR" --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
-  -cf - app requirements.txt scripts 2>/dev/null | tar -C "$INSTALL_DIR" -xf -
+  -cf - app requirements.txt scripts vendor 2>/dev/null | tar -C "$INSTALL_DIR" -xf -
 
 # The vendored tapo_detector package was merged into app/detection.py
 # (itself later removed in favor of Home Assistant-based detection) and its
@@ -140,6 +148,41 @@ if ! "$INSTALL_DIR/venv/bin/python" -c "from onvif import ONVIFCamera" 2>/dev/nu
   warn "  sudo $INSTALL_DIR/venv/bin/pip install --force-reinstall onvif-zeep zeep lxml"
 else
   info "ONVIF/PTZ desteği aktif."
+fi
+
+# ------------- go2rtc binary (RtcView's patched build) -------------
+# vendor/go2rtc/go2rtc_linux_<arch> was copied in by the tar step above.
+# See scripts/build_go2rtc.sh / scripts/go2rtc-writebuffer-recover.patch
+# for what's patched and why: stock upstream go2rtc has a nil-pointer
+# panic (pkg/core/writebuffer.go) that crashes the WHOLE process — every
+# camera's stream, not just one — whenever a consumer's HTTP response is
+# torn down (client disconnect, stream reload) while a packet is still in
+# flight. Confirmed against upstream issue AlexxIT/go2rtc#1261.
+info "go2rtc kuruluyor (RtcView'ın hata düzeltmeli sürümü)..."
+case "$(uname -m)" in
+  x86_64|amd64)   G2_ARCH="amd64" ;;
+  aarch64|arm64)  G2_ARCH="arm64" ;;
+  *) die "Desteklenmeyen mimari: $(uname -m). vendor/go2rtc altında bu mimari için derlenmiş bir go2rtc yok — scripts/build_go2rtc.sh ile kendiniz derleyip vendor/go2rtc/go2rtc_linux_$(uname -m) olarak ekleyebilirsiniz." ;;
+esac
+G2_BIN_SRC="${INSTALL_DIR}/vendor/go2rtc/go2rtc_linux_${G2_ARCH}"
+[ -f "$G2_BIN_SRC" ] || die "go2rtc ikili dosyası bulunamadı: $G2_BIN_SRC (vendor/go2rtc eksik mi kopyalandı?)"
+mkdir -p "${INSTALL_DIR}/go2rtc"
+cp "$G2_BIN_SRC" "${INSTALL_DIR}/go2rtc/go2rtc"
+chmod +x "${INSTALL_DIR}/go2rtc/go2rtc"
+info "go2rtc ikili dosyası: $("${INSTALL_DIR}/go2rtc/go2rtc" -v 2>&1 | head -1 || true)"
+
+G2_CONFIG_FILE="${INSTALL_DIR}/go2rtc/go2rtc.yaml"
+if [ ! -f "$G2_CONFIG_FILE" ]; then
+  info "Başlangıç go2rtc.yaml oluşturuluyor (boş streams — kameraları Ayarlar > go2rtc'den ekleyin)..."
+  cat > "$G2_CONFIG_FILE" <<G2YAML
+api:
+  listen: "${G2_HOST}:${G2_PORT}"
+rtsp:
+  listen: ":${G2_RTSP}"
+streams: {}
+G2YAML
+else
+  info "Mevcut go2rtc.yaml korunuyor: $G2_CONFIG_FILE"
 fi
 
 # ------------- initial config -------------
@@ -286,11 +329,63 @@ ExecStartPre=-/usr/bin/rm -f ${INSTALL_DIR}/reboot.trigger
 ExecStart=/usr/bin/systemctl reboot
 SVCUNIT
 
+cat > "/etc/systemd/system/${SERVICE_NAME}-go2rtc-restart.path" <<PATHUNIT
+[Unit]
+Description=RtcView go2rtc restart trigger watcher
+
+[Path]
+PathExists=${INSTALL_DIR}/go2rtc-restart.trigger
+Unit=${SERVICE_NAME}-go2rtc-restart.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+
+cat > "/etc/systemd/system/${SERVICE_NAME}-go2rtc-restart.service" <<SVCUNIT
+[Unit]
+Description=go2rtc restart (triggered by go2rtc-restart.trigger)
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/rm -f ${INSTALL_DIR}/go2rtc-restart.trigger
+ExecStart=/usr/bin/systemctl restart go2rtc.service
+SVCUNIT
+
 systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}-restart.path"
 systemctl enable --now "${SERVICE_NAME}-reboot.path"
+systemctl enable --now "${SERVICE_NAME}-go2rtc-restart.path"
 
-# ------------- systemd -------------
+# ------------- systemd: go2rtc -------------
+info "go2rtc systemd servisi kuruluyor..."
+cat > "/etc/systemd/system/go2rtc.service" <<UNIT
+[Unit]
+Description=go2rtc (RtcView'ın hata düzeltmeli sürümü — bkz. vendor/go2rtc)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+WorkingDirectory=${INSTALL_DIR}/go2rtc
+ExecStart=${INSTALL_DIR}/go2rtc/go2rtc -c ${INSTALL_DIR}/go2rtc/go2rtc.yaml
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=${INSTALL_DIR}/go2rtc
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now go2rtc.service
+
+# ------------- systemd: rtcview -------------
 info "systemd servisi kuruluyor..."
 # ReadWritePaths includes INSTALL_DIR, the chosen REC_PATH, and common mount
 # roots (/mnt /media /srv /var/lib) so the user can point recording at a
@@ -299,8 +394,8 @@ info "systemd servisi kuruluyor..."
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNIT
 [Unit]
 Description=RtcView — go2rtc camera viewer + recorder
-After=network-online.target
-Wants=network-online.target
+After=network-online.target go2rtc.service
+Wants=network-online.target go2rtc.service
 
 [Service]
 Type=simple
@@ -361,7 +456,8 @@ fi
 info "Kurulum tamam. Erişim adresi:"
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo "  http://${IP:-127.0.0.1}:${USER_PORT}"
-echo "go2rtc backend: http://${G2_HOST}:${G2_PORT} (RTSP :${G2_RTSP})"
+echo "go2rtc: http://${G2_HOST}:${G2_PORT} (RTSP :${G2_RTSP}), RtcView tarafından yönetiliyor — bkz. systemctl status go2rtc"
+echo "Kameraları go2rtc'ye tanıtmak için: RtcView Ayarlar > go2rtc sekmesindeki config editörünü kullanın."
 echo "Kayıt klasörü: ${REC_PATH}"
 echo "Servis: systemctl status ${SERVICE_NAME}"
 echo

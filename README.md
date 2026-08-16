@@ -1,14 +1,14 @@
 # RtcView
 
-**Mevcut** bir go2rtc'ye bağlanan, Frigate benzeri, sıfır-gecikmeli (WebRTC) kamera izleme, **kayıt / playback**, **Home Assistant tabanlı hareket/insan/araç algılama**, **grup bazlı bildirim** ve **ağ izleme** arayüzü.
-Kendi başına stream sunmaz; go2rtc'de tanımlı stream'leri WHEP üzerinden alır ve gösterir, kayıt için RTSP çıkışını FFmpeg ile segmentler halinde diske yazar.
+Kendi **go2rtc**'sini kurup yöneten, Frigate benzeri, sıfır-gecikmeli (WebRTC) kamera izleme, **kayıt / playback**, **Home Assistant tabanlı hareket/insan/araç algılama**, **grup bazlı bildirim** ve **ağ izleme** arayüzü.
+go2rtc'de tanımlı stream'leri WHEP üzerinden alır ve gösterir, kayıt için RTSP çıkışını FFmpeg ile segmentler halinde diske yazar. go2rtc'nin kendisi de RtcView'ın kurulumunun bir parçasıdır — kendi systemd servisi olarak çalışır, yapılandırması (`config.yaml`) ve logları Ayarlar → go2rtc sekmesinden yönetilir. RtcView, upstream go2rtc'nin bilinen bir çökme hatasını (bkz. `vendor/go2rtc`, `scripts/go2rtc-writebuffer-recover.patch`) düzelten kendi derlemesini kullanır.
 PWA uyumludur, Ubuntu Noble (rk3399, arm64) üzerinde izole Python venv içinde çalışır — NanoPi R4S gibi SBC'ler dahil herhangi bir Linux/systemd cihazında çalışacak şekilde tasarlanmıştır.
 
 ## Ön koşul
 
-Ağınızda çalışan bir **go2rtc** olmalı (varsayılan API `http://127.0.0.1:1984`, RTSP `:8554`).
-Kameralar go2rtc'nin `streams:` bölümünde tanımlı olmalı.
-Kayıt için sistemde **`ffmpeg`** yüklü olmalı (installer otomatik kurar).
+Kayıt için sistemde **`ffmpeg`** yüklü olmalı (installer otomatik kurar). go2rtc'yi ayrıca kurmanıza gerek yok —
+installer kendi (hata düzeltmeli) go2rtc'sini indirip systemd servisi olarak kurar. Kameralar go2rtc'nin
+`streams:` bölümünde tanımlı olmalı — bunu Ayarlar → go2rtc sekmesindeki yapılandırma editöründen yapabilirsiniz.
 Hareket/insan/araç algılama istiyorsanız (isteğe bağlı) ağınızda çalışan bir **Home Assistant** olmalı,
 kameralarınızın hareket/insan/araç durumu orada `binary_sensor` olarak görünüyor olmalı (Frigate, kameranızın
 kendi entegrasyonu, vb. — kaynak fark etmez).
@@ -95,11 +95,12 @@ sudo bash scripts/install.sh
 Kurulum sırasında sırayla sorulur:
 
 - **RtcView portu** (varsayılan `5000`)
-- **go2rtc API host / port** (varsayılan `127.0.0.1:1984`)
-- **go2rtc RTSP portu** (varsayılan `8554`) — kayıt için
+- **go2rtc API portu** (varsayılan `1984`) ve **RTSP portu** (varsayılan `8554`) — RtcView'ın kendi kuracağı go2rtc için
 - **Kayıt klasörü** (varsayılan `/opt/rtcview/recordings`) — istediğiniz mutlak yol; harici bir diske kaydetmek isterseniz o diski bu adıma gelmeden önce siz mount etmiş olmalısınız (RtcView disk biçimlendirme/bağlama yapmaz, bkz. altta "Mount önerileri")
 
-İzole `python3 -m venv` oluşturur, `ffmpeg` paketini kurar, `rtcview` sistem kullanıcısı yaratır, systemd birimi ile açılışta başlatır. Ayrıca otomatik güncelleme ve yeniden başlatma/kapatma için gereken root-yetkili yardımcı systemd birimlerini de kurar.
+İzole `python3 -m venv` oluşturur, `ffmpeg` paketini kurar, `rtcview` sistem kullanıcısı yaratır, RtcView'ın kendi (hata düzeltmeli) go2rtc derlemesini kurup `go2rtc.service` olarak başlatır, RtcView'ı systemd birimi ile açılışta başlatır. Ayrıca otomatik güncelleme ve yeniden başlatma/kapatma için gereken root-yetkili yardımcı systemd birimlerini de kurar.
+
+**Zaten elle kurulmuş bir go2rtc'niz varsa** (eski systemd birimi, Docker container, vb.): installer'ı çalıştırmadan önce onu durdurup devre dışı bırakın — yeni `go2rtc.service` aynı portları (1984/8554) dinler ve ikisi aynı anda çalışamaz.
 
 Servisin systemd sandbox'ı **/opt/rtcview**, seçtiğiniz kayıt yolu, ve `/mnt`, `/media`, `/srv`, `/var/lib` altına yazma yetkisi ile kurulur. Kayıt yolunu daha sonra bu dört kökten birinin altına yeni bir dizine değiştirmek istiyorsanız UI'dan doğrudan yapabilirsiniz. Başka bir yola geçmek isterseniz:
 
@@ -135,6 +136,7 @@ Otomatik olarak: config yedeği alır, servisi durdurur, `app/`, `requirements.t
 Aynı çalıştırma ayrıca şunları da kurar/yeniler:
 - **Ayarlar → Sistem → Güncelleme** panelindeki tek-tuşlu "Şimdi Güncelle" özelliği: `rtcview-updater.path`/`.service` birimleri, GitHub'daki `origin` uzak deposunun HEAD'ini `<kurulum-dizini>-src` altında tutulan ayrı bir git kopyasına çekip `scripts/update.sh`'ı otomatik çalıştırır
 - **Yeniden Başlatma**: `rtcview-restart.path`/`.service` ve `rtcview-reboot.path`/`.service`
+- **go2rtc**: `go2rtc.service` (RtcView'ın kendi hata düzeltmeli go2rtc derlemesi, `vendor/go2rtc`'den) ve `rtcview-go2rtc-restart.path`/`.service` — Ayarlar → go2rtc'deki "Yeniden Başlat" düğmesinin arkasındaki tetikleyici
 
 Bu birimlerin hepsi root olarak, `rtcview.service`'den bağımsız ayrı cgroup'larda çalışır — ana servis hiçbir zaman `sudo` çalıştırmaz (systemd sandbox'ı `NoNewPrivileges=yes` ile buna izin vermez), sadece kendi yazma izni olduğu bir dosyaya/dizine dokunur ve bu ayrı birimler o değişikliği görüp işi kendileri yürütür.
 
@@ -157,7 +159,7 @@ Ayarlar → **Kameralar** sekmesindeki **+ Kamera Ekle** ile:
 - **Gruplar**: kameranın ait olduğu grup(lar) — bildirim ayarları buradan miras alınır
 - **Kayıt**: mod (kapalı/sürekli/zamanlı/manuel), haftalık zaman aralıkları, ses, retention override
 
-RtcView go2rtc yapılandırmasını **değiştirmez**; sadece stream'leri okur ve WHEP ile oynatır, RTSP'den okuyup diske yazar.
+go2rtc'nin stream tanımı (`streams:`) Ayarlar → **go2rtc** sekmesindeki yapılandırma editöründen (`go2rtc.yaml`, ham metin) yönetilir — kaydettikten sonra "go2rtc'yi Yeniden Başlat" ile etkinleştirin. Aynı sekmede go2rtc'nin bağlantı ayarları (host/port) ve logları da bulunur.
 
 ## Klavye kısayolları
 
@@ -189,10 +191,13 @@ Playback:
 │   ├── netmon.py        # ağ arayüzü izleme (netlink olayları + bant genişliği)
 │   ├── homeassistant.py # Home Assistant WebSocket bağlantısı: hareket/insan/araç algılama + grup bildirim anahtarları
 │   ├── ptz.py           # ONVIF PTZ
-│   ├── go2rtc_client.py
+│   ├── go2rtc_client.py # go2rtc HTTP API'sine salt-okunur istemci (stream listesi, snapshot)
+│   ├── go2rtc_config.py # go2rtc.yaml okuma/yazma + yeniden başlatma tetikleyicisi
 │   ├── config.py        # config.json okuma/yazma, şema göçü
 │   ├── VERSION          # uygulama sürümü için tek gerçek kaynak (bkz. CHANGELOG.md)
 │   └── wsdl/            # ONVIF WSDL/XSD şemaları (yalnızca ptz.py kullanır)
+├── vendor/go2rtc/  # RtcView'ın hata düzeltmeli go2rtc derlemesi (mimariye göre ikili + VERSION)
+├── go2rtc/         # kurulumda vendor'dan kopyalanan çalışan go2rtc ikili dosyası + go2rtc.yaml
 ├── venv/           # izole Python ortamı
 ├── config/config.json
 ├── logs/
@@ -202,7 +207,12 @@ Playback:
     └── <cam>/YYYY/MM/DD/<cam>_<ts>_NNNNN.mp4
 /opt/rtcview-src/   # otomatik güncelleme için tutulan ayrı git kopyası (yalnızca "Şimdi Güncelle" kullanıldıysa oluşur)
 ```
-> Not: go2rtc **bu dizinde değildir**; ağınızdaki mevcut go2rtc kullanılır. Kayıt yolu harici bir diske ayarlıysa (`/mnt/...` gibi) o disk `/etc/fstab` ile sizin tarafınızdan bağlanmış olmalı — bkz. [Kayıt yolu değiştirme](#kayıt-yolu-değiştirme).
+> go2rtc neden RtcView'ın kendi derlemesi: upstream go2rtc'de gerçek, tekrarlanabilir bir çökme hatası var
+> (bir tüketicinin HTTP yanıtı, henüz gönderimde olan bir paketle aynı anda kapatıldığında oluşan nil-pointer
+> panic — go2rtc'nin process'inin TAMAMINI, tüm kameraların akışını birden düşürüyor). Düzeltme
+> `scripts/go2rtc-writebuffer-recover.patch`'te; `scripts/build_go2rtc.sh` bunu upstream go2rtc kaynağına
+> uygulayıp `vendor/go2rtc/`'ye derler. Kayıt yolu harici bir diske ayarlıysa (`/mnt/...` gibi) o disk
+> `/etc/fstab` ile sizin tarafınızdan bağlanmış olmalı — bkz. [Kayıt yolu değiştirme](#kayıt-yolu-değiştirme).
 
 Kök yardımcı script'ler `scripts/` altında: `install.sh`, `update.sh`, `uninstall.sh`, `self_update.sh`.
 
@@ -214,6 +224,7 @@ Home Assistant entegrasyonunun tamamı `app/homeassistant.py` içindedir (WebSoc
 - `GET /api/status` · `GET /api/config`
 - `GET /api/settings` · `POST /api/settings`
 - `GET /api/go2rtc/settings` · `POST /api/go2rtc/settings` · `GET /api/go2rtc/streams`
+- `GET /api/go2rtc/config` · `POST /api/go2rtc/config` · `POST /api/go2rtc/restart` · `GET /api/go2rtc/logs`
 
 **Kameralar**
 - `GET /api/cameras` · `POST /api/cameras`

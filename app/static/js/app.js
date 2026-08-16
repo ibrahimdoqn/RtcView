@@ -1689,6 +1689,7 @@
     else if (name === "kameralar") showCameraList();
     else if (name === "bildirimler") loadNotifSettingsTab();
     else if (name === "kayit") loadKayitTab();
+    else if (name === "go2rtc") loadGo2rtcTab();
     else if (name === "sistem") loadMemCeiling();
   }
   $$(".settings-tab-btn").forEach(btn => btn.addEventListener("click", () => switchSettingsTab(btn.dataset.tab)));
@@ -1696,13 +1697,6 @@
   $("#settings-close").addEventListener("click", closeSettingsPage);
   _bindBackdropClose($("#settings-backdrop"), closeSettingsPage);
 
-  // Tracks whether the go2rtc fields actually loaded from the server. If a
-  // transient fetch failure leaves them at their empty HTML defaults, the
-  // save handler below must NOT re-post them — "||" fallbacks would send
-  // 127.0.0.1:1984/8554 and silently reset a custom go2rtc host/port,
-  // killing every camera stream, just because the user happened to change
-  // the theme in the same visit to this tab.
-  let _g2rtcLoaded = false;
   let _haLoaded = false;
   async function loadGenelTab(){
     $("#s-grid-cols").value = state.settings.grid_columns || 3;
@@ -1712,16 +1706,6 @@
     $("#s-auto-reconnect").checked = state.settings.auto_reconnect !== false;
     $("#s-reconnect-delay").value = state.settings.reconnect_delay_ms || 3000;
     $("#s-device-transport").value = getDeviceTransport();
-    try {
-      const g = await api.get("/api/go2rtc/settings");
-      $("#s-g2-host").value = g.host || "127.0.0.1";
-      $("#s-g2-port").value = g.api_port || 1984;
-      $("#s-g2-rtsp").value = g.rtsp_port || 8554;
-      _g2rtcLoaded = true;
-    } catch {
-      _g2rtcLoaded = false;
-      toast("go2rtc ayarları yüklenemedi — bu sekmeyi tekrar açmadan kaydetmeyin", "err");
-    }
     try {
       const h = await api.get("/api/homeassistant/settings");
       $("#s-ha-url").value = h.url || "";
@@ -1752,13 +1736,6 @@
       if (newTransport !== prevTransport) setDeviceTransport(newTransport);
 
       state.settings = await api.post("/api/settings", body);
-      if (_g2rtcLoaded){
-        await api.post("/api/go2rtc/settings", {
-          host: ($("#s-g2-host").value || "127.0.0.1").trim(),
-          api_port: parseInt($("#s-g2-port").value || 1984),
-          rtsp_port: parseInt($("#s-g2-rtsp").value || 8554),
-        });
-      }
       if (_haLoaded){
         const haBody = {
           url: $("#s-ha-url").value.trim(),
@@ -1792,6 +1769,81 @@
       resEl.style.color = "var(--danger)";
     }
   });
+
+  // ---------- go2rtc tab: connection settings, config.yaml editor, logs ----------
+  // Same "don't re-post stale empty defaults over a real value" guard as
+  // the old Genel-tab go2rtc block used (see loadGenelTab's history) —
+  // just scoped to this tab now.
+  let _g2rtcLoaded = false;
+  async function loadGo2rtcTab(){
+    try {
+      const g = await api.get("/api/go2rtc/settings");
+      $("#s-g2-host").value = g.host || "127.0.0.1";
+      $("#s-g2-port").value = g.api_port || 1984;
+      $("#s-g2-rtsp").value = g.rtsp_port || 8554;
+      _g2rtcLoaded = true;
+    } catch {
+      _g2rtcLoaded = false;
+      toast("go2rtc ayarları yüklenemedi — bu sekmeyi tekrar açmadan kaydetmeyin", "err");
+    }
+    try {
+      const c = await api.get("/api/go2rtc/config");
+      $("#s-g2-config").value = c.text || "";
+    } catch (e) {
+      toast("go2rtc.yaml yüklenemedi: " + e.message, "err");
+    }
+    refreshGo2rtcLogs();
+  }
+  $("#s-save-go2rtc").addEventListener("click", async () => {
+    if (!_g2rtcLoaded){ toast("go2rtc ayarları yüklenmedi — sekmeyi kapatıp tekrar açın", "err"); return; }
+    try {
+      await api.post("/api/go2rtc/settings", {
+        host: ($("#s-g2-host").value || "127.0.0.1").trim(),
+        api_port: parseInt($("#s-g2-port").value || 1984),
+        rtsp_port: parseInt($("#s-g2-rtsp").value || 8554),
+      });
+      toast("Ayarlar kaydedildi", "ok");
+      updateStatus();
+    } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
+  });
+  $("#s-g2-config-save").addEventListener("click", async () => {
+    const statusEl = $("#s-g2-config-status");
+    try {
+      await api.post("/api/go2rtc/config", { text: $("#s-g2-config").value });
+      statusEl.textContent = "Kaydedildi. Etkili olması için go2rtc'yi yeniden başlatın.";
+      toast("Yapılandırma kaydedildi", "ok");
+    } catch (e) {
+      statusEl.textContent = "";
+      toast("Kaydedilemedi: " + e.message, "err");
+    }
+  });
+  $("#s-g2-restart").addEventListener("click", async () => {
+    if (!confirm("go2rtc yeniden başlatılacak. Canlı yayın birkaç saniyeliğine kesintiye uğrayabilir. Devam edilsin mi?")) return;
+    const statusEl = $("#s-g2-config-status");
+    try {
+      await api.post("/api/go2rtc/restart", {});
+      statusEl.textContent = "Yeniden başlatma istendi.";
+      toast("go2rtc yeniden başlatılıyor", "ok");
+    } catch (e) { toast("Başarısız: " + e.message, "err"); }
+  });
+  async function refreshGo2rtcLogs(){
+    const view = $("#s-g2-log-view"); if (!view) return;
+    view.classList.remove("err");
+    view.textContent = "Yükleniyor…";
+    try {
+      const url = `/api/go2rtc/logs?lines=${encodeURIComponent($("#s-g2-log-lines").value)}`
+                + `&level=${encodeURIComponent($("#s-g2-log-level").value)}`;
+      const r = await api.get(url);
+      view.textContent = r.log || "(boş)";
+      view.scrollTop = view.scrollHeight;
+    } catch (e) {
+      view.classList.add("err");
+      view.textContent = "Hata: " + e.message;
+    }
+  }
+  $("#s-g2-log-refresh").addEventListener("click", refreshGo2rtcLogs);
+  $("#s-g2-log-lines").addEventListener("change", refreshGo2rtcLogs);
+  $("#s-g2-log-level").addEventListener("change", refreshGo2rtcLogs);
 
   async function loadKayitTab(){
     try {

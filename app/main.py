@@ -19,6 +19,7 @@ from flask_cors import CORS
 from app.config import ConfigStore
 from app.homeassistant import HAManager, WEBSOCKET_AVAILABLE as HA_WEBSOCKET_AVAILABLE
 from app import homeassistant as ha_module
+from app import go2rtc_config
 from app.go2rtc_client import Go2RtcClient
 from app.netmon import NetworkMonitor
 from app.ptz import ptz_controller, ONVIF_AVAILABLE
@@ -754,8 +755,7 @@ def create_app(config_path: str) -> Flask:
     def api_network_status():
         return jsonify(netmon.snapshot())
 
-    @app.get("/api/system/logs")
-    def api_system_logs():
+    def _journalctl_logs(unit: str):
         try: lines = max(5, min(2000, int(request.args.get("lines", 200))))
         except ValueError: lines = 200
         level = (request.args.get("level") or "").lower()
@@ -765,7 +765,7 @@ def create_app(config_path: str) -> Flask:
         elif level == "warn": prio_arg = ["-p", "4"]
         try:
             r = subprocess.run(
-                ["journalctl", "-u", "rtcview.service", "-n", str(lines),
+                ["journalctl", "-u", unit, "-n", str(lines),
                  "--no-pager", "--output=short-iso"] + prio_arg,
                 capture_output=True, text=True, timeout=6,
             )
@@ -779,6 +779,14 @@ def create_app(config_path: str) -> Flask:
             return jsonify({"ok": False, "error": "journalctl zaman aşımı"}), 500
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.get("/api/system/logs")
+    def api_system_logs():
+        return _journalctl_logs("rtcview.service")
+
+    @app.get("/api/go2rtc/logs")
+    def api_go2rtc_logs():
+        return _journalctl_logs("go2rtc.service")
 
     # ---------- Self-update (GitHub) ----------
     # The running app can't sudo out of itself — rtcview.service runs with
@@ -860,6 +868,36 @@ def create_app(config_path: str) -> Flask:
     def api_system_reboot():
         try:
             _touch_trigger("reboot.trigger")
+        except Exception as e:
+            return jsonify({"error": f"Tetik dosyası yazılamadı: {e}"}), 500
+        return jsonify({"ok": True})
+
+    # ---------- go2rtc config editor + managed restart ----------
+    # RtcView installs and runs its own (patched, see vendor/go2rtc)
+    # go2rtc as go2rtc.service. These let the Settings UI read/write its
+    # config.yaml and request a restart the same trigger-file way as
+    # /api/system/restart above -- this process can't systemctl anything
+    # itself either.
+    @app.get("/api/go2rtc/config")
+    def api_go2rtc_config_get():
+        return jsonify({"text": go2rtc_config.read_config()})
+
+    @app.post("/api/go2rtc/config")
+    def api_go2rtc_config_set():
+        body = request.get_json(force=True) or {}
+        text = body.get("text")
+        if not isinstance(text, str):
+            return jsonify({"error": "text alanı zorunlu"}), 400
+        try:
+            go2rtc_config.write_config(text)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({"ok": True})
+
+    @app.post("/api/go2rtc/restart")
+    def api_go2rtc_restart():
+        try:
+            go2rtc_config.request_restart(_touch_trigger)
         except Exception as e:
             return jsonify({"error": f"Tetik dosyası yazılamadı: {e}"}), 500
         return jsonify({"ok": True})

@@ -5,3 +5,4 @@ onvif-zeep==0.2.12
 zeep==4.2.1
 waitress==3.0.0
 websocket-client==1.8.0
+PyYAML==6.0.2

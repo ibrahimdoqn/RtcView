@@ -28,6 +28,13 @@ DEFAULT_CONFIG = {
         "host": "127.0.0.1",
         "api_port": 1984,
         "rtsp_port": 8554,
+        # True when this go2rtc is installed/run by RtcView itself
+        # (scripts/install.sh's go2rtc.service, vendor/go2rtc's patched
+        # binary) rather than an existing go2rtc the admin points RtcView
+        # at manually. Only the managed case gets the config editor, log
+        # viewer, and stream-sync UI in Settings — none of those make
+        # sense against a go2rtc RtcView doesn't own.
+        "managed": True,
     },
     # Single Home Assistant instance RtcView pulls motion/person/vehicle
     # detection state from, over its WebSocket API. token is a long-lived

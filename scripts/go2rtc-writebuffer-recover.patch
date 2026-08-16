@@ -1,0 +1,54 @@
+diff --git a/pkg/core/writebuffer.go b/pkg/core/writebuffer.go
+index 50ad013..5f495b5 100644
+--- a/pkg/core/writebuffer.go
++++ b/pkg/core/writebuffer.go
+@@ -2,6 +2,7 @@ package core
+ 
+ import (
+ 	"bytes"
++	"fmt"
+ 	"io"
+ 	"net/http"
+ 	"sync"
+@@ -28,15 +29,38 @@ func NewWriteBuffer(wr io.Writer) *WriteBuffer {
+ 
+ func (w *WriteBuffer) Write(p []byte) (n int, err error) {
+ 	w.mu.Lock()
++	defer w.mu.Unlock()
++
+ 	if w.err != nil {
+-		err = w.err
+-	} else if n, err = w.Writer.Write(p); err != nil {
++		return 0, w.err
++	}
++
++	// w.Writer is often an in-flight net/http ResponseWriter (a streamed
++	// MP4/WebRTC output). If the HTTP handler goroutine serving it has
++	// already returned -- client disconnected, stream reloaded/deleted --
++	// net/http invalidates internal per-request state, and a stale Sender
++	// goroutine still holding this WriteBuffer can panic deep inside
++	// net/http on the next Write/Flush (observed: nil pointer in
++	// net/http.(*response).Write / .FlushError, reached from H264, H265,
++	// and PCM/FLAC audio Sender paths alike -- this is generic to any
++	// codec, not specific to one). That's a per-consumer teardown race,
++	// not a reason to crash the whole process and every other camera's
++	// stream with it: contain it exactly like an ordinary write error is
++	// already contained just below.
++	defer func() {
++		if r := recover(); r != nil {
++			err = fmt.Errorf("writebuffer: recovered: %v", r)
++			w.err = err
++			w.done()
++		}
++	}()
++
++	if n, err = w.Writer.Write(p); err != nil {
+ 		w.err = err
+ 		w.done()
+ 	} else if f, ok := w.Writer.(http.Flusher); ok {
+ 		f.Flush()
+ 	}
+-	w.mu.Unlock()
+ 	return
+ }
+ 

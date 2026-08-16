@@ -137,6 +137,7 @@
       <button type="button" class="settings-tab-btn" data-tab="kameralar">Kameralar</button>
       <button type="button" class="settings-tab-btn" data-tab="bildirimler">Bildirimler</button>
       <button type="button" class="settings-tab-btn" data-tab="kayit">Kayıt &amp; Depolama</button>
+      <button type="button" class="settings-tab-btn" data-tab="go2rtc">go2rtc</button>
       <button type="button" class="settings-tab-btn" data-tab="sistem">Sistem</button>
     </div>
     <div class="settings-content">
@@ -162,14 +163,6 @@
           </select>
           <small>Sadece bu cihaz için geçerlidir. Seçilen mod çalışmıyorsa diğerini deneyin.</small>
         </label>
-        <fieldset>
-          <legend>go2rtc bağlantısı</legend>
-          <label>Host <input id="s-g2-host" placeholder="127.0.0.1" /></label>
-          <div class="grid2">
-            <label>API Port <input id="s-g2-port" type="number" placeholder="1984" /></label>
-            <label>RTSP Port <input id="s-g2-rtsp" type="number" placeholder="8554" /></label>
-          </div>
-        </fieldset>
         <fieldset>
           <legend>Home Assistant bağlantısı</legend>
           <small>Hareket/insan/araç algılama artık Home Assistant'taki <code>binary_sensor</code>
@@ -337,6 +330,56 @@
         <div class="modal-actions">
           <button type="button" id="s-save-kayit" class="btn primary">Kaydet</button>
         </div>
+      </div>
+
+      <!-- go2rtc -->
+      <div class="settings-tabpanel modal-body" data-tab="go2rtc">
+        <small>RtcView kendi go2rtc'sini kurar ve yönetir — kamera akışlarını (streams) ve diğer
+          ayarları aşağıdaki yapılandırma editöründen düzenleyebilir, loglarını buradan
+          izleyebilirsiniz.</small>
+        <fieldset>
+          <legend>go2rtc bağlantısı</legend>
+          <label>Host <input id="s-g2-host" placeholder="127.0.0.1" /></label>
+          <div class="grid2">
+            <label>API Port <input id="s-g2-port" type="number" placeholder="1984" /></label>
+            <label>RTSP Port <input id="s-g2-rtsp" type="number" placeholder="8554" /></label>
+          </div>
+          <div class="modal-actions">
+            <button type="button" id="s-save-go2rtc" class="btn primary">Kaydet</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Yapılandırma (go2rtc.yaml)</legend>
+          <small>Kamera akışları burada tanımlanır. Kaydettikten sonra değişikliklerin etkili olması
+            için go2rtc'yi yeniden başlatmanız gerekir — bu, canlı yayını birkaç saniyeliğine keser.</small>
+          <textarea id="s-g2-config" class="config-editor" spellcheck="false" rows="14"></textarea>
+          <div class="row" style="gap:.4rem;flex-wrap:wrap;margin-top:.5rem;">
+            <button type="button" id="s-g2-config-save" class="btn ghost small">Yapılandırmayı Kaydet</button>
+            <button type="button" id="s-g2-restart" class="btn danger small">go2rtc'yi Yeniden Başlat</button>
+          </div>
+          <div id="s-g2-config-status" class="usage-text"></div>
+        </fieldset>
+        <fieldset>
+          <legend>Loglar</legend>
+          <div class="row" style="gap:.4rem;margin-bottom:.4rem;flex-wrap:wrap;">
+            <select id="s-g2-log-lines" class="pb-select" style="min-height:32px;">
+              <option value="10">Son 10</option>
+              <option value="20">Son 20</option>
+              <option value="50">Son 50</option>
+              <option value="100">Son 100</option>
+              <option value="200" selected>Son 200</option>
+              <option value="500">Son 500</option>
+              <option value="1000">Son 1000</option>
+            </select>
+            <select id="s-g2-log-level" class="pb-select" style="min-height:32px;">
+              <option value="">Tümü</option>
+              <option value="warn">Uyarı+</option>
+              <option value="err">Hata</option>
+            </select>
+            <button type="button" id="s-g2-log-refresh" class="btn ghost small">Yenile</button>
+          </div>
+          <pre id="s-g2-log-view" class="log-view">—</pre>
+        </fieldset>
       </div>
 
       <!-- Sistem -->

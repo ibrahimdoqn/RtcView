@@ -32,6 +32,7 @@ fi
 # ------------- stop -------------
 info "Servis durduruluyor..."
 systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
+systemctl stop go2rtc.service 2>/dev/null || true
 
 # Bazı ffmpeg alt süreçleri systemd cgroup dışına düşebiliyor (nadir de
 # olsa oluyor) — yetim kalanları temizle. rtcview kullanıcısına ait olan
@@ -56,7 +57,7 @@ info "Uygulama dosyaları güncelleniyor..."
 tar -C "$SRC_DIR" \
   --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
   --exclude='venv' --exclude='config' --exclude='logs' --exclude='recordings' \
-  -cf - app requirements.txt scripts 2>/dev/null | \
+  -cf - app requirements.txt scripts vendor 2>/dev/null | \
   tar -C "$INSTALL_DIR" -xf -
 
 # The vendored tapo_detector package was merged into app/detection.py
@@ -271,9 +272,109 @@ ExecStartPre=-/usr/bin/rm -f ${INSTALL_DIR}/reboot.trigger
 ExecStart=/usr/bin/systemctl reboot
 SVCUNIT
 
+cat > "/etc/systemd/system/${SERVICE_NAME}-go2rtc-restart.path" <<PATHUNIT
+[Unit]
+Description=RtcView go2rtc restart trigger watcher
+
+[Path]
+PathExists=${INSTALL_DIR}/go2rtc-restart.trigger
+Unit=${SERVICE_NAME}-go2rtc-restart.service
+
+[Install]
+WantedBy=multi-user.target
+PATHUNIT
+
+cat > "/etc/systemd/system/${SERVICE_NAME}-go2rtc-restart.service" <<SVCUNIT
+[Unit]
+Description=go2rtc restart (triggered by go2rtc-restart.trigger)
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/rm -f ${INSTALL_DIR}/go2rtc-restart.trigger
+ExecStart=/usr/bin/systemctl restart go2rtc.service
+SVCUNIT
+
 systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}-restart.path"
 systemctl enable --now "${SERVICE_NAME}-reboot.path"
+systemctl enable --now "${SERVICE_NAME}-go2rtc-restart.path"
+
+# ------------- go2rtc binary + service (RtcView's patched build) -------------
+# An install made before this feature existed has no go2rtc.service at
+# all (go2rtc ran externally, unmanaged) -- this brings every existing
+# install in line with a fresh install.sh run: RtcView's own patched
+# go2rtc binary (see vendor/go2rtc, scripts/go2rtc-writebuffer-recover.patch
+# for what's patched and why -- a real process-crashing nil-pointer panic
+# in go2rtc's own pkg/core/writebuffer.go, confirmed against upstream
+# issue AlexxIT/go2rtc#1261) becomes the one and only go2rtc this install
+# runs, managed the same way rtcview.service is.
+info "go2rtc güncelleniyor (RtcView'ın hata düzeltmeli sürümü)..."
+case "$(uname -m)" in
+  x86_64|amd64)   G2_ARCH="amd64" ;;
+  aarch64|arm64)  G2_ARCH="arm64" ;;
+  *) die "Desteklenmeyen mimari: $(uname -m). vendor/go2rtc altında bu mimari için derlenmiş bir go2rtc yok." ;;
+esac
+G2_BIN_SRC="${INSTALL_DIR}/vendor/go2rtc/go2rtc_linux_${G2_ARCH}"
+[ -f "$G2_BIN_SRC" ] || die "go2rtc ikili dosyası bulunamadı: $G2_BIN_SRC (vendor/go2rtc eksik mi kopyalandı?)"
+mkdir -p "${INSTALL_DIR}/go2rtc"
+cp "$G2_BIN_SRC" "${INSTALL_DIR}/go2rtc/go2rtc"
+chmod +x "${INSTALL_DIR}/go2rtc/go2rtc"
+chown -R "$SERVICE_USER":"$SERVICE_USER" "${INSTALL_DIR}/go2rtc"
+
+G2_CONFIG_FILE="${INSTALL_DIR}/go2rtc/go2rtc.yaml"
+if [ ! -f "$G2_CONFIG_FILE" ]; then
+  info "Başlangıç go2rtc.yaml oluşturuluyor (mevcut config.json'daki host/port'lar kullanılıyor)..."
+  read -r G2_HOST G2_PORT G2_RTSP <<<"$("$INSTALL_DIR/venv/bin/python" -c "
+import json
+d = json.load(open('$CONFIG_FILE'))['go2rtc']
+print(d.get('host','127.0.0.1'), d.get('api_port',1984), d.get('rtsp_port',8554))
+" 2>/dev/null || echo "127.0.0.1 1984 8554")"
+  cat > "$G2_CONFIG_FILE" <<G2YAML
+api:
+  listen: "${G2_HOST}:${G2_PORT}"
+rtsp:
+  listen: ":${G2_RTSP}"
+streams: {}
+G2YAML
+  chown "$SERVICE_USER":"$SERVICE_USER" "$G2_CONFIG_FILE"
+fi
+
+cat > "/etc/systemd/system/go2rtc.service" <<UNIT
+[Unit]
+Description=go2rtc (RtcView'ın hata düzeltmeli sürümü — bkz. vendor/go2rtc)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+WorkingDirectory=${INSTALL_DIR}/go2rtc
+ExecStart=${INSTALL_DIR}/go2rtc/go2rtc -c ${INSTALL_DIR}/go2rtc/go2rtc.yaml
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=${INSTALL_DIR}/go2rtc
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# Make sure rtcview.service starts after go2rtc.service without rewriting
+# the base unit file (same drop-in convention as paths.conf/kill.conf
+# below) -- matters most on an upgrade from before this feature existed.
+mkdir -p /etc/systemd/system/${SERVICE_NAME}.service.d
+cat > /etc/systemd/system/${SERVICE_NAME}.service.d/go2rtc-order.conf <<'EOF'
+[Unit]
+After=go2rtc.service
+Wants=go2rtc.service
+EOF
+
+systemctl daemon-reload
+systemctl enable go2rtc.service
 
 # ------------- systemd unit: ensure recording path + common mounts writable -------------
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -329,6 +430,14 @@ SH
 fi
 
 # ------------- restart -------------
+info "go2rtc başlatılıyor..."
+systemctl start go2rtc.service
+sleep 1
+if ! systemctl is-active --quiet go2rtc.service; then
+  err "go2rtc başlatılamadı. Log: journalctl -u go2rtc -n 40"
+  exit 1
+fi
+
 info "Servis başlatılıyor..."
 systemctl start "${SERVICE_NAME}.service"
 sleep 1
@@ -337,6 +446,7 @@ if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
   info "Güncelleme başarılı — servis çalışıyor."
   IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
   echo "  http://${IP:-127.0.0.1}:${PORT:-5000}"
+  echo "  go2rtc: systemctl status go2rtc"
   echo "  Kayıt klasörü: ${REC_PATH}"
 else
   err "Servis başlatılamadı. Log: journalctl -u ${SERVICE_NAME} -n 40"
