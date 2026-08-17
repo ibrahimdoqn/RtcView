@@ -1880,6 +1880,7 @@
   $("#s-g2-log-refresh").addEventListener("click", refreshGo2rtcLogs);
   $("#s-g2-log-lines").addEventListener("change", refreshGo2rtcLogs);
   $("#s-g2-log-level").addEventListener("change", refreshGo2rtcLogs);
+  $("#s-g2-log-copy").addEventListener("click", () => _copyElementText("#s-g2-log-view"));
 
   async function loadKayitTab(){
     try {
@@ -2309,8 +2310,8 @@
   $("#s-log-refresh").addEventListener("click", refreshLogs);
   $("#s-log-lines").addEventListener("change", refreshLogs);
   $("#s-log-level").addEventListener("change", refreshLogs);
-  $("#s-log-copy").addEventListener("click", async () => {
-    const txt = $("#s-log-view").textContent || "";
+  async function _copyElementText(selector){
+    const txt = $(selector).textContent || "";
     // navigator.clipboard is only available in secure contexts (https or
     // localhost). On a plain LAN http:// origin we fall back to the old
     // hidden-textarea + execCommand("copy") trick.
@@ -2332,7 +2333,8 @@
       if (prev){ sel.removeAllRanges(); sel.addRange(prev); }
     }
     toast(ok ? "Kopyalandı" : "Kopyalanamadı", ok ? "ok" : "err");
-  });
+  }
+  $("#s-log-copy").addEventListener("click", () => _copyElementText("#s-log-view"));
   const logDetails = $("#s-log-view").closest("details");
   if (logDetails){
     logDetails.addEventListener("toggle", () => {

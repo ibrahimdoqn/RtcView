@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.2] - 2026-08-17
+
+### Eklendi
+- Ayarlar → go2rtc → Loglar panelinde "Panoya kopyala" düğmesi eklendi — Sistem sekmesindeki RtcView log görüntüleyicisiyle aynı davranış.
+
 ## [4.2.1] - 2026-08-17
 
 ### Düzeltildi
@@ -138,7 +143,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.1...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.2...HEAD
+[4.2.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.1...v4.2.2
 [4.2.1]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.0...v4.2.1
 [4.2.0]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.2...v4.2.0
 [4.1.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.1...v4.1.2
