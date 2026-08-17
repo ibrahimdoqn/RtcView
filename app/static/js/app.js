@@ -759,6 +759,37 @@
   // fall into the reconnect loop while others on the same grid succeeded.
   const WHEP_TIMEOUT_MS = 10000;
 
+  // go2rtc's /api/webrtc is a single-shot WHEP-style exchange: one offer,
+  // one answer, no channel for trickling candidates in afterward. The
+  // offer therefore has to carry every locally-known candidate up front
+  // ("vanilla ICE") -- sending pc.createOffer()'s static return value
+  // does NOT do this, since that SDP is a snapshot taken before gathering
+  // has produced anything. The live-updating view is pc.localDescription,
+  // which keeps gaining "a=candidate" lines as they're found even though
+  // setLocalDescription() was already called with the static snapshot.
+  // Waiting for icegatheringstate to reach "complete" (or this timeout,
+  // whichever first -- a safety net, not the expected path) before
+  // reading pc.localDescription.sdp is what makes sure go2rtc actually
+  // receives an address to reach us at, instead of depending on it
+  // guessing our address from a STUN check it happens to receive later.
+  const ICE_GATHER_TIMEOUT_MS = 800;
+  function _waitIceGatheringComplete(pc, timeoutMs){
+    if (pc.iceGatheringState === "complete") return Promise.resolve();
+    return new Promise(resolve => {
+      const onChange = () => {
+        if (pc.iceGatheringState !== "complete") return;
+        clearTimeout(timer);
+        pc.removeEventListener("icegatheringstatechange", onChange);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        pc.removeEventListener("icegatheringstatechange", onChange);
+        resolve();
+      }, timeoutMs);
+      pc.addEventListener("icegatheringstatechange", onChange);
+    });
+  }
+
   function _wireSizeToVideo(p, cam, tile){
     const video = p.video;
     const sizeToVideo = () => {
@@ -875,8 +906,9 @@
         };
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
+        await _waitIceGatheringComplete(pc, ICE_GATHER_TIMEOUT_MS);
         const url = `/go2rtc/api/webrtc?src=${encodeURIComponent(cam.stream || cam.id)}`;
-        const resp = await fetch(url, {method:"POST", headers:{"Content-Type":"application/sdp"}, body: offer.sdp});
+        const resp = await fetch(url, {method:"POST", headers:{"Content-Type":"application/sdp"}, body: pc.localDescription.sdp});
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const answerSdp = await resp.text();
         await pc.setRemoteDescription({type:"answer", sdp: answerSdp});

@@ -1051,6 +1051,19 @@ def create_app(config_path: str) -> Flask:
     # should time out fast so a stalled go2rtc doesn't hang worker threads.
     _STREAMING_ENDPOINTS = ("stream.mp4", "stream.m3u8", "stream.mjpeg", "ws")
 
+    # requests.request(...) (the module-level convenience function) opens a
+    # brand new Session -- and with it a brand new TCP connection to go2rtc
+    # -- on every single call. A shared Session keeps a real HTTP keep-alive
+    # pool to go2rtc instead, so a WHEP offer/answer or a settings/status
+    # call doesn't pay for a fresh loopback handshake every time. pool_maxsize
+    # is sized to the waitress worker pool (threads=64 below) since a busy
+    # moment can have that many proxy calls in flight at once -- MSE/HLS
+    # tiles each pin one connection in this pool for their entire lifetime,
+    # same as they pin a worker thread. Session objects are documented as
+    # thread-safe for concurrent request() calls, which is all this needs.
+    _go2rtc_session = requests.Session()
+    _go2rtc_session.mount("http://", requests.adapters.HTTPAdapter(pool_maxsize=64))
+
     @app.route("/go2rtc/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
     def go2rtc_proxy(subpath):
         gc = store.get_go2rtc()
@@ -1058,7 +1071,7 @@ def create_app(config_path: str) -> Flask:
         is_stream = any(subpath.endswith(e) or ("/" + e) in subpath for e in _STREAMING_ENDPOINTS)
         timeout = (5, None) if is_stream else (5, 10)
         try:
-            r = requests.request(
+            r = _go2rtc_session.request(
                 request.method,
                 upstream,
                 params=request.args,

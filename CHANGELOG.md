@@ -5,6 +5,12 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.8] - 2026-08-17
+
+### Düzeltildi
+- **WebRTC (RTC) canlı izleme bağlantısı, go2rtc'nin kendi arayüzü kadar hızlı/güvenilir bağlanacak şekilde düzeltildi.** `_startWHEP()`, ICE candidate toplanmasını hiç beklemeden `pc.createOffer()`'ın statik (henüz hiçbir candidate içermeyen) SDP'sini gönderiyordu — go2rtc'nin `/api/webrtc` ucu tek seferlik (trickle olmayan) bir alışveriş olduğundan, bu candidate'sız teklif go2rtc'ye tarayıcıya nasıl ulaşacağını hiç söylemiyor, bağlantı ancak go2rtc'nin şans eseri aldığı bir STUN kontrolünü "peer-reflexive" olarak fark etmesiyle kuruluyordu — yavaş ve güvenilirliği düşük. Artık `setLocalDescription()` sonrası ICE toplanması bitene (veya 800ms güvenlik sınırına) kadar kısa bir süre beklenip, candidate'ları içeren `pc.localDescription.sdp` gönderiliyor — bu, go2rtc'nin kendi web arayüzünün de (farklı bir yoldan, WebSocket üzerinden trickle ICE ile) elde ettiği aynı "tam adres bilgisiyle bağlan" sonucunu, mimari değişikliği gerektirmeden sağlıyor. Playwright ile doğrulandı: eski kod 0 candidate ile gönderiyordu (`iceGatheringState: "new"`), yeni kod 4 candidate ile gönderiyor (`"complete"`) ve bu sadece ~120ms ek süre — algılanabilir bir gecikme yaratmıyor.
+- `go2rtc_proxy()` artık her istekte yeni bir `requests` oturumu (ve dolayısıyla go2rtc'ye yeni bir TCP bağlantısı) açmıyor; kalıcı, paylaşılan bir `requests.Session` (keep-alive havuzu, `threads=64`'e uygun `pool_maxsize=64`) kullanıyor. Gerçek `waitress.serve()` üzerinden doğrulandı: 20 ardışık çağrı artık go2rtc'ye tek bir TCP bağlantısı üzerinden gidiyor (öncesinde 20 ayrı bağlantı), akış (stream.mp4) ve POST gövdesi (WHEP SDP) iletimi bozulmadan çalışmaya devam ediyor, 40 eşzamanlı çağrı da sorunsuz.
+
 ## [4.2.7] - 2026-08-17
 
 ### Düzeltildi
