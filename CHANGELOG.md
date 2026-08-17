@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.7] - 2026-08-17
+
+### Düzeltildi
+- **4.2.6'daki `channel_request_lookahead=1` değişikliği geri alındı — üretimde regresyona yol açtı.** Güncellemeden kısa süre sonra canlı izleme "Bağlanıyor" durumunda takılıp MSE zaman aşımına uğradı, sayfa açılması uzadı ("dün çok güzel çalışıyordu"). Bu ayar waitress'in tam olarak aynı mekanizmasını etkinleştiriyor (`channel_request_lookahead`) ve bu mekanizmanın geçmişte ciddi bir yarış durumu hatası vardı (CVE-2024-49768, waitress 3.0.1'de düzeltildi) — kurulu sürüm (3.0.2) bu CVE'ye karşı yamalı olsa da, bu oturumda yapılan doğrulama testi sadece kısa süreli (2 sn) bir senaryoyu kapsıyordu, üretimdeki uzun ömürlü MSE bağlantıları + kesintili RTSP + mobil ağ kopmaları kombinasyonunu değil. Riski üstlenmek yerine geri alındı: `go2rtc_proxy()` artık tekrar sadece yazma-hatası tetiklemeli bağlantı kopma tespiti kullanıyor (4.2.4/4.2.5'teki, "dün çalışan" davranış), `waitress.serve()` çağrısı `threads=64` ile (starvation düzeltmesi duruyor) ama `channel_request_lookahead` olmadan çalışıyor.
+
 ## [4.2.6] - 2026-08-17
 
 ### Değişti
