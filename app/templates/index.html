@@ -156,6 +156,13 @@
         <label>Yeniden bağlanma gecikmesi (ms)
           <input id="s-reconnect-delay" type="number" min="500" step="500" />
         </label>
+        <label>Bu cihazda canlı yayın modu
+          <select id="s-device-transport">
+            <option value="rtc">WebRTC (düşük gecikme)</option>
+            <option value="mse">MSE (fragmented MP4)</option>
+          </select>
+          <small>Sadece bu cihaz için geçerlidir. Seçilen mod çalışmıyorsa diğerini deneyin.</small>
+        </label>
         <fieldset>
           <legend>Home Assistant bağlantısı</legend>
           <small>Hareket/insan/araç algılama artık Home Assistant'taki <code>binary_sensor</code>

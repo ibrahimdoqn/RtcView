@@ -5,23 +5,6 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
-## [4.3.0] - 2026-08-17
-
-### Eklendi
-- **Canlı izleme, go2rtc'nin kendi web arayüzüyle aynı mimariye geçti: tek bir WebSocket üzerinden hem WebRTC hem MSE.** Önceki mimari iki ayrı HTTP isteği kullanıyordu (tek seferlik WHEP POST + ayrı bir MSE GET); yeni mimaride tarayıcı, go2rtc'nin gerçek `/api/ws` protokolünü (AlexxIT/go2rtc'nin MIT lisanslı `video-rtc.js`'inden uyarlandı) tek bir WebSocket üzerinden konuşuyor — bu soket hem WebRTC sinyalleşmesini (gerçek trickle ICE ile: candidate'lar bulundukça tek tek gönderiliyor) hem MSE'nin ikili (binary) fMP4 verisini taşıyor. İki taşıma da aynı anda başlatılıp hangisi önce oynatılabilir hale gelirse o kullanılıyor (go2rtc'nin kendi `onpcvideo()` öncelik sırası: Video+Ses > Video, H265 > H264, WebRTC > MSE eşit kalitede) — kullanıcının "RTC mi MSE mi" seçmesine gerek kalmadı, Ayarlar'daki cihaz bazlı taşıma seçici kaldırıldı.
-- Bu WebSocket, `app/main.py`'deki yeni `go2rtc_ws_relay()` ile RtcView üzerinden geçiyor (`/go2rtc/api/ws`) — tarayıcı hâlâ go2rtc'nin portuna hiç doğrudan bağlanmıyor, mevcut erişim modeliyle (uzaktan/Tailscale üzerinden erişim dahil) aynı.
-- **Üretim sunucusu waitress'ten gevent'e geçirildi** (`app/__init__.py`'de `gevent.monkey.patch_all()`, `app/main.py`'de `gevent.pywsgi.WSGIServer`) — bu, WebSocket desteği eklemenin tek yolu (waitress'te soket "hijack" desteği yok, WS eklenemiyor). Yan etkisi: bu oturumda uzun süredir uğraşılan "bir akışı elinde tutan worker thread'i tüm havuzu tüketiyor" sınıfındaki hatalar (threads=10 → threads=64 → geri alınan channel_request_lookahead denemesi) artık *mimari olarak* ortadan kalkıyor — gevent'in greenlet'leri socket I/O'da bloke olduklarında gerçek bir OS thread'i tüketmiyor, tüketilecek sabit bir havuz yok.
-
-### Değişti
-- `go2rtc_proxy()` (eski HTTP tabanlı proxy) yerinde duruyor ve go2rtc'nin diğer API çağrıları (ayarlar, config, PTZ vb.) için hâlâ kullanılıyor; sadece canlı izleme artık yeni WebSocket rölesinden geçiyor.
-
-### Test
-Kapsamlı, gerçek sunucular ve gerçek tarayıcı üzerinden doğrulandı (üretim koduyla birebir, sadece test double'ları taklit veriyor):
-- Röle (backend): metin/ikili çerçeve yönlendirme, tip korunumu, sıralı teslim, temiz kapanışta upstream bağlantısının serbest kalması, 20 eşzamanlı röle birbirini etkilemiyor, 10 açık röle varken HTTP uçları hâlâ hızlı yanıt veriyor.
-- MSE: gerçek bir tarayıcının `MediaRecorder`'ıyla üretilmiş gerçek fragmented MP4 verisi, sahte bir go2rtc'den röle üzerinden gerçek `index.html`/`app.js`'e akıtıldı — video gerçekten çözülüp oynatıldı (`readyState` HAVE_ENOUGH_DATA, `currentTime` ilerliyor, doğru çözünürlük).
-- WebRTC sinyalleşme protokolü: gerçek trickle ICE doğrulandı (candidate'lar tek tek gönderiliyor, eski koddaki gibi toplu değil); iki gerçek tarayıcı sekmesi arasında uçtan uca tam bağlantı testi bu ortamda güvenilir şekilde tamamlanamadı (test kablolamasındaki bir yarış durumu bulunup düzeltildi, ardından ortama özgü ICE zamanlama/ağ kısıtları şüpheleniliyor — üretim rölesinin kendisi ayrı, daha basit testlerde stabildi: gerçek tarayıcıdan 15 ardışık aç/kapa döngüsü ve 6 saniyelik uzun ömürlü çift yönlü trafik sorunsuz). Gerçek WebRTC bağlantısının gerçek go2rtc ile uçtan uca tamamlandığı, cihaza kurulduktan sonra doğrulanmalı.
-- gevent uyumluluğu: `recorder.py`'nin gerçek deseni (subprocess + stderr okuyan ayrı thread, eşzamanlı çoklu kayıt) monkey-patch altında sorunsuz çalıştığı doğrulandı; mevcut HTTP uçlarının geniş bir örneklemi (kameralar, kayıt, sistem, bildirimler, go2rtc yönetimi) + 40 eşzamanlı karışık istek gevent altında sorunsuz.
-
 ## [4.2.8] - 2026-08-17
 
 ### Düzeltildi

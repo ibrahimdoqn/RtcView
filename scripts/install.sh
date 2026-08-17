@@ -140,8 +140,8 @@ python3 -m venv "$INSTALL_DIR/venv"
 
 # ------------- verify critical imports -------------
 info "Python bağımlılıkları doğrulanıyor..."
-if ! "$INSTALL_DIR/venv/bin/python" -c "import flask, requests, gevent, flask_sock" 2>/dev/null; then
-  die "Flask/requests/gevent/flask-sock import başarısız — kurulum yarıda kesildi."
+if ! "$INSTALL_DIR/venv/bin/python" -c "import flask, requests, waitress" 2>/dev/null; then
+  die "Flask/requests/waitress import başarısız — kurulum yarıda kesildi."
 fi
 if ! "$INSTALL_DIR/venv/bin/python" -c "from onvif import ONVIFCamera" 2>/dev/null; then
   warn "onvif-zeep import edilemiyor. PTZ özellikleri devre dışı kalır. Manuel dene:"
