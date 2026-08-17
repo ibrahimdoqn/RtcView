@@ -789,13 +789,15 @@ def create_app(config_path: str) -> Flask:
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
 
-    # RtcView's own service plus the root-owned trigger units it uses for
-    # self-update/restart/reboot/go2rtc-restart (see the trigger-file
-    # comments below) -- so a self-update run, a restart click, etc. show
-    # up here too. Deliberately NOT go2rtc.service: this is "RtcView's own
-    # activity", not a merged multi-service view.
+    # Everything RtcView's own systemd stack can log: the main service,
+    # go2rtc (also RtcView-managed, see vendor/go2rtc), and the root-owned
+    # trigger units used for self-update/restart/reboot/go2rtc-restart --
+    # merged into one chronologically-interleaved stream (journalctl
+    # accepts multiple -u flags) so a self-update run, a restart click,
+    # or a go2rtc hiccup all show up in the same place.
     _RTCVIEW_LOG_UNITS = [
         "rtcview.service",
+        "go2rtc.service",
         "rtcview-updater.service",
         "rtcview-restart.service",
         "rtcview-reboot.service",

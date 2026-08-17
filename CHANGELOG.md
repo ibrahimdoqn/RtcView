@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.5] - 2026-08-17
+
+### Değişti
+- Sistem → Loglar'a go2rtc'nin kayıtları geri eklendi (4.2.4'te çıkarılmıştı) — RtcView, go2rtc ve güncelleme/yeniden başlatma tetikleyici birimlerinin hepsi yine tek, zaman sıralı birleşik akış olarak görüntüleniyor. Menüdeki açıklama metni sadeleştirildi ("Servis kayıtlarını görüntüle") — hangi servislerin dahil olduğunu tek tek saymıyor.
+
 ## [4.2.4] - 2026-08-17
 
 ### Düzeltildi
@@ -154,7 +159,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.4...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.5...HEAD
+[4.2.5]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.4...v4.2.5
 [4.2.4]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.3...v4.2.4
 [4.2.3]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.2...v4.2.3
 [4.2.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.1...v4.2.2
