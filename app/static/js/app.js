@@ -757,38 +757,7 @@
   // — 4s was comfortably enough on LAN but not reliably enough over a
   // slower relayed mobile connection, causing some tiles to time out and
   // fall into the reconnect loop while others on the same grid succeeded.
-  const WHEP_TIMEOUT_MS = 10000;
-
-  // go2rtc's /api/webrtc is a single-shot WHEP-style exchange: one offer,
-  // one answer, no channel for trickling candidates in afterward. The
-  // offer therefore has to carry every locally-known candidate up front
-  // ("vanilla ICE") -- sending pc.createOffer()'s static return value
-  // does NOT do this, since that SDP is a snapshot taken before gathering
-  // has produced anything. The live-updating view is pc.localDescription,
-  // which keeps gaining "a=candidate" lines as they're found even though
-  // setLocalDescription() was already called with the static snapshot.
-  // Waiting for icegatheringstate to reach "complete" (or this timeout,
-  // whichever first -- a safety net, not the expected path) before
-  // reading pc.localDescription.sdp is what makes sure go2rtc actually
-  // receives an address to reach us at, instead of depending on it
-  // guessing our address from a STUN check it happens to receive later.
-  const ICE_GATHER_TIMEOUT_MS = 800;
-  function _waitIceGatheringComplete(pc, timeoutMs){
-    if (pc.iceGatheringState === "complete") return Promise.resolve();
-    return new Promise(resolve => {
-      const onChange = () => {
-        if (pc.iceGatheringState !== "complete") return;
-        clearTimeout(timer);
-        pc.removeEventListener("icegatheringstatechange", onChange);
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        pc.removeEventListener("icegatheringstatechange", onChange);
-        resolve();
-      }, timeoutMs);
-      pc.addEventListener("icegatheringstatechange", onChange);
-    });
-  }
+  const LIVE_CONNECT_TIMEOUT_MS = 10000;
 
   function _wireSizeToVideo(p, cam, tile){
     const video = p.video;
@@ -822,24 +791,6 @@
     tile.dataset.mode = mode || "";
   }
 
-  // ---------- Device-scoped transport preference (localStorage) ----------
-  // Live transport is chosen PER DEVICE, not per camera. Two hard choices
-  // — no auto/fallback: whatever the user picks is what plays. RTC is the
-  // default for low latency; if a browser doesn't handle it well the user
-  // switches this device to MSE (fragmented MP4 over HTTP). Sunucudaki
-  // config, kayıt, PTZ ve diğer cihazlar etkilenmez.
-  const DEVICE_TRANSPORT_KEY = "rtcview.transport";
-  function getDeviceTransport(){
-    try {
-      const v = localStorage.getItem(DEVICE_TRANSPORT_KEY);
-      return (v === "mse") ? "mse" : "rtc";
-    } catch { return "rtc"; }
-  }
-  function setDeviceTransport(v){
-    try { localStorage.setItem(DEVICE_TRANSPORT_KEY, v === "mse" ? "mse" : "rtc"); }
-    catch {}
-  }
-
   async function startPlayer(cam, tile){
     const video = tile.querySelector("video");
     const msg   = tile.querySelector("[data-msg]");
@@ -848,138 +799,223 @@
     state.players.set(cam.id, p);
     if (msg) msg.textContent = "Bağlanıyor…";
     _wireSizeToVideo(p, cam, tile);
-    const prefer = getDeviceTransport();  // "rtc" or "mse"
-    // Both transports go through our Flask /go2rtc HTTP proxy so the
-    // browser never needs a direct connection to go2rtc.
-    if (prefer === "mse"){
-      _startMSE(cam, tile, p).then(() => _tileMode(tile, "mse")).catch(e => {
-        p.state = "err"; if (msg) msg.textContent = "MSE: " + e.message;
-        refreshStatusDots(); maybeReconnect(cam, tile);
-      });
-      return;
-    }
-    // "rtc" — WHEP only, no automatic MSE fallback
     try {
-      await _startWHEP(cam, tile, p);
-      _tileMode(tile, "webrtc");
+      const mode = await _startWS(cam, tile, p);
+      _tileMode(tile, mode);
       p.state = "live"; if (msg) msg.textContent = "";
       refreshStatusDots();
     } catch (e){
-      console.warn(`[${cam.id}] WHEP failed (${e.message})`);
+      console.warn(`[${cam.id}] canlı bağlantı başarısız (${e.message})`);
       try { p.pc && p.pc.close(); } catch {}
       p.pc = null;
+      try { p.ws && p.ws.close(); } catch {}
+      p.ws = null;
       p.state = "err";
-      if (msg) msg.textContent = "WebRTC: " + e.message;
+      if (msg) msg.textContent = e.message;
       refreshStatusDots(); maybeReconnect(cam, tile);
     }
   }
 
-  // ---------- WHEP (WebRTC over HTTP through Flask proxy) ----------
-  function _startWHEP(cam, tile, p){
-    return new Promise(async (resolve, reject) => {
+  // ---------- Unified live-view player (single WebSocket) ----------
+  // Adapted from AlexxIT/go2rtc's own www/video-rtc.js (MIT licensed,
+  // https://github.com/AlexxIT/go2rtc) rather than reinvented: go2rtc's own
+  // web UI reaches near-instant live view by opening ONE WebSocket that
+  // carries both WebRTC signalling (real trickle ICE -- candidates go out
+  // as they're found, not batched into a single offer) and MSE's binary
+  // fMP4 data, starting both transports at once and keeping whichever
+  // actually produces playable media first. RtcView's previous two-HTTP-
+  // request approach (a one-shot WHEP POST + a separate MSE GET) couldn't
+  // match that: WHEP has no channel to trickle candidates through, so the
+  // browser had to depend on go2rtc noticing an unadvertised connectivity
+  // check to even find it (see CHANGELOG's WebRTC-speed entry) -- and
+  // running two independent requests is simply a second connection/
+  // negotiation instead of one shared one.
+  //
+  // The WebSocket is relayed through RtcView's own /go2rtc/api/ws (see
+  // app/main.py's go2rtc_ws_relay()), so the browser still never needs a
+  // direct connection to go2rtc's own port -- same reachability model as
+  // every other transport this app has used.
+  const MSE_CODECS = [
+    "avc1.640029", "avc1.64002A", "avc1.640033", // H.264 high 4.1 / 4.2 / 5.1
+    "hvc1.1.6.L153.B0",                          // H.265 main 5.1
+    "mp4a.40.2", "mp4a.40.5", "flac", "opus",    // AAC LC / HE, FLAC (PCM-compatible), Opus
+  ];
+  function _supportedMseCodecs(){
+    if (!("MediaSource" in window)) return "";
+    return MSE_CODECS.filter(c => MediaSource.isTypeSupported(`video/mp4; codecs="${c}"`)).join();
+  }
+
+  function _startWS(cam, tile, p){
+    return new Promise((resolve, reject) => {
       const video = p.video;
       let settled = false;
-      const done = (ok, err) => {
+      const done = (ok, mode, err) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        ok ? resolve() : reject(err);
+        ok ? resolve(mode) : reject(err);
       };
-      const timer = setTimeout(() => done(false, new Error("timeout")), WHEP_TIMEOUT_MS);
-      try {
-        const pc = new RTCPeerConnection({iceServers: []});
+      const timer = setTimeout(() => done(false, null, new Error("timeout")), LIVE_CONNECT_TIMEOUT_MS);
+
+      const wsProto = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${wsProto}://${location.host}/go2rtc/api/ws?src=${encodeURIComponent(cam.stream || cam.id)}`);
+      ws.binaryType = "arraybuffer";
+      p.ws = ws;
+
+      const onmessage = {};
+      let ondata = null;
+      let mseCodecs = "";
+      let pc = null;
+
+      const send = (v) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(v)); };
+
+      function startMse(){
+        if (!("MediaSource" in window)) return;
+        const ms = new MediaSource();
+        ms.addEventListener("sourceopen", () => {
+          URL.revokeObjectURL(video.src);
+          send({type: "mse", value: _supportedMseCodecs()});
+        }, {once: true});
+        video.src = URL.createObjectURL(ms);
+        video.srcObject = null;
+
+        onmessage["mse"] = (msg) => {
+          if (msg.type !== "mse") return;
+          mseCodecs = msg.value;
+
+          const sb = ms.addSourceBuffer(msg.value);
+          sb.mode = "segments";
+          const buf = new Uint8Array(2 * 1024 * 1024);
+          let bufLen = 0;
+          sb.addEventListener("updateend", () => {
+            if (!sb.updating && bufLen > 0){
+              try { sb.appendBuffer(buf.slice(0, bufLen)); bufLen = 0; } catch (e) {}
+            }
+            if (!sb.updating && sb.buffered && sb.buffered.length){
+              const end = sb.buffered.end(sb.buffered.length - 1);
+              const start = end - 5;
+              const start0 = sb.buffered.start(0);
+              if (start > start0){
+                sb.remove(start0, start);
+                ms.setLiveSeekableRange(start, end);
+              }
+            }
+          });
+          ondata = (data) => {
+            if (sb.updating || bufLen > 0){
+              const b = new Uint8Array(data);
+              buf.set(b, bufLen);
+              bufLen += b.byteLength;
+            } else {
+              try { sb.appendBuffer(data); } catch (e) {}
+            }
+          };
+        };
+
+        const onReady = () => { video.play().catch(() => {}); done(true, "mse"); };
+        video.addEventListener("canplay",    onReady, {once: true});
+        video.addEventListener("loadeddata", onReady, {once: true});
+        video.addEventListener("playing",    onReady, {once: true});
+      }
+
+      function startWebrtc(){
+        pc = new RTCPeerConnection({iceServers: []});
         p.pc = pc;
         pc.addTransceiver("video", {direction: "recvonly"});
         pc.addTransceiver("audio", {direction: "recvonly"});
-        pc.ontrack = (ev) => {
-          if (video.srcObject !== ev.streams[0]) video.srcObject = ev.streams[0];
-          done(true);
-        };
-        pc.oniceconnectionstatechange = () => {
-          const s = pc.iceConnectionState;
-          if (["failed","disconnected","closed"].includes(s)){
-            if (!settled) return done(false, new Error("ICE " + s));
+
+        pc.addEventListener("icecandidate", (ev) => {
+          send({type: "webrtc/candidate", value: ev.candidate ? ev.candidate.toJSON().candidate : ""});
+        });
+
+        pc.addEventListener("connectionstatechange", () => {
+          if (pc.connectionState === "connected"){
+            const tracks = pc.getTransceivers()
+              .filter(tr => tr.currentDirection === "recvonly")
+              .map(tr => tr.receiver.track);
+            const probe = document.createElement("video");
+            probe.addEventListener("loadeddata", () => onPcVideo(probe), {once: true});
+            probe.srcObject = new MediaStream(tracks);
+          } else if (["failed", "disconnected"].includes(pc.connectionState)){
+            if (!settled) return done(false, null, new Error("ICE " + pc.connectionState));
             // Live drop after resolve → hand off to reconnect
+            try { pc.close(); } catch {}
+            p.pc = null;
             p.state = "err";
             maybeReconnect(cam, p.tile);
           }
+        });
+
+        onmessage["webrtc"] = (msg) => {
+          switch (msg.type){
+            case "webrtc/candidate":
+              if (!msg.value) return;
+              pc.addIceCandidate({candidate: msg.value, sdpMid: "0"}).catch(() => {});
+              break;
+            case "webrtc/answer":
+              pc.setRemoteDescription({type: "answer", sdp: msg.value}).catch(() => {});
+              break;
+          }
         };
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        await _waitIceGatheringComplete(pc, ICE_GATHER_TIMEOUT_MS);
-        const url = `/go2rtc/api/webrtc?src=${encodeURIComponent(cam.stream || cam.id)}`;
-        const resp = await fetch(url, {method:"POST", headers:{"Content-Type":"application/sdp"}, body: pc.localDescription.sdp});
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
-        const answerSdp = await resp.text();
-        await pc.setRemoteDescription({type:"answer", sdp: answerSdp});
-      } catch (e){ done(false, e); }
+
+        pc.createOffer()
+          .then(offer => pc.setLocalDescription(offer).then(() => offer))
+          .then(offer => send({type: "webrtc/offer", value: offer.sdp}));
+      }
+
+      // Video+Audio > Video, H265 > H264, WebRTC > MSE at equal quality —
+      // same priority order go2rtc's own onpcvideo() uses, since a viewer
+      // switching this device to "rtc" (the default) expects RTC when
+      // it's genuinely available, not whichever transport happened to
+      // finish negotiating a frame first.
+      function onPcVideo(probe){
+        if (!pc){ probe.srcObject = null; return; }
+        let rtcPriority = 0, msePriority = 0;
+        const stream = probe.srcObject;
+        if (stream.getVideoTracks().length > 0){
+          const isH265 = pc.remoteDescription && pc.remoteDescription.sdp.includes("H265/90000");
+          rtcPriority += isH265 ? 0x240 : 0x220;
+        }
+        if (stream.getAudioTracks().length > 0) rtcPriority += 0x102;
+        if (mseCodecs.includes("hvc1.")) msePriority += 0x230;
+        if (mseCodecs.includes("avc1.")) msePriority += 0x210;
+        if (mseCodecs.includes("mp4a.")) msePriority += 0x101;
+
+        if (rtcPriority >= msePriority){
+          video.srcObject = stream;
+          video.play().catch(() => {});
+          try { ws.close(); } catch {}
+          p.ws = null;
+          done(true, "webrtc");
+        } else {
+          try { pc.close(); } catch {}
+          p.pc = null;
+        }
+        probe.srcObject = null;
+      }
+
+      ws.addEventListener("open", () => {
+        ws.addEventListener("message", (ev) => {
+          if (typeof ev.data === "string"){
+            const msg = JSON.parse(ev.data);
+            for (const k in onmessage) onmessage[k](msg);
+          } else if (ondata){
+            ondata(ev.data);
+          }
+        });
+        startMse();
+        if ("RTCPeerConnection" in window) startWebrtc();
+      });
+
+      ws.addEventListener("close", () => {
+        if (!settled) return done(false, null, new Error("ws closed"));
+        // Live drop after resolve (MSE side, since a WebRTC win already
+        // closed this socket in onPcVideo) → hand off to reconnect.
+        p.state = "err";
+        maybeReconnect(cam, p.tile);
+      });
     });
   }
-
-  // ---------- MSE (fMP4 over HTTP through Flask proxy) ----------
-  function _startMSE(cam, tile, p){
-    return new Promise((resolve, reject) => {
-      const video = p.video;
-      const msg = tile.querySelector("[data-msg]");
-      video.srcObject = null;
-      // mp4=all is required to get audio at all here: go2rtc's stream.mp4
-      // handler (pkg/mp4/helpers.go ParseQuery) only applies its
-      // codec-aware audio filter when a 'mp4' query param is present at
-      // all — with none, it falls through to the generic parser and audio
-      // silently never makes it into the fMP4 output. mp4=all requests the
-      // broadest codec set (AAC + the PCMA/PCMU/PCM family most cheap IP
-      // cameras actually send + Opus/MP3).
-      //
-      // NOTE: go2rtc has NO PCM->AAC transcoder — it only repackages a
-      // codec the camera already sends. Cameras sending raw PCM-family
-      // audio only get audio at all via mp4=all/mp4=flac, which is exactly
-      // what makes go2rtc wrap that PCM into FLAC via pkg/pcm.FLACEncoder
-      // for the fMP4 output — a path that has crashed go2rtc in production
-      // (nil pointer panic at pkg/pcm/flac.go:149). Tried dropping to
-      // mp4= (empty, AAC-only) to dodge that crash, but it silently killed
-      // audio for these cameras entirely (no AAC source, no negotiation).
-      // Traded back: keep audio, accept that go2rtc may occasionally crash
-      // and self-restart (~2s, live-view only — recording is unaffected).
-      // A real fix would transcode camera audio to AAC upstream in
-      // go2rtc's own stream config (ffmpeg:rtsp://...#audio=aac), outside
-      // this repo.
-      const url = `/go2rtc/api/stream.mp4?src=${encodeURIComponent(cam.stream || cam.id)}&mp4=all`;
-      console.log(`[${cam.id}] MSE HTTP fMP4:`, url);
-      video.src = url; video.load();
-      let settled = false;
-      const cleanup = () => {
-        video.removeEventListener("canplay",   onOk);
-        video.removeEventListener("loadeddata",onOk);
-        video.removeEventListener("playing",   onOk);
-        video.removeEventListener("error",     onErr);
-      };
-      const done = (ok, err) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer); cleanup();
-        ok ? resolve() : reject(err);
-      };
-      const timer = setTimeout(() => done(false, new Error("timeout")), 12000);
-      const onOk = () => {
-        p.state = "live";
-        if (msg) msg.textContent = "";
-        refreshStatusDots();
-        video.play().catch(() => {});
-        done(true);
-      };
-      const onErr = () => {
-        const e = video.error;
-        const name = e ? ({1:"aborted",2:"network",3:"decode",4:"src not supported"}[e.code] || `code ${e.code}`) : "unknown";
-        done(false, new Error(name));
-      };
-      video.addEventListener("canplay",    onOk);
-      video.addEventListener("loadeddata", onOk);
-      video.addEventListener("playing",    onOk);
-      video.addEventListener("error",      onErr);
-    });
-  }
-
-
 
   function maybeReconnect(cam, tile){
     if (state.settings.auto_reconnect === false) return;
@@ -993,6 +1029,7 @@
   function stopPlayer(id){
     const p = state.players.get(id); if (!p) return;
     try { p.pc && p.pc.close(); } catch {}
+    try { p.ws && p.ws.close(); } catch {}
     if (p.video){
       try { p.video.pause(); } catch {}
       p.video.removeAttribute("src");
@@ -1773,7 +1810,6 @@
     $("#s-show-badges").checked = state.settings.show_status_badges !== false;
     $("#s-auto-reconnect").checked = state.settings.auto_reconnect !== false;
     $("#s-reconnect-delay").value = state.settings.reconnect_delay_ms || 3000;
-    $("#s-device-transport").value = getDeviceTransport();
     try {
       const h = await api.get("/api/homeassistant/settings");
       $("#s-ha-url").value = h.url || "";
@@ -1798,11 +1834,6 @@
       reconnect_delay_ms: parseInt($("#s-reconnect-delay").value),
     };
     try {
-      // Device-scoped transport (not sent to server — local per browser)
-      const prevTransport = getDeviceTransport();
-      const newTransport = $("#s-device-transport").value === "mse" ? "mse" : "rtc";
-      if (newTransport !== prevTransport) setDeviceTransport(newTransport);
-
       state.settings = await api.post("/api/settings", body);
       if (_haLoaded){
         const haBody = {
@@ -1816,8 +1847,7 @@
         $("#s-ha-token-hint").textContent = h.token_set ? "Bir jeton kayıtlı. Boş bırakırsanız değişmez." : "";
       }
       applySettings();
-      renderGrid();                     // pulls in new transport on restart
-      toast(newTransport !== prevTransport ? "Yayın modu değiştirildi" : "Ayarlar kaydedildi", "ok");
+      toast("Ayarlar kaydedildi", "ok");
       updateStatus();
     } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
   });

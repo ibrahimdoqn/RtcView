@@ -1,8 +1,9 @@
 Flask==3.0.3
 Flask-Cors==4.0.1
+Flask-Sock==0.7.0
+gevent==26.8.0
 requests==2.32.3
 onvif-zeep==0.2.12
 zeep==4.2.1
-waitress==3.0.0
 websocket-client==1.8.0
 PyYAML==6.0.2

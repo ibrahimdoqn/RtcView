@@ -7,14 +7,23 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory, stream_with_context
 from flask_cors import CORS
+from flask_sock import Sock
+
+try:
+    import websocket  # websocket-client -- same dependency app/homeassistant.py already relies on
+    WS_CLIENT_AVAILABLE = True
+except Exception:
+    WS_CLIENT_AVAILABLE = False
 
 from app.config import ConfigStore
 from app.homeassistant import HAManager, WEBSOCKET_AVAILABLE as HA_WEBSOCKET_AVAILABLE
@@ -72,6 +81,7 @@ def create_app(config_path: str) -> Flask:
     # are far below this.
     app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
     CORS(app)
+    sock = Sock(app)
 
     # A camera id becomes a directory name under every storage root and a
     # dict key several subsystems index workers by, so it's validated
@@ -1054,15 +1064,14 @@ def create_app(config_path: str) -> Flask:
     # requests.request(...) (the module-level convenience function) opens a
     # brand new Session -- and with it a brand new TCP connection to go2rtc
     # -- on every single call. A shared Session keeps a real HTTP keep-alive
-    # pool to go2rtc instead, so a WHEP offer/answer or a settings/status
-    # call doesn't pay for a fresh loopback handshake every time. pool_maxsize
-    # is sized to the waitress worker pool (threads=64 below) since a busy
-    # moment can have that many proxy calls in flight at once -- MSE/HLS
-    # tiles each pin one connection in this pool for their entire lifetime,
-    # same as they pin a worker thread. Session objects are documented as
-    # thread-safe for concurrent request() calls, which is all this needs.
+    # pool to go2rtc instead, so a settings/status call doesn't pay for a
+    # fresh loopback handshake every time. pool_maxsize is generous since,
+    # under gevent, there's no fixed worker-pool ceiling on how many of
+    # these can be in flight at once (see main() below) the way there used
+    # to be under waitress. Session objects are documented as thread-safe
+    # for concurrent request() calls, which is all this needs.
     _go2rtc_session = requests.Session()
-    _go2rtc_session.mount("http://", requests.adapters.HTTPAdapter(pool_maxsize=64))
+    _go2rtc_session.mount("http://", requests.adapters.HTTPAdapter(pool_maxsize=128))
 
     @app.route("/go2rtc/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
     def go2rtc_proxy(subpath):
@@ -1096,6 +1105,89 @@ def create_app(config_path: str) -> Flask:
                 try: r.close()
                 except Exception: pass
         return Response(stream_with_context(_pump()), status=r.status_code, headers=headers)
+
+    # ---------- go2rtc live-view WebSocket relay ----------
+    # go2rtc's own web UI reaches ~instant live view by using ONE WebSocket
+    # (its /api/ws) that multiplexes WebRTC signalling (with real trickle
+    # ICE) and MSE's binary fMP4 data together, then races both transports
+    # client-side and keeps whichever connects first/best (see AlexxIT/
+    # go2rtc's www/video-rtc.js, MIT licensed). RtcView's old two-HTTP-call
+    # approach (a one-shot WHEP POST + a separate MSE GET, both through
+    # go2rtc_proxy() above) can't reach that: WHEP has no channel to trickle
+    # candidates through, and it's simply a second connection/negotiation
+    # instead of one. This route reproduces go2rtc's own client/server
+    # split faithfully: the browser talks go2rtc's real /api/ws protocol
+    # (see app/static/js/go2rtc-video.js, adapted from video-rtc.js) to
+    # THIS route, which transparently relays every frame -- text and binary,
+    # both directions -- to go2rtc's actual /api/ws. The relay itself never
+    # needs to understand that protocol; it only has to move bytes.
+    #
+    # This needs a WebSocket-capable WSGI server (see main()'s gevent
+    # switch) -- there's no way to add this under waitress.
+    @sock.route("/go2rtc/api/ws")
+    def go2rtc_ws_relay(browser_ws):
+        if not WS_CLIENT_AVAILABLE:
+            return
+        gc = store.get_go2rtc()
+        src = request.args.get("src", "")
+        upstream_url = f"ws://{gc['host']}:{gc['api_port']}/api/ws?src={quote(src, safe='')}"
+        try:
+            upstream_ws = websocket.create_connection(upstream_url, timeout=5)
+        except Exception as e:
+            log.warning("go2rtc WS relay: upstream bağlantısı kurulamadı (src=%s): %s", src, e)
+            return
+
+        stop = threading.Event()
+
+        # Runs in its own thread so both directions can be pumped at once --
+        # sock.route()'s handler function (below) owns the browser->upstream
+        # direction on the request thread/greenlet flask-sock already gave
+        # it. Residual risk, accepted and documented rather than hidden:
+        # simple-websocket's Server also has its own internal reader thread
+        # that can itself write to the browser socket (a pong/close-ack) at
+        # the same moment this thread calls browser_ws.send() -- no lock is
+        # exposed to coordinate that. Browsers don't send unsolicited pings
+        # in practice, so in the one realistic case (browser closes while a
+        # chunk is in flight) the outcome is just a send exception here,
+        # which this loop already treats as "connection over, clean up."
+        def pump_upstream_to_browser():
+            try:
+                while not stop.is_set():
+                    opcode, data = upstream_ws.recv_data()
+                    if opcode == websocket.ABNF.OPCODE_CLOSE:
+                        break
+                    if opcode == websocket.ABNF.OPCODE_TEXT:
+                        browser_ws.send(data.decode("utf-8", "replace"))
+                    elif opcode == websocket.ABNF.OPCODE_BINARY:
+                        browser_ws.send(data)
+            except Exception:
+                pass
+            finally:
+                stop.set()
+                try: browser_ws.close()
+                except Exception: pass
+
+        t = threading.Thread(target=pump_upstream_to_browser, daemon=True, name=f"g2ws-{src}")
+        t.start()
+
+        try:
+            while not stop.is_set():
+                data = browser_ws.receive(timeout=1)
+                if stop.is_set():
+                    break
+                if data is None:
+                    continue  # receive() timeout -- loop back around to recheck stop
+                if isinstance(data, bytes):
+                    upstream_ws.send_binary(data)
+                else:
+                    upstream_ws.send_text(data)
+        except Exception:
+            pass
+        finally:
+            stop.set()
+            try: upstream_ws.close()
+            except Exception: pass
+            t.join(timeout=2)
 
     return app
 
@@ -1360,35 +1452,27 @@ def main():
     if args.dev:
         app.run(host=host, port=port, debug=True, use_reloader=False)
     else:
-        from waitress import serve
-        # go2rtc_proxy()'s MSE/WHEP streaming endpoints (stream.mp4 etc.)
-        # use an infinite read timeout and hold their worker thread for the
-        # ENTIRE lifetime of the connection -- for MSE that's the whole
-        # time a live-view tile is open, not just one request/response. A
-        # small pool (this used to be 10, picked down from 16 over
-        # "context-switch heavy for a 6-core SoC" -- true for CPU-bound
-        # work, but these threads spend virtually all their time blocked
-        # on socket I/O, not runnable, so that reasoning doesn't apply
-        # here) gets exhausted by just a handful of MSE tiles: once every
-        # thread is pinned to a stream, every OTHER request -- go2rtc
-        # config, logs, status polling, playback -- queues behind them
-        # and the whole app looks frozen. Reproduced directly: 10
-        # concurrent MSE tiles + threads=10 reliably starves /api/status.
-        # A much larger pool costs little (idle/blocked threads are cheap
-        # — a few KB of resident memory each, no CPU) and gives real
-        # headroom for a handful of cameras across a few viewing devices.
+        # waitress (the previous server) has no WebSocket support -- no
+        # socket-hijack hook of any kind in its WSGI environ -- which ruled
+        # it out once live view moved to a single relayed WebSocket per
+        # camera (see go2rtc_ws_relay() above). gevent's WSGIServer fills
+        # that gap on the SAME port (no second port to open through a
+        # firewall/Tailscale ACL) via flask-sock, and as a side effect
+        # removes the whole "worker thread pinned for a stream's entire
+        # lifetime" problem this app fought earlier (threads=10 exhaustion,
+        # then threads=64, then a reverted channel_request_lookahead
+        # experiment -- see CHANGELOG) structurally instead of by sizing a
+        # pool: a greenlet blocked on socket I/O costs no OS thread at all,
+        # so there's no fixed pool to exhaust in the first place.
         #
-        # channel_request_lookahead was tried here to get faster proactive
-        # disconnect detection, but it's the exact mechanism behind a past
-        # waitress request-smuggling race (CVE-2024-49768, fixed in 3.0.1)
-        # and production use surfaced a real regression (live view stuck on
-        # "Bağlanıyor", MSE timeouts) within hours of enabling it -- pulled
-        # back out rather than risk a subtler, undiagnosed interaction with
-        # long-held streaming connections. threads=64 alone already fixes
-        # the actual starvation bug; the write-failure-triggered release
-        # path (see go2rtc_proxy()'s finally/close()) is what's left to
-        # reclaim a dead client's thread.
-        serve(app, host=host, port=port, threads=64)
+        # gevent.monkey.patch_all() already ran in app/__init__.py, before
+        # this module (or anything it imports -- recorder's subprocess/
+        # threading, homeassistant's websocket-client) was loaded, which is
+        # what makes all of that cooperate with gevent's event loop instead
+        # of blocking it.
+        from gevent.pywsgi import WSGIServer
+        http_server = WSGIServer((host, port), app, log=log, error_log=log)
+        http_server.serve_forever()
 
 
 if __name__ == "__main__":

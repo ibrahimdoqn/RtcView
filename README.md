@@ -1,7 +1,7 @@
 # RtcView
 
 Kendi **go2rtc**'sini kurup yöneten, Frigate benzeri, sıfır-gecikmeli (WebRTC) kamera izleme, **kayıt / playback**, **Home Assistant tabanlı hareket/insan/araç algılama**, **grup bazlı bildirim** ve **ağ izleme** arayüzü.
-go2rtc'de tanımlı stream'leri WHEP üzerinden alır ve gösterir, kayıt için RTSP çıkışını FFmpeg ile segmentler halinde diske yazar. go2rtc'nin kendisi de RtcView'ın kurulumunun bir parçasıdır — kendi systemd servisi olarak çalışır, yapılandırması (`config.yaml`) ve logları Ayarlar → go2rtc sekmesinden yönetilir. RtcView, upstream go2rtc'nin bilinen bir çökme hatasını (bkz. `vendor/go2rtc`, `scripts/go2rtc-writebuffer-recover.patch`) düzelten kendi derlemesini kullanır.
+go2rtc'de tanımlı stream'leri, go2rtc'nin kendi web arayüzüyle aynı mimariyle (tek WebSocket üzerinden WebRTC + MSE, RtcView üzerinden röle edilir) alır ve gösterir, kayıt için RTSP çıkışını FFmpeg ile segmentler halinde diske yazar. go2rtc'nin kendisi de RtcView'ın kurulumunun bir parçasıdır — kendi systemd servisi olarak çalışır, yapılandırması (`config.yaml`) ve logları Ayarlar → go2rtc sekmesinden yönetilir. RtcView, upstream go2rtc'nin bilinen bir çökme hatasını (bkz. `vendor/go2rtc`, `scripts/go2rtc-writebuffer-recover.patch`) düzelten kendi derlemesini kullanır.
 PWA uyumludur, Ubuntu Noble (rk3399, arm64) üzerinde izole Python venv içinde çalışır — NanoPi R4S gibi SBC'ler dahil herhangi bir Linux/systemd cihazında çalışacak şekilde tasarlanmıştır.
 
 ## Ön koşul
@@ -16,7 +16,7 @@ kendi entegrasyonu, vb. — kaynak fark etmez).
 ## Özellikler
 
 ### Canlı izleme
-- **WebRTC (WHEP)** ile canlı, düşük gecikmeli görüntü (go2rtc üzerinden)
+- **WebRTC + MSE**, tek bir WebSocket üzerinden aynı anda denenir; go2rtc'nin kendi web arayüzüyle aynı öncelik sırasına göre hangisi önce oynatılabilir olursa o kullanılır — elle seçim gerekmez
 - **PWA** — telefon/tabletten "Ana Ekrana Ekle", çevrimdışı kabuk
 - **Grid** görünüm (1–8 sütun), çift tık ile solo, tekerlek/pinch ile zoom, sürükle ile pan
 - **PTZ** (ONVIF): 8 yön, zoom, presetler
