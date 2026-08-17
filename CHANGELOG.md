@@ -5,6 +5,12 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.4] - 2026-08-17
+
+### Düzeltildi
+- **Uygulamanın kendi kendine kilitlenmesine yol açan gerçek bir hata bulundu ve düzeltildi.** `go2rtc_proxy()`'deki MSE (`stream.mp4`) akışları sınırsız okuma zaman aşımıyla çalışıyor — bir canlı izleme sekmesi açık kaldığı sürece o bağlantı bir waitress worker thread'ini süresiz meşgul ediyordu. Sabit `threads=10` havuzuyla, birkaç MSE sekmesi (birden fazla cihazda açık kalan sekmeler, arka plandan dönüşte üst üste binen yeniden bağlanmalar) havuzu tüketince go2rtc ayarları, config editörü, log görüntüleyici, durum yoklaması dahil **her şey** boş thread bekleyerek asılı kalıyordu — "uygulama kendi kendine kitleniyor" hissi buradan geliyordu. 10 eşzamanlı MSE sekmesiyle gerçek `waitress.serve()` üzerinden yeniden üretildi (`/api/status` tamamen zaman aşımına uğradı) ve düzeltmeyle (thread havuzu 64'e çıkarıldı) aynı senaryo, hatta 40 eşzamanlı sekmeyle bile doğrulandı. Eski `threads=10` seçimi CPU context-switch endişesiyle yapılmıştı — ama bu thread'ler CPU'da çalışmıyor, neredeyse tamamen socket I/O'da bloke bekliyor, o endişe bu iş yüküne uymuyordu.
+- Sistem → Loglar artık go2rtc'nin logunu içermiyor — sadece RtcView'ın kendi servis kaydı **artı** kendi güncelleme/yeniden başlatma/reboot/go2rtc-yeniden-başlatma tetikleyici birimlerinin kayıtları (birleşik, zaman sıralı). "Şimdi Güncelle" ile yapılan bir güncelleme artık buradan görülebiliyor — önceden `rtcview-updater.service`'in çıktısı hiçbir log panelinde görünmüyordu.
+
 ## [4.2.3] - 2026-08-17
 
 ### Değişti
@@ -148,7 +154,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.3...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.4...HEAD
+[4.2.4]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.3...v4.2.4
 [4.2.3]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.2...v4.2.3
 [4.2.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.1...v4.2.2
 [4.2.1]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.0...v4.2.1

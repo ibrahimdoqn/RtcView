@@ -789,9 +789,22 @@ def create_app(config_path: str) -> Flask:
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
 
+    # RtcView's own service plus the root-owned trigger units it uses for
+    # self-update/restart/reboot/go2rtc-restart (see the trigger-file
+    # comments below) -- so a self-update run, a restart click, etc. show
+    # up here too. Deliberately NOT go2rtc.service: this is "RtcView's own
+    # activity", not a merged multi-service view.
+    _RTCVIEW_LOG_UNITS = [
+        "rtcview.service",
+        "rtcview-updater.service",
+        "rtcview-restart.service",
+        "rtcview-reboot.service",
+        "rtcview-go2rtc-restart.service",
+    ]
+
     @app.get("/api/system/logs")
     def api_system_logs():
-        return _journalctl_logs(["rtcview.service", "go2rtc.service"])
+        return _journalctl_logs(_RTCVIEW_LOG_UNITS)
 
     # ---------- Self-update (GitHub) ----------
     # The running app can't sudo out of itself — rtcview.service runs with
@@ -1333,9 +1346,23 @@ def main():
         app.run(host=host, port=port, debug=True, use_reloader=False)
     else:
         from waitress import serve
-        # 10 threads is plenty for a LAN camera dashboard on rk3399; 16
-        # was context-switch heavy for a 6-core SoC.
-        serve(app, host=host, port=port, threads=10)
+        # go2rtc_proxy()'s MSE/WHEP streaming endpoints (stream.mp4 etc.)
+        # use an infinite read timeout and hold their worker thread for the
+        # ENTIRE lifetime of the connection -- for MSE that's the whole
+        # time a live-view tile is open, not just one request/response. A
+        # small pool (this used to be 10, picked down from 16 over
+        # "context-switch heavy for a 6-core SoC" -- true for CPU-bound
+        # work, but these threads spend virtually all their time blocked
+        # on socket I/O, not runnable, so that reasoning doesn't apply
+        # here) gets exhausted by just a handful of MSE tiles: once every
+        # thread is pinned to a stream, every OTHER request -- go2rtc
+        # config, logs, status polling, playback -- queues behind them
+        # and the whole app looks frozen. Reproduced directly: 10
+        # concurrent MSE tiles + threads=10 reliably starves /api/status.
+        # A much larger pool costs little (idle/blocked threads are cheap
+        # — a few KB of resident memory each, no CPU) and gives real
+        # headroom for a handful of cameras across a few viewing devices.
+        serve(app, host=host, port=port, threads=64)
 
 
 if __name__ == "__main__":
