@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.9] - 2026-08-17
+
+### Düzeltildi
+- **4.3.0'daki go2rtc WebSocket-röle mimarisi geri alındı — üretimde regresyona yol açtı.** Bazı kameralarda WebRTC bağlantısı sürekli "ws closed" ile kopuyordu. Sandbox testlerinde iki gerçek tarayıcı arasındaki tam WebRTC el sıkışması da güvenilir tamamlanamamıştı (o zaman "ortama özgü" diye değerlendirilmişti) — üretimdeki tekrarlayan kopmalar bunun gerçek, mimariye özgü bir kararlılık sorunu olduğunu doğruladı, sandbox'a özgü bir kısıtlama değil. 4.2.8'deki durum (HTTP tabanlı proxy: MSE için düz `GET .../stream.mp4`, WebRTC için düzeltilmiş tek seferlik WHEP — go2rtc'nin kendi `stream.html`'inin doğrudan MSE bağlantısıyla zaten aynı temel yaklaşım) geri getirildi: `app/__init__.py` boşaltıldı (gevent monkey-patch kaldırıldı), `app/main.py` `waitress.serve()`'e döndü, `go2rtc_ws_relay()` ve ilişkili WebSocket oynatıcı kaldırıldı, `requirements.txt`'ten `gevent`/`Flask-Sock` çıkarıldı `waitress` geri eklendi, `scripts/install.sh`'ın bağımlılık kontrolü eski haline döndü.
+
 ## [4.2.8] - 2026-08-17
 
 ### Düzeltildi
