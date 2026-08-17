@@ -755,7 +755,7 @@ def create_app(config_path: str) -> Flask:
     def api_network_status():
         return jsonify(netmon.snapshot())
 
-    def _journalctl_logs(unit: str):
+    def _journalctl_logs(units):
         try: lines = max(5, min(2000, int(request.args.get("lines", 200))))
         except ValueError: lines = 200
         level = (request.args.get("level") or "").lower()
@@ -763,9 +763,18 @@ def create_app(config_path: str) -> Flask:
         prio_arg = []
         if level == "err":  prio_arg = ["-p", "3"]
         elif level == "warn": prio_arg = ["-p", "4"]
+        unit_args = []
+        for u in units:
+            unit_args += ["-u", u]
         try:
+            # Multiple -u flags merge those units' entries into one
+            # chronologically-interleaved stream -- rtcview and go2rtc are
+            # shown together as a single log rather than two separate
+            # panels, since a lot of what's worth correlating (a camera
+            # stream dropping, a client disconnect) shows up on both sides
+            # within the same second.
             r = subprocess.run(
-                ["journalctl", "-u", unit, "-n", str(lines),
+                ["journalctl", *unit_args, "-n", str(lines),
                  "--no-pager", "--output=short-iso"] + prio_arg,
                 capture_output=True, text=True, timeout=6,
             )
@@ -782,11 +791,7 @@ def create_app(config_path: str) -> Flask:
 
     @app.get("/api/system/logs")
     def api_system_logs():
-        return _journalctl_logs("rtcview.service")
-
-    @app.get("/api/go2rtc/logs")
-    def api_go2rtc_logs():
-        return _journalctl_logs("go2rtc.service")
+        return _journalctl_logs(["rtcview.service", "go2rtc.service"])
 
     # ---------- Self-update (GitHub) ----------
     # The running app can't sudo out of itself — rtcview.service runs with

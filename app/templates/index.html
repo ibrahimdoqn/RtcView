@@ -335,8 +335,8 @@
       <!-- go2rtc -->
       <div class="settings-tabpanel modal-body" data-tab="go2rtc">
         <small>RtcView kendi go2rtc'sini kurar ve yönetir — kamera akışlarını (streams) ve diğer
-          ayarları aşağıdaki yapılandırma editöründen düzenleyebilir, loglarını buradan
-          izleyebilirsiniz.</small>
+          ayarları aşağıdaki yapılandırma editöründen düzenleyebilirsiniz. go2rtc'nin logları,
+          RtcView'ın kendi loglarıyla birleşik olarak Sistem → Loglar'da görüntülenir.</small>
         <fieldset>
           <legend>go2rtc bağlantısı</legend>
           <label>Host <input id="s-g2-host" placeholder="127.0.0.1" /></label>
@@ -358,28 +358,6 @@
             <button type="button" id="s-g2-restart" class="btn danger small">go2rtc'yi Yeniden Başlat</button>
           </div>
           <div id="s-g2-config-status" class="usage-text"></div>
-        </fieldset>
-        <fieldset>
-          <legend>Loglar</legend>
-          <div class="row" style="gap:.4rem;margin-bottom:.4rem;flex-wrap:wrap;">
-            <select id="s-g2-log-lines" class="pb-select" style="min-height:32px;">
-              <option value="10">Son 10</option>
-              <option value="20">Son 20</option>
-              <option value="50">Son 50</option>
-              <option value="100">Son 100</option>
-              <option value="200" selected>Son 200</option>
-              <option value="500">Son 500</option>
-              <option value="1000">Son 1000</option>
-            </select>
-            <select id="s-g2-log-level" class="pb-select" style="min-height:32px;">
-              <option value="">Tümü</option>
-              <option value="warn">Uyarı+</option>
-              <option value="err">Hata</option>
-            </select>
-            <button type="button" id="s-g2-log-refresh" class="btn ghost small">Yenile</button>
-            <button type="button" id="s-g2-log-copy" class="btn ghost small">Panoya kopyala</button>
-          </div>
-          <pre id="s-g2-log-view" class="log-view">—</pre>
         </fieldset>
       </div>
 
@@ -518,7 +496,7 @@
                 <span class="sys-icon sys-icon-gray">📄</span>
                 <span class="sys-row-text">
                   <span class="sys-row-title">Loglar</span>
-                  <span class="sys-row-sub">Servis kayıtlarını görüntüle</span>
+                  <span class="sys-row-sub">RtcView + go2rtc kayıtlarını birleşik görüntüle</span>
                 </span>
               </summary>
               <div class="sys-row-body">

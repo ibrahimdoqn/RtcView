@@ -79,7 +79,7 @@ Ayarlar → **Sistem** sekmesinde, açılır panel şeklinde:
 - **Sıcaklık Sensörü** — okunacak sysfs `thermal_zone` yolu cihaza göre ayarlanabilir (her cihazda aynı numarada olmayabilir), Sistem Kaynakları panelinde gösterilir
 - **Güncelleme** — bkz. [Otomatik Güncelleme](#otomatik-güncelleme-github)
 - **Yeniden Başlatma** — tek tuşla yalnızca RtcView servisini (kameralar birkaç saniyede geri gelir) veya cihazın tamamını yeniden başlatır
-- **Loglar** — servis kayıtlarını (journalctl) filtreli görüntüleme + panoya kopyalama
+- **Loglar** — RtcView + go2rtc servis kayıtlarını (journalctl) birleşik, zaman sırasına göre iç içe geçmiş, filtreli görüntüleme + panoya kopyalama
 
 ### Otomatik Güncelleme (GitHub)
 - Ayarlar → Sistem → **Güncelleme** panelinde mevcut sürüm (git commit) gösterilir ve tek bir **"Şimdi Güncelle"** butonuyla GitHub'daki en son sürüm çekilip kurulur, servis yeniden başlatılır
@@ -224,7 +224,8 @@ Home Assistant entegrasyonunun tamamı `app/homeassistant.py` içindedir (WebSoc
 - `GET /api/status` · `GET /api/config`
 - `GET /api/settings` · `POST /api/settings`
 - `GET /api/go2rtc/settings` · `POST /api/go2rtc/settings` · `GET /api/go2rtc/streams`
-- `GET /api/go2rtc/config` · `POST /api/go2rtc/config` · `POST /api/go2rtc/restart` · `GET /api/go2rtc/logs`
+- `GET /api/go2rtc/config` · `POST /api/go2rtc/config` · `POST /api/go2rtc/restart`
+- `GET /api/system/logs` — RtcView + go2rtc kayıtları birleşik (journalctl'e birden fazla `-u` verilir), Sistem sekmesindeki tek log görüntüleyici bunu kullanır
 
 **Kameralar**
 - `GET /api/cameras` · `POST /api/cameras`

@@ -1828,7 +1828,6 @@
     } catch (e) {
       toast("go2rtc.yaml yüklenemedi: " + e.message, "err");
     }
-    refreshGo2rtcLogs();
   }
   $("#s-save-go2rtc").addEventListener("click", async () => {
     if (!_g2rtcLoaded){ toast("go2rtc ayarları yüklenmedi — sekmeyi kapatıp tekrar açın", "err"); return; }
@@ -1862,25 +1861,6 @@
       toast("go2rtc yeniden başlatılıyor", "ok");
     } catch (e) { toast("Başarısız: " + e.message, "err"); }
   });
-  async function refreshGo2rtcLogs(){
-    const view = $("#s-g2-log-view"); if (!view) return;
-    view.classList.remove("err");
-    view.textContent = "Yükleniyor…";
-    try {
-      const url = `/api/go2rtc/logs?lines=${encodeURIComponent($("#s-g2-log-lines").value)}`
-                + `&level=${encodeURIComponent($("#s-g2-log-level").value)}`;
-      const r = await api.get(url);
-      view.textContent = r.log || "(boş)";
-      view.scrollTop = view.scrollHeight;
-    } catch (e) {
-      view.classList.add("err");
-      view.textContent = "Hata: " + e.message;
-    }
-  }
-  $("#s-g2-log-refresh").addEventListener("click", refreshGo2rtcLogs);
-  $("#s-g2-log-lines").addEventListener("change", refreshGo2rtcLogs);
-  $("#s-g2-log-level").addEventListener("change", refreshGo2rtcLogs);
-  $("#s-g2-log-copy").addEventListener("click", () => _copyElementText("#s-g2-log-view"));
 
   async function loadKayitTab(){
     try {

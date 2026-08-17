@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.3] - 2026-08-17
+
+### Değişti
+- go2rtc'nin logları artık ayrı bir panelde değil, Ayarlar → Sistem → Loglar'daki mevcut RtcView log görüntüleyicisiyle **birleşik** gösteriliyor (`journalctl -u rtcview.service -u go2rtc.service`, zaman sırasına göre iç içe geçmiş tek akış) — iki ayrı log listesi yerine tek yer. Ayarlar → go2rtc sekmesindeki ayrı log paneli (ve buna özel `GET /api/go2rtc/logs` ucu) kaldırıldı; go2rtc sekmesinde bağlantı ayarları ve `go2rtc.yaml` editörü aynı şekilde duruyor.
+
 ## [4.2.2] - 2026-08-17
 
 ### Eklendi
@@ -143,7 +148,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.2...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.3...HEAD
+[4.2.3]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.2...v4.2.3
 [4.2.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.1...v4.2.2
 [4.2.1]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.0...v4.2.1
 [4.2.0]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.2...v4.2.0
