@@ -971,6 +971,42 @@
     state.players.delete(id);
   }
 
+  // -------- Resume live view after the tab/app was backgrounded --------
+  // Switching away (another tab, app-switcher, phone lock) and back can
+  // leave grid tiles frozen on a stale frame even though nothing ever
+  // reported an error: mobile browsers commonly suspend video decode
+  // and/or the underlying connection while hidden without firing any
+  // event that either transport's own recovery path listens for —
+  // WHEP's oniceconnectionstatechange (line ~867) only fires for an
+  // actual ICE state change, which a suspended-not-dropped connection
+  // may never produce, and MSE (line ~888) has no ongoing health check
+  // at all once its initial connect resolves. Detect the resume instead
+  // of the failure: on returning to a visible/foregrounded page, just
+  // restart every live tile's player — cheap (WHEP/MSE reconnect in well
+  // under a second on a healthy network) and unconditionally fixes a
+  // stuck frame regardless of which transport or why it stalled.
+  let _hiddenAt = 0;
+  const VISIBILITY_STALE_MS = 2000; // a quick app-switcher flick shouldn't force a reconnect
+  function _resumeLiveView(){
+    const toRestart = Array.from(state.players.values());
+    for (const p of toRestart){
+      if (!p.cam || !document.body.contains(p.tile)) continue;
+      stopPlayer(p.cam.id);
+      queueStart(p.cam, p.tile);
+    }
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden){
+      _hiddenAt = Date.now();
+    } else if (_hiddenAt && (Date.now() - _hiddenAt) >= VISIBILITY_STALE_MS){
+      _resumeLiveView();
+    }
+  });
+  // iOS Safari's back-forward-cache restore doesn't always fire a clean
+  // visibilitychange — pageshow with persisted=true is the reliable
+  // signal there. Safe to call unconditionally alongside the above.
+  window.addEventListener("pageshow", (e) => { if (e.persisted) _resumeLiveView(); });
+
   // -------- Selection / solo --------
   function selectCamera(id){
     state.selectedId = id;

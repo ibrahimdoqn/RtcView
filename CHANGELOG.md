@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-08-17
+
+### Düzeltildi
+- Anasayfadaki canlı izleme, sekme/uygulama arka plana alınıp geri dönüldüğünde (özellikle mobilde) donuk bir karede takılı kalabiliyordu — hiçbir hata bildirilmediği için ne WHEP'in ICE durum değişikliği ne de mevcut yeniden bağlanma mantığı bunu fark ediyordu. Sebep: tarayıcı arka plandayken video decode'unu ve/veya bağlantıyı sessizce askıya alabiliyor; WHEP'in `oniceconnectionstatechange`'i gerçek bir ICE durumu değişikliği olmadan hiç tetiklenmeyebiliyor, MSE'nin ise ilk bağlantı kurulduktan sonra hiçbir sağlık kontrolü yok. Artık sayfa görünür hale geldiğinde (`visibilitychange`, ayrıca iOS Safari'nin geri-ileri önbelleği için `pageshow`) — arka planda en az 2 saniye kaldıysa (kısa bir uygulama geçişinde gereksiz yeniden bağlanmayı önlemek için) — ızgaradaki her canlı oynatıcı otomatik olarak yeniden başlatılıyor.
+
 ## [4.2.0] - 2026-08-16
 
 ### Eklendi
@@ -133,7 +138,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 - Sistem & Bakım paneli: sistem kaynakları, kayıt bekçisi (bellek sızıntısı koruması), sıcaklık sensörü, servis/log görüntüleme
 - Tek tuşla GitHub üzerinden otomatik güncelleme, servis/cihaz yeniden başlatma — hepsi tetik-dosyası + ayrı root-yetkili systemd birimi deseniyle, ana servis hiç `sudo` çalıştırmadan
 
-[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.0...HEAD
+[Unreleased]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.1...HEAD
+[4.2.1]: https://github.com/ibrahimdoqn/RtcView/compare/v4.2.0...v4.2.1
 [4.2.0]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.2...v4.2.0
 [4.1.2]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.1...v4.1.2
 [4.1.1]: https://github.com/ibrahimdoqn/RtcView/compare/v4.1.0...v4.1.1
