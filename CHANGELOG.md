@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.6] - 2026-08-17
+
+### Değişti
+- go2rtc proxy'sindeki (MSE `stream.mp4` vb.) ölü istemci tespiti artık sadece "bir sonraki yazma başarısız olunca fark et" yöntemine dayanmıyor — bu, temiz bağlantı kesmelerinde hızlı çalışsa da, "sessiz" ağ kopmalarında (kernel gönderim tamponları yazmaları bir süre yutabiliyor, OS'nin TCP zaman aşımını fark etmesi saniyeler-dakikalar sürebiliyor) gecikebiliyordu. Artık waitress'in kendi `channel_request_lookahead` mekanizması etkinleştirildi (`channel_request_lookahead=1`); waitress'in bağlantıyı izleyen kendi I/O thread'i istemcinin soketi kapattığını, o an istemciye yazan/bekleyen worker thread'den bağımsız olarak anında görüyor ve bunu isteğin ortamına (`waitress.client_disconnected`) canlı bir kontrol olarak koyuyor. Proxy artık her upstream chunk'ında bu kontrolü yapıp gitmiş istemciyi bir yazma denemesi beklemeden fark ediyor ve upstream go2rtc bağlantısını hemen kapatıyor — gerçek `waitress.serve()` üzerinden, ham soket ile ani bağlantı kesmesi simüle edilerek doğrulandı (upstream bağlantı sayısı, yazma hatası beklenmeden bir chunk aralığı içinde 0'a düşüyor).
+
 ## [4.2.5] - 2026-08-17
 
 ### Değişti

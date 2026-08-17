@@ -1074,9 +1074,25 @@ def create_app(config_path: str) -> Flask:
         # Bir MSE oynatması iptal edildiğinde iter_content generator'ı GC'ye
         # bırakılırsa upstream soketi de sarkıyor — istemci bağlantı kestikçe
         # RAM/soket birikiyor. try/finally + close() ile her koşulda kapat.
+        #
+        # Without the check below, this loop only discovers a gone client
+        # when it next tries to WRITE to it and that write fails -- which
+        # can lag well behind the client actually disconnecting (kernel
+        # send buffers can silently absorb writes for a while, and a
+        # non-graceful drop needs the OS's own TCP timeout to surface at
+        # all). waitress inserts a live, actively-updated disconnect
+        # check into every request's WSGI environ specifically for this
+        # long-streaming-response case (see main() below,
+        # channel_request_lookahead) -- its own I/O thread keeps watching
+        # the client socket for a close even while THIS thread is busy
+        # elsewhere, so checking it here notices a gone client on the very
+        # next upstream chunk instead of waiting on our own write to fail.
+        client_disconnected = request.environ.get("waitress.client_disconnected")
         def _pump():
             try:
                 for chunk in r.iter_content(chunk_size=8192):
+                    if client_disconnected and client_disconnected():
+                        break
                     if chunk:
                         yield chunk
             finally:
@@ -1364,7 +1380,14 @@ def main():
         # A much larger pool costs little (idle/blocked threads are cheap
         # — a few KB of resident memory each, no CPU) and gives real
         # headroom for a handful of cameras across a few viewing devices.
-        serve(app, host=host, port=port, threads=64)
+        #
+        # channel_request_lookahead=1 is what makes waitress actually
+        # maintain the "waitress.client_disconnected" environ check
+        # go2rtc_proxy() relies on (see its comment) -- 0 (the default)
+        # leaves that check permanently stale/useless. This is waitress's
+        # own documented mechanism for exactly this "detect a gone client
+        # during a long-streaming response" case, not a workaround.
+        serve(app, host=host, port=port, threads=64, channel_request_lookahead=1)
 
 
 if __name__ == "__main__":
