@@ -66,11 +66,19 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
   // -------- API --------
+  // Plain fetch() has no overall timeout — if a request never gets a
+  // response (a hung backend thread, a dead connection nobody tore down),
+  // an unawaited caller just hangs forever with no error, no retry, no
+  // feedback. That's what made a single stuck request able to leave
+  // init() (see _loadConfigWithRetry below) stuck indefinitely instead of
+  // failing fast into its own retry loop. AbortSignal.timeout() bounds
+  // every call the same way a browser's own connection timeout would.
+  const API_TIMEOUT_MS = 8000;
   const api = {
-    async get(u){const r=await fetch(u); if(!r.ok) throw new Error(await r.text()); return r.json();},
-    async post(u,b){const r=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{})}); if(!r.ok) throw new Error(await r.text()); return r.json();},
-    async put(u,b){const r=await fetch(u,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{})}); if(!r.ok) throw new Error(await r.text()); return r.json();},
-    async del(u){const r=await fetch(u,{method:"DELETE"}); if(!r.ok) throw new Error(await r.text()); return r.json();},
+    async get(u){const r=await fetch(u, {signal: AbortSignal.timeout(API_TIMEOUT_MS)}); if(!r.ok) throw new Error(await r.text()); return r.json();},
+    async post(u,b){const r=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{}),signal: AbortSignal.timeout(API_TIMEOUT_MS)}); if(!r.ok) throw new Error(await r.text()); return r.json();},
+    async put(u,b){const r=await fetch(u,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{}),signal: AbortSignal.timeout(API_TIMEOUT_MS)}); if(!r.ok) throw new Error(await r.text()); return r.json();},
+    async del(u){const r=await fetch(u,{method:"DELETE",signal: AbortSignal.timeout(API_TIMEOUT_MS)}); if(!r.ok) throw new Error(await r.text()); return r.json();},
   };
 
   const toast = (msg, kind="") => {
@@ -852,10 +860,23 @@
     // Both transports go through our Flask /go2rtc HTTP proxy so the
     // browser never needs a direct connection to go2rtc.
     if (prefer === "mse"){
-      _startMSE(cam, tile, p).then(() => _tileMode(tile, "mse")).catch(e => {
+      // Must await this, not fire-and-forget: startPlayer() is what
+      // _drainStartQueue() awaits to know a tile has settled before
+      // starting the next one (_MAX_CONCURRENT_STARTS). Returning here
+      // without awaiting _startMSE() resolved startPlayer()'s own promise
+      // immediately, so every MSE tile "settled" instantly regardless of
+      // whether its connection actually had — the throttle did nothing
+      // for MSE-mode devices and every tile's fMP4 connection opened at
+      // once.
+      try {
+        await _startMSE(cam, tile, p);
+        _tileMode(tile, "mse");
+        p.state = "live"; if (msg) msg.textContent = "";
+        refreshStatusDots();
+      } catch (e){
         p.state = "err"; if (msg) msg.textContent = "MSE: " + e.message;
         refreshStatusDots(); maybeReconnect(cam, tile);
-      });
+      }
       return;
     }
     // "rtc" — WHEP only, no automatic MSE fallback

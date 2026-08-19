@@ -5,6 +5,14 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.10] - 2026-08-19
+
+### Düzeltildi
+- **Sayfa yüklemesinin ara sıra 15-20 saniye sürmesine yol açan iki gerçek kilit/kaynak sorunu giderildi.** `RecordingManager`, kayıt döngüsünü (`_tick()`) ve manuel/yeniden-yükleme isteklerini (`reload_camera()`, `manual_start()`) yöneten kilidi (`self._lock`), `CameraRecorder.stop()`'un ffmpeg'i SIGTERM→SIGINT→SIGKILL ile kapatırken alabileceği ~7 saniyeye kadar süre boyunca elinde tutuyordu — bu sürede `/api/recording/status`'u (her sayfa yüklemesinde çağrılır) dahil aynı kilidi bekleyen her şey donuyordu. Kilidi `stop()` gibi yavaş işlemler boyunca tutmak yerine, artık bir "meşgul kümesi" (`self._busy`) kilidin altında hızlıca ayrılıp asıl yavaş `stop()` çağrısı kilidin DIŞINDA yapılıyor — aynı kamera için eşzamanlı bir yeniden başlatma/durdurma isteğini önceki (görev #70'te düzeltilen) çifte-kayıt/yetim kayıt yarış durumuna düşürmeden. Kapsamlı eşzamanlılık testleriyle doğrulandı (kontrollü yarış senaryosu + 6 iş parçacıklı, 6 saniyelik sürekli çekişme stres testi): `status()` çağrıları artık en kötü durumda bile milisaniyeler içinde dönüyor, sıfır ihlal.
+- `storage.py`'deki periyodik temizlik turu (`purge_once()`, varsayılan her 60 saniyede bir), o turda hiçbir segment silinmemiş olsa bile her seferinde `PRAGMA incremental_vacuum` çalıştırıyordu — gerçek disk G/Ç'si gerektiren bu işlem, neredeyse her Storage okumasının (segment listesi, istatistikler, sağlık durumu, bildirimler) paylaştığı aynı kilidin altında çalışıyordu. Artık yalnızca o turda gerçekten segment silinmişse çalışıyor; 1 saniyeden uzun sürerse uyarı logu ekleniyor.
+- Frontend `api` yardımcısına (`app.js`) her istek için 8 saniyelik bir üst sınır (`AbortSignal.timeout`) eklendi — daha önce `fetch()` hiçbir genel zaman aşımına sahip değildi, tek bir askıda kalan istek `init()`'i süresiz kilitleyebiliyor, kendi yeniden deneme mantığına hiç girmiyordu.
+- `startPlayer()`'ın MSE dalı, `_startMSE(...)`'i beklemeden (fire-and-forget) dönüyordu — bu, `_drainStartQueue()`'nun eşzamanlı oynatıcı başlatma sınırlamasını (`_MAX_CONCURRENT_STARTS`) MSE modundaki cihazlar için etkisiz kılıyordu. Artık düzgün şekilde `await` ediliyor.
+
 ## [4.2.9] - 2026-08-17
 
 ### Düzeltildi

@@ -562,6 +562,12 @@ class RecordingManager:
         self.storage = storage
         self._recs: dict[str, CameraRecorder] = {}
         self._lock = threading.RLock()
+        # cam_ids currently mid stop()/restart() *outside* self._lock (see
+        # _claim_busy/_release_busy) -- reserves a cam_id against a second
+        # concurrent operation without holding the manager-wide lock for
+        # the ~7s a stop() can take. See _tick()'s comment for the race
+        # this replaces holding the lock across stop() to prevent.
+        self._busy: set[str] = set()
         self._stop = threading.Event()
         self._sup_thread: Optional[threading.Thread] = None
         self._watch_thread: Optional[threading.Thread] = None
@@ -591,21 +597,51 @@ class RecordingManager:
     def reload_camera(self, cam_id: str):
         """Called when a camera's config changed; kill and re-evaluate.
 
-        Holds the manager lock across both the pop AND the stop, not just
-        the pop. _tick() also takes this lock to read/write self._recs; if
-        the pop released it before r.stop() (which can take up to ~7s to
-        walk terminate -> SIGINT -> SIGKILL) finished, a tick landing in
-        that window sees cam_id as absent, wants it running, and starts a
-        brand-new CameraRecorder while the old ffmpeg process is still
-        alive — two processes writing the exact same second-resolution
-        filename. A few seconds of the supervisor waiting for this lock is
-        a fair trade for that never happening.
+        r.stop() can take up to ~7s (terminate -> SIGINT -> SIGKILL). This
+        used to run inside self._lock, on the reasoning that if the pop
+        released it before stop() finished, a tick landing in that window
+        would see cam_id as absent, want it running, and start a brand-new
+        CameraRecorder while the old ffmpeg process was still alive — two
+        processes writing the exact same second-resolution filename. True,
+        but holding the *manager-wide* lock for those ~7s also blocked
+        every unrelated camera's supervisor/watcher work and every HTTP
+        request reading recorder state (e.g. /api/recording/status) behind
+        this one camera's shutdown — a real, reported cause of the whole
+        page intermittently taking 15-20s to load.
+
+        _busy (see _claim_busy/_release_busy) gets the same safety more
+        cheaply: reserve cam_id *before* releasing the lock, so a tick
+        landing mid-stop sees the reservation (not an absent recorder) and
+        defers rather than building a second one. The reservation is what
+        has to be atomic with the pop, not the stop() itself.
         """
         with self._lock:
+            if not self._claim_busy(cam_id):
+                return  # another operation already owns this cam_id right now
             r = self._recs.pop(cam_id, None)
-            if r:
-                try: r.stop()
-                except Exception: pass
+            if not r:
+                self._release_busy(cam_id)
+                return
+        try:
+            r.stop()
+        except Exception:
+            pass
+        finally:
+            self._release_busy(cam_id)
+
+    def _claim_busy(self, cam_id: str) -> bool:
+        """Must be called under self._lock. True if cam_id was free and is
+        now reserved for a stop()/restart() the caller is about to run
+        outside the lock; False if something else already owns it (caller
+        should skip/defer, not act on this cam_id right now)."""
+        if cam_id in self._busy:
+            return False
+        self._busy.add(cam_id)
+        return True
+
+    def _release_busy(self, cam_id: str):
+        with self._lock:
+            self._busy.discard(cam_id)
 
     def reload_all(self):
         """Debounced full reload. Called from several settings endpoints
@@ -636,6 +672,20 @@ class RecordingManager:
         # this same recorder out from under the start() call below (same
         # class of race as _tick(), see its comment).
         with self._lock:
+            if cam_id in self._busy:
+                # reload_camera() (or a tick's restart/stop) is mid stop()
+                # for this exact camera right now and may have already
+                # popped it out of self._recs (see _claim_busy). Deciding
+                # from self._recs.get(cam_id) here would see it as absent
+                # and build+register a second, independent recorder while
+                # the old one is still shutting down -- the same
+                # double-recording/orphan race _tick()'s busy check exists
+                # to prevent. There's nowhere to hang "start when the
+                # ongoing op finishes" off of without a recorder object to
+                # hang it on, so this has to reject rather than defer;
+                # POSTing again a moment later (once the in-flight
+                # stop/restart clears) succeeds normally.
+                return False
             r = self._recs.get(cam_id)
             if not r:
                 r = self._build(cam)
@@ -719,32 +769,64 @@ class RecordingManager:
         recording_globally_on = rc.get("enabled", True)
         now = time.time()
         cams = self.cfg.get_cameras()
+        to_stop = []  # [(cam_id, recorder)], stopped outside the lock below
         with self._lock:
             active_ids = set(self._recs.keys())
             cam_ids = {c["id"] for c in cams}
             # Drop recorders for deleted cameras.
             for gone in active_ids - cam_ids:
+                if not self._claim_busy(gone):
+                    continue  # another operation already owns it; next tick will retry
                 r = self._recs.pop(gone, None)
                 if r:
-                    try: r.stop()
-                    except Exception: pass
+                    to_stop.append((gone, r))
+                else:
+                    self._release_busy(gone)
+        for gone, r in to_stop:
+            try: r.stop()
+            except Exception: pass
+            finally: self._release_busy(gone)
+
         for cam in cams:
-            # The read of self._recs and every start()/stop() decided from
-            # it must happen as one atomic unit under self._lock — not just
-            # the dict access. reload_camera() also holds this lock across
-            # its own pop+stop for exactly this reason (see its docstring);
-            # previously this loop only took the lock around inserting a
-            # brand-new recorder, so a reload_camera() racing in in between
+            cam_id = cam["id"]
+            # The read of self._recs and the DECISION made from it must
+            # happen as one atomic unit under self._lock — not just the
+            # dict access — otherwise a reload_camera() racing in between
             # this loop's unlocked `self._recs.get(...)` read and its later
             # start()/stop() call could pop the SAME recorder out from
-            # under it. The old recorder then got a start() call after it
-            # was no longer tracked anywhere — an orphaned ffmpeg process
-            # nothing could ever stop again, with the very next tick
-            # building a second, independently-tracked recorder for the
-            # same camera (double recording).
+            # under it: the old recorder then gets a start() call after
+            # it's no longer tracked anywhere (an orphaned ffmpeg process
+            # nothing can ever stop again), while the very next tick builds
+            # a second, independently-tracked recorder for the same camera
+            # (double recording).
+            #
+            # What must NOT happen under the lock is the actual stop() a
+            # restart needs -- it can take ~7s (terminate -> SIGINT ->
+            # SIGKILL), and holding the manager-wide lock for that blocks
+            # every other camera's tick plus any HTTP request reading
+            # recorder state (e.g. /api/recording/status), which is exactly
+            # what made the whole page intermittently take 15-20s to load.
+            # _claim_busy reserves cam_id for the slow part *before* the
+            # lock is released, so a concurrent reload_camera() or another
+            # tick sees the reservation (not an absent/idle recorder) and
+            # defers instead of racing it.
+            do_restart = False
+            do_stop = False
             with self._lock:
+                if cam_id in self._busy:
+                    # Something else (reload_camera(), or this same loop's
+                    # restart/stop branch below on a previous cam_id — see
+                    # _claim_busy) is mid stop() for this camera right now,
+                    # possibly having already popped it out of self._recs.
+                    # Deciding anything from self._recs.get(cam_id) here
+                    # would see it as absent and build+start a replacement
+                    # while the old one is still shutting down -- the exact
+                    # double-recording/orphan race this whole scheme exists
+                    # to prevent. Defer; the next tick (SUPERVISOR_INTERVAL
+                    # later) re-evaluates once the busy flag clears.
+                    continue
                 want, trigger = (False, "")
-                r = self._recs.get(cam["id"])
+                r = self._recs.get(cam_id)
                 # The global switch gates everything, including manual —
                 # it previously only gated the record_mode-based branch
                 # below, so flipping recording.enabled off system-wide
@@ -760,15 +842,29 @@ class RecordingManager:
                     if r is None:
                         r = self._build(cam)
                         if not r: continue
-                        self._recs[cam["id"]] = r
-                    if not r.is_running(): r.start(trigger=trigger)
+                        self._recs[cam_id] = r
+                    if not r.is_running():
+                        r.start(trigger=trigger)  # fast (just Popen) -- fine under the lock
                     else:
                         r.trigger = trigger
                         if r._check_memory() or r._is_stale() or r._check_day_rollover():
-                            r.stop()
-                            r.start(trigger=trigger)
+                            if self._claim_busy(cam_id):
+                                do_restart = True
                 else:
-                    if r and r.is_running(): r.stop()
+                    if r and r.is_running():
+                        if self._claim_busy(cam_id):
+                            do_stop = True
+            if do_restart:
+                try:
+                    r.stop()
+                    r.start(trigger=trigger)
+                finally:
+                    self._release_busy(cam_id)
+            elif do_stop:
+                try:
+                    r.stop()
+                finally:
+                    self._release_busy(cam_id)
 
     def _watcher_loop(self):
         while not self._stop.wait(WATCHER_INTERVAL):

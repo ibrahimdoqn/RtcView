@@ -926,15 +926,29 @@ class Storage:
         # No-op unless auto_vacuum=INCREMENTAL was set at creation time
         # (_ensure_root only does that for a brand-new database — an
         # existing one keeps whatever mode it already had, see there for
-        # why). Harmless to always call: SQLite documents incremental_
-        # vacuum as a no-op when auto_vacuum isn't enabled. A small batch
-        # every purge tick reclaims space from all the deletes above
-        # without the latency spike a full VACUUM would cause.
-        try:
-            with self._lock:
-                self._db.execute("PRAGMA incremental_vacuum(200)")
-        except Exception as e:
-            log.debug("incremental_vacuum failed: %s", e)
+        # why). SQLite documents incremental_vacuum as a no-op when
+        # auto_vacuum isn't enabled, but NOT as a no-op just because
+        # nothing was actually freed this tick — it still does real
+        # (if usually small) disk I/O to walk/rewrite the free-page list,
+        # while holding self._lock, the same lock every other Storage
+        # method needs (list_segments, stats(), health(), notifications,
+        # playback…). Unconditionally on every purge tick (default every
+        # 60s, whether or not anything was deleted) that I/O landing badly
+        # on SD-card storage was a real, reported cause of the whole app
+        # intermittently stalling for several seconds. Only run it when
+        # this tick actually deleted something — most ticks delete
+        # nothing — and log slow ones so a stall like this is diagnosable
+        # from journalctl instead of invisible.
+        if removed:
+            try:
+                t0 = time.time()
+                with self._lock:
+                    self._db.execute("PRAGMA incremental_vacuum(200)")
+                dt = time.time() - t0
+                if dt > 1.0:
+                    log.warning("incremental_vacuum held storage lock for %.2fs", dt)
+            except Exception as e:
+                log.debug("incremental_vacuum failed: %s", e)
 
         if removed:
             log.info("purged %d segments (%.2f MB freed)", removed, freed / 1e6)
