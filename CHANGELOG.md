@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.2.11] - 2026-08-19
+
+### Değişti
+- **"Diski yeniden tara" artık arka planda çalışıyor ve gerçek ilerleme gösteriyor.** Önceki hâli, taranan her dosya için ayrı bir SQL sorgusu (var mı yok mu kontrolü) ve yeni bulunan her dosya için ayrı bir INSERT işlemi yapıyordu — büyük bir arşivde (on binlerce segment) bu, gerçek disk I/O'suna göre gereksiz derecede yavaştı ve tüm bu süre boyunca isteği tek bir HTTP çağrısı içinde (frontend'in artık 8 saniyelik zaman aşımına tabi `fetch` çağrısıyla) bekletiyordu — büyük bir taramada buton ya hiçbir şey yapmıyormuş gibi görünüyor ya da tarama arka planda devam ederken sahte bir "başarısız" hatası veriyordu. Artık: (1) mevcut dosya yolları tek bir sorguyla belleğe alınıp dosya başına sorgu yerine bellek içi karşılaştırma yapılıyor, (2) yeni kayıtlar tek tek değil, toplu (`executemany`, tek transaction) olarak yazılıyor, (3) tüm tarama arka plan iş parçacığında çalışıyor ve `/api/recording/rescan/status` üzerinden anlık ilerleme (sayılan/toplam dosya, faz: sayılıyor/taranıyor/temizleniyor) döndürüyor. Ayarlar → Kayıt & Depolama'da buton artık gerçek yüzdesel bir ilerleme çubuğu, canlı "X/Y dosya" sayacı ve net bir tamamlandı/başarısız durumu gösteriyor.
+
 ## [4.2.10] - 2026-08-19
 
 ### Düzeltildi

@@ -117,6 +117,19 @@ class Storage:
         # visible (and purgeable) again, instead of silently sitting there
         # forever until someone notices and clicks "Diski yeniden tara".
         self._orphan_suspected = False
+        # "Diski yeniden tara" state, polled by the frontend instead of
+        # blocking a single HTTP request for as long as the walk takes
+        # (can be minutes on a large archive over slow SD-card/eMMC
+        # storage) — see start_rescan_async()/get_rescan_status(). A
+        # separate lock from self._lock: status polls must stay instant
+        # even while a scan is mid-flight holding self._lock for a batch
+        # insert.
+        self._rescan_lock = threading.Lock()
+        self._rescan_state: dict = {
+            "running": False, "phase": "idle", "total": 0, "scanned": 0,
+            "added": 0, "removed": 0, "done": True, "ok": True, "error": None,
+            "started_at": None, "finished_at": None,
+        }
         self._ensure_root()
 
     # ---------- Root / DB ----------
@@ -955,53 +968,164 @@ class Storage:
         return {"removed": removed, "freed_bytes": freed}
 
     # ---------- Rescan (index rebuild from disk) ----------
-    def rescan(self) -> dict:
+    def rescan(self, progress_cb=None) -> dict:
         """Walk the storage root and register any MP4 not already in the
         index, then drop any indexed row whose file no longer exists on
         disk (deleted outside the app — manual rm, an external script).
-        This is the manual "silinen dosyaları DB'den temizle" action from
-        Ayarlar; nothing else currently reconciles a file removed that
-        way."""
+        This is the manual "Diski yeniden tara" action from Ayarlar (also
+        run automatically by purge_once() to recover a suspected orphan);
+        nothing else currently reconciles a file removed that way.
+
+        Batches its DB work rather than one round-trip per file: on an
+        archive with tens of thousands of segments, checking each file's
+        existence with its own SELECT — and each new file with its own
+        autocommit INSERT, each serialized on self._lock — made a full
+        rescan far slower than the actual disk I/O required, and held
+        self._lock (shared with almost every other Storage read) for a
+        long string of tiny transactions instead of a few big ones.
+
+        progress_cb, when given, is called with keyword updates
+        (phase/total/scanned/added) as scanning proceeds, so a caller
+        (start_rescan_async) can expose live progress instead of this
+        being an opaque multi-minute black box on a large archive.
+        """
         from app.recorder import _parse_fname_ts   # local import to avoid cycle
         snap_root = self.snapshots_root().resolve()
         root = self.root()
+
+        def _files():
+            for p in root.rglob("*.mp4"):
+                if not p.is_file(): continue
+                try:
+                    if snap_root in p.parents: continue
+                except Exception:
+                    pass
+                yield p
+
+        # A quick first pass just to get a real denominator for progress
+        # (no stat()/DB work, just directory listing) — doubles the
+        # directory-read I/O but that's cheap next to the stat+DB work
+        # below, and a real percentage is the whole point of this vs. the
+        # old fire-and-forget button.
+        if progress_cb: progress_cb(phase="counting")
+        total = sum(1 for _ in _files())
+        if progress_cb: progress_cb(phase="scanning", total=total)
+
+        # Load every already-indexed path once instead of one SELECT per
+        # file.
+        with self._lock:
+            existing = {row[0] for row in self._db.execute("SELECT path FROM segments").fetchall()}
+
+        new_rows: list[tuple] = []
+
+        def _flush():
+            if not new_rows: return
+            with self._lock:
+                self._db.execute("BEGIN")
+                try:
+                    self._db.executemany(
+                        "INSERT OR IGNORE INTO segments"
+                        " (cam_id, path, started_at, ended_at, duration, bytes, trigger, playable)"
+                        " VALUES (?,?,?,?,?,?,?,?)",
+                        new_rows,
+                    )
+                    self._db.execute("COMMIT")
+                except Exception:
+                    self._db.execute("ROLLBACK")
+                    raise
+            new_rows.clear()
+
         found = 0; added = 0
-        for p in root.rglob("*.mp4"):
-            if not p.is_file(): continue
-            try:
-                if snap_root in p.parents: continue
-            except Exception:
-                pass
+        for p in _files():
             found += 1
             abs_p = str(p.resolve())
-            with self._lock:
-                exists = self._db.execute("SELECT 1 FROM segments WHERE path = ?", (abs_p,)).fetchone()
-            if exists: continue
-            try:
-                rel = p.relative_to(root)
-                cam_id = rel.parts[0] if rel.parts else "unknown"
-            except ValueError:
-                cam_id = "unknown"
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            fts = _parse_fname_ts(p)
-            started = fts if fts is not None else max(0.0, st.st_mtime - 1)
-            self.register_segment(cam_id, abs_p, started, st.st_mtime, trigger="rescan")
-            added += 1
+            if abs_p not in existing:
+                try:
+                    rel = p.relative_to(root)
+                    cam_id = rel.parts[0] if rel.parts else "unknown"
+                except ValueError:
+                    cam_id = "unknown"
+                try:
+                    st = p.stat()
+                except OSError:
+                    st = None
+                if st is not None:
+                    fts = _parse_fname_ts(p)
+                    started = fts if fts is not None else max(0.0, st.st_mtime - 1)
+                    duration = max(0.0, st.st_mtime - started)
+                    # trigger="rescan", playable defaults to 1 (only ever
+                    # flagged 0 on a positive, verified failure — see
+                    # register_segment) — matches its normal behavior.
+                    new_rows.append((cam_id, abs_p, started, st.st_mtime, duration, st.st_size, "rescan", 1))
+                    added += 1
+                    if len(new_rows) >= 200:
+                        _flush()
+            if progress_cb and found % 25 == 0:
+                progress_cb(scanned=found, added=added)
+        _flush()
+        if progress_cb: progress_cb(scanned=found, added=added, phase="cleaning")
 
         with self._lock:
             all_paths = self._db.execute("SELECT id, path FROM segments").fetchall()
         orphaned = [sid for sid, p in all_paths if not os.path.exists(p)]
         if orphaned:
             with self._lock:
-                self._db.executemany("DELETE FROM segments WHERE id = ?",
-                                     [(sid,) for sid in orphaned])
-            self._invalidate_caches()
+                self._db.execute("BEGIN")
+                try:
+                    self._db.executemany("DELETE FROM segments WHERE id = ?",
+                                         [(sid,) for sid in orphaned])
+                    self._db.execute("COMMIT")
+                except Exception:
+                    self._db.execute("ROLLBACK")
+                    raise
             log.info("rescan: dropped %d segment row(s) whose file no longer exists",
                      len(orphaned))
-        return {"scanned": found, "added": added, "removed": len(orphaned)}
+
+        if added or orphaned:
+            self._invalidate_caches()
+
+        result = {"scanned": found, "added": added, "removed": len(orphaned)}
+        if progress_cb: progress_cb(**result)
+        return result
+
+    def start_rescan_async(self) -> dict:
+        """Kick off rescan() on a background thread and return immediately.
+        A full disk walk can take minutes on a large archive over slow
+        SD-card/eMMC storage — running it inline in the request handler
+        meant the "Diski yeniden tara" button either looked like it did
+        nothing (no feedback while it silently ran) or, now that every
+        frontend fetch is bounded (see app.js's API_TIMEOUT_MS), would
+        abort with a false "başarısız" after 8s while the scan kept going
+        server-side regardless. Callers should poll get_rescan_status()."""
+        with self._rescan_lock:
+            if self._rescan_state["running"]:
+                return dict(self._rescan_state)
+            self._rescan_state = {
+                "running": True, "phase": "counting", "total": 0, "scanned": 0,
+                "added": 0, "removed": 0, "done": False, "ok": None, "error": None,
+                "started_at": time.time(), "finished_at": None,
+            }
+        threading.Thread(target=self._rescan_worker, daemon=True, name="rtcview-rescan").start()
+        with self._rescan_lock:
+            return dict(self._rescan_state)
+
+    def get_rescan_status(self) -> dict:
+        with self._rescan_lock:
+            return dict(self._rescan_state)
+
+    def _rescan_progress(self, **kw):
+        with self._rescan_lock:
+            self._rescan_state.update(kw)
+
+    def _rescan_worker(self):
+        try:
+            result = self.rescan(progress_cb=self._rescan_progress)
+            self._rescan_progress(running=False, done=True, ok=True,
+                                   phase="done", finished_at=time.time(), **result)
+        except Exception as e:
+            log.exception("async rescan failed")
+            self._rescan_progress(running=False, done=True, ok=False,
+                                   phase="error", error=str(e), finished_at=time.time())
 
 
 def _try_prune_empty(dir_path: Path, root: Path):

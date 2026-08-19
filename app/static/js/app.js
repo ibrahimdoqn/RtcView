@@ -2167,12 +2167,70 @@
     txt.textContent = lines.join("\n") || "Durum bilinmiyor";
   }
 
+  // Rescan runs on the backend as a background thread (can take minutes
+  // on a large archive) and is polled here rather than awaited in one
+  // request — a plain await would either look like the button did
+  // nothing for a long stretch, or now that api.post() is bounded by
+  // API_TIMEOUT_MS, abort with a false "başarısız" while the scan kept
+  // running server-side regardless.
+  let _rescanPollTimer = null;
+  function _stopRescanPoll(){
+    if (_rescanPollTimer){ clearInterval(_rescanPollTimer); _rescanPollTimer = null; }
+  }
+  function _renderRescanProgress(s){
+    const box = $("#s-rescan-progress"), fill = $("#s-rescan-progress-fill"), text = $("#s-rescan-progress-text");
+    box.classList.remove("hidden");
+    box.classList.remove("rescan-fail");
+    if (s.phase === "counting"){
+      fill.classList.add("indeterminate");
+      fill.style.width = "30%";
+      text.textContent = "Dosyalar sayılıyor…";
+    } else if (s.phase === "cleaning"){
+      fill.classList.remove("indeterminate");
+      fill.style.width = "100%";
+      text.textContent = "Silinmiş dosyalar veritabanından temizleniyor…";
+    } else {
+      fill.classList.remove("indeterminate");
+      const pct = s.total > 0 ? Math.min(100, Math.round(s.scanned / s.total * 100)) : 0;
+      fill.style.width = pct + "%";
+      text.textContent = `Taranıyor: ${s.scanned}/${s.total} dosya (%${pct}) · ${s.added} yeni`;
+    }
+  }
+  function _finishRescanProgress(s){
+    const box = $("#s-rescan-progress"), fill = $("#s-rescan-progress-fill"), text = $("#s-rescan-progress-text");
+    fill.classList.remove("indeterminate");
+    if (s.ok){
+      fill.style.width = "100%";
+      text.textContent = `Tamamlandı: ${s.scanned} dosya, ${s.added} yeni, ${s.removed} temizlendi`;
+    } else {
+      box.classList.add("rescan-fail");
+      fill.style.width = "100%";
+      text.textContent = "Başarısız: " + (s.error || "bilinmeyen hata");
+    }
+    setTimeout(() => { box.classList.add("hidden"); box.classList.remove("rescan-fail"); }, 2200);
+  }
   $("#s-rec-rescan").addEventListener("click", async () => {
+    _stopRescanPoll();
+    $("#s-rec-rescan").disabled = true;
     try {
-      const r = await api.post("/api/recording/rescan");
-      toast(`Tarama: ${r.scanned} dosya, ${r.added} yeni eklendi, ${r.removed} silinmiş kayıt DB'den temizlendi`, "ok");
+      _renderRescanProgress(await api.post("/api/recording/rescan"));
+    } catch (e) {
+      toast("Tarama başlatılamadı: " + e.message, "err");
+      $("#s-rec-rescan").disabled = false;
+      return;
+    }
+    _rescanPollTimer = setInterval(async () => {
+      let s;
+      try { s = await api.get("/api/recording/rescan/status"); }
+      catch (e) { _stopRescanPoll(); $("#s-rec-rescan").disabled = false; toast("Tarama durumu alınamadı: " + e.message, "err"); return; }
+      if (s.running){ _renderRescanProgress(s); return; }
+      _stopRescanPoll();
+      $("#s-rec-rescan").disabled = false;
+      _finishRescanProgress(s);
+      if (s.ok) toast(`Tarama: ${s.scanned} dosya, ${s.added} yeni eklendi, ${s.removed} silinmiş kayıt DB'den temizlendi`, "ok");
+      else toast("Tarama başarısız: " + (s.error || "bilinmeyen hata"), "err");
       refreshUsageBar();
-    } catch (e) { toast("Rescan başarısız: " + e.message, "err"); }
+    }, 500);
   });
   $("#s-rec-purge").addEventListener("click", async () => {
     try {

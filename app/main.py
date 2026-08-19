@@ -740,7 +740,14 @@ def create_app(config_path: str) -> Flask:
 
     @app.post("/api/recording/rescan")
     def api_rec_rescan():
-        return jsonify(storage.rescan())
+        # Runs on a background thread and returns immediately — see
+        # start_rescan_async()'s docstring. The frontend polls
+        # /api/recording/rescan/status for progress.
+        return jsonify(storage.start_rescan_async())
+
+    @app.get("/api/recording/rescan/status")
+    def api_rec_rescan_status():
+        return jsonify(storage.get_rescan_status())
 
     @app.post("/api/recording/purge")
     def api_rec_purge():

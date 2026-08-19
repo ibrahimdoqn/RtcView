@@ -953,6 +953,32 @@ kbd{
 }
 .disk-bar-num.muted{opacity:.75;}
 
+/* "Diski yeniden tara" progress (Kayıt & Depolama) */
+.rescan-progress{display:flex;flex-direction:column;gap:.3rem;margin-top:.5rem;}
+.rescan-progress.hidden{display:none!important;}
+.rescan-progress-track{
+  position:relative;height:8px;border-radius:4px;
+  background:rgba(255,255,255,.06);overflow:hidden;
+}
+.rescan-progress-fill{
+  position:absolute;top:0;left:0;height:100%;border-radius:4px;
+  background:linear-gradient(90deg,#5ac8fa,#3a82ff);
+  transition:width .3s var(--ease-out);
+}
+.rescan-progress.rescan-fail .rescan-progress-fill{
+  background:linear-gradient(90deg,#ff453a,#ff2d55);
+}
+.rescan-progress-fill.indeterminate{
+  width:30%!important;animation:rescan-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes rescan-indeterminate{
+  0%{transform:translateX(-100%);}
+  100%{transform:translateX(333%);}
+}
+.rescan-progress-text{
+  font-family:ui-monospace,monospace;font-size:.7rem;color:var(--muted);
+}
+
 /* ========================================================================
    PLAYBACK overlay
    ======================================================================== */
