@@ -5,6 +5,17 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.7.0] - 2026-08-20
+
+### Düzeltildi
+- **Arızalı bir disk artık diğer diskin temizliğini tıkayamıyor.** `free_up_for_new_segment()`, ilk silme hatasında tüm geçişi durduruyordu — global en-eski sıralamasında kalıcı olarak arızalı bir disk her zaman önde olacağından, bu diğer (sağlıklı) diskin segmentlerine hiç sıra gelmemesine yol açabiliyordu (orijinal olayın hafif bir versiyonu). Artık bir diskteki silme başarısız olunca sadece o disk bu geçiş için atlanıyor (tekrar denenmiyor), diğer disklerin adayları işlenmeye devam ediyor.
+- **N artık sadece aktif kayıt yapan kamera sayısını sayıyor**, toplam yapılandırılı kamera sayısını değil — `record_mode: off` olan kameralar artık silinecek segment sayısını gereksiz yere şişirmiyor.
+- **Disk-doluluk temizliği artık kayıt kapalıyken de çalışıyor.** Önceden sadece segment başlangıcında tetikleniyordu — kayıt tamamen durdurulmuşsa (bakım, tüm kameralar kapalı) disk başka bir sebeple dolarsa hiçbir şey tepki vermiyordu. `purge_once()` artık periyodik turunda da `free_up_for_new_segment()`'i çağırıyor, böylece her durumda bir güvenlik ağı var.
+
+### Eklendi
+- **Anlık görüntüler (snapshot) artık sıralı doldurmaya dahil.** Önceden her zaman ilk (primary) kayıt köküne yazılıyordu — o dolsa bile. Artık `pick_snapshot_root()` segment yazımıyla aynı politikayı izliyor: hangi disk müsaitse oraya yazılır. Her disk kendi `_snapshots` alt klasörüne sahip olabilir; `rescan()` artık bunların hepsini tanıyıp segment sanıp indexlemekten kaçınıyor (önceden sadece primary'nin `_snapshots`'ını biliyordu).
+- **Anlık görüntü çekmek de artık disk-doluluk temizliğini tetikliyor** (`POST /api/snapshot/<id>`), tıpkı yeni bir segment başlangıcı gibi.
+
 ## [4.6.1] - 2026-08-20
 
 ### Kaldırıldı

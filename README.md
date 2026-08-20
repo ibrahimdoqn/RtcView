@@ -203,9 +203,9 @@ Playback:
 ├── venv/           # izole Python ortamı
 ├── config/config.json
 ├── logs/
-└── recordings/     # (varsayılan) — kayıt yolu config'ten değiştirilebilir
-    ├── index.sqlite       # segment index + detections + notifications tabloları
-    ├── _snapshots/<cam>/YYYY/MM/DD/*.jpg
+└── recordings/     # (varsayılan) — kayıt klasör(ler)i config'ten değiştirilebilir, birden fazla olabilir
+    ├── index.sqlite       # segment index + detections + notifications tabloları (her zaman burada, hangi kayıt kökü seçilirse seçilsin)
+    ├── _snapshots/<cam>/YYYY/MM/DD/*.jpg   # her kayıt kökünün altında kendi _snapshots'ı olabilir — sıralı doldurmayı segmentlerle birlikte takip eder
     └── <cam>/YYYY/MM/DD/<cam>_<ts>_NNNNN.mp4
 /opt/rtcview-src/   # otomatik güncelleme için tutulan ayrı git kopyası (yalnızca "Şimdi Güncelle" kullanıldıysa oluşur)
 ```

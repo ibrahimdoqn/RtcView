@@ -1069,10 +1069,15 @@ def create_app(config_path: str) -> Flask:
         save = request.args.get("save", "1") not in ("0", "false", "no")
         payload = {"ok": True, "bytes": len(r.content)}
         if save:
+            # Same "make room if every disk is full" check segments get
+            # at every rollover — a snapshot is a write too, and used to
+            # always target the primary root regardless of whether it
+            # had room (see pick_snapshot_root()).
+            storage.free_up_for_new_segment()
             # Compute date parts ONCE so a saved snapshot near midnight
             # doesn't end up with day-dir=today and filename=tomorrow.
             now_dt = datetime.now()
-            root = storage.snapshots_root()
+            root = storage.pick_snapshot_root()
             day_dir = root / camera_id / now_dt.strftime("%Y/%m/%d")
             day_dir.mkdir(parents=True, exist_ok=True)
             fname = f"{camera_id}_{now_dt:%Y%m%d_%H%M%S}.jpg"

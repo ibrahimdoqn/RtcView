@@ -220,8 +220,22 @@ class Storage:
             mb = DEFAULT_MARGIN_MB
         return mb * 1024 * 1024
 
-    def snapshots_root(self) -> Path:
-        return self.primary_root() / "_snapshots"
+    def snapshot_roots(self) -> list[Path]:
+        """The "_snapshots" subdir under every configured root — used to
+        recognize/exclude snapshot files when walking for segments
+        (rescan()) and to pre-create the folder on every root, not just
+        the primary one."""
+        return [r / "_snapshots" for r in self.roots()]
+
+    def pick_snapshot_root(self) -> Path:
+        """Sequential-fill destination for a NEW snapshot — same policy
+        as pick_write_root() (segments), so a still shot doesn't insist
+        on landing on a disk that's already full while segments have
+        long since moved on to the next configured root. Snapshots used
+        to always go under the primary (first-configured) root
+        regardless of whether it had room, which meant they could start
+        failing to save well before recording itself did."""
+        return self.pick_write_root() / "_snapshots"
 
     @staticmethod
     def _like_escape(s: str) -> str:
@@ -334,9 +348,14 @@ class Storage:
         return False
 
     def free_up_for_new_segment(self) -> dict:
-        """Called right before every new segment starts (recorder.py's
-        CameraRecorder.start() and _finish_segment()) — the simple
-        replacement for the old periodic "reclaim" machinery.
+        """Called right before every new segment or snapshot starts
+        (recorder.py's CameraRecorder.start()/_finish_segment(), main.py's
+        snapshot route) — the simple replacement for the old periodic
+        "reclaim" machinery. Also called once per purge_once() tick as a
+        backstop, so a disk that fills up from something OTHER than
+        active recording (recording paused/disabled, manual file copies,
+        snapshot volume) still gets cleaned up periodically instead of
+        only reacting to segment events that might not be happening.
 
         If ANY configured root already has room, this does nothing: the
         sequential-fill write picker (pick_write_root()) will just use
@@ -345,41 +364,59 @@ class Storage:
         the one moment recording genuinely has nowhere to go without
         making room first.
 
-        When that happens, it deletes exactly N globally-oldest unlocked
-        segments, where N is the number of configured cameras — one
-        segment's worth of headroom per camera that could be about to
-        start writing a new one, regardless of which root or which
-        camera each deleted segment actually belonged to. This is a
-        fixed, predictable amount, not a "keep deleting until X" loop:
-        simple and easy to reason about, at the cost of not being exactly
-        precise about how many bytes it actually frees (that's fine — if
-        it wasn't enough, the very next segment start calls this again).
+        When that happens, it deletes up to N globally-oldest unlocked
+        segments, where N is the number of cameras currently configured
+        to record (record_mode != "off" — a disabled camera contributes
+        no write pressure, so it shouldn't inflate how much gets deleted
+        on its behalf). This is a fixed, predictable amount per call, not
+        a "keep deleting until X" loop: simple and easy to reason about,
+        at the cost of not being exactly precise about how many bytes it
+        actually frees (that's fine — if it wasn't enough, the very next
+        segment start calls this again).
 
-        Stops early the moment a single delete's unlink fails (same
-        stop-on-failure safety this whole module uses everywhere else —
-        see _delete_and_keep_going in purge_once()): ploughing through
-        the rest of the list after a disk starts refusing deletes only
-        turns more of its tracked history into untracked orphans for no
-        space gained. The next purge_once() tick's auto-rescan recovers
-        from it (self._orphan_suspected)."""
+        A delete whose unlink fails doesn't abort the whole pass anymore
+        — that segment's root is skipped for the REST OF THIS CALL ONLY
+        (not retried, not hammered), and the loop keeps going through
+        further candidates so a different, healthy root still gets its
+        segments cleaned up. Without this, a single permanently-broken
+        root sitting at the front of the oldest-first ordering could
+        block cleanup on every OTHER root forever, since its segments
+        would always sort first — a milder reappearance of the exact
+        cross-root cascade this module's whole design exists to avoid.
+        The candidate list is fetched a bit larger than N precisely so
+        skipping a broken root's rows still leaves enough healthy
+        candidates to reach N. The file that failed to unlink is still an
+        orphan on disk — the next purge_once() tick's auto-rescan
+        recovers it (self._orphan_suspected)."""
         margin = self._margin_bytes()
         if self._any_root_has_room(margin):
             return {"removed": 0, "freed_bytes": 0}
-        n = max(1, len(self.config_store.get_cameras()))
-        log.warning("free_up_for_new_segment: no root has room — deleting the %d globally-oldest segment(s)", n)
+        n = max(1, sum(1 for c in self.config_store.get_cameras()
+                       if c.get("record_mode", "off") != "off"))
+        fetch = min(max(n * 4, 20), 200)
+        log.warning("free_up_for_new_segment: no root has room — deleting up to %d globally-oldest segment(s)", n)
         with self._lock:
             rows = self._db.execute(
-                "SELECT id, bytes FROM segments WHERE locked = 0 ORDER BY started_at ASC LIMIT ?",
-                (n,)
+                "SELECT id, bytes, path FROM segments WHERE locked = 0 ORDER BY started_at ASC LIMIT ?",
+                (fetch,)
             ).fetchall()
         removed = 0; freed = 0
-        for sid, b in rows:
+        broken_roots: set = set()
+        for sid, b, path in rows:
+            if removed >= n:
+                break
+            seg_root = self._root_for_path(path)
+            if seg_root is not None and seg_root in broken_roots:
+                continue  # already refused a delete this pass -- don't hammer it again
             deleted, unlink_ok = self._delete_segment_impl(sid)
             if not deleted:
                 continue  # already gone/locked — not a failure, try the next one
             if not unlink_ok:
-                log.warning("free_up_for_new_segment: a delete failed, stopping this pass")
-                break
+                if seg_root is not None:
+                    broken_roots.add(seg_root)
+                    log.warning("free_up_for_new_segment: %s — a delete failed, skipping its "
+                                "segments for the rest of this pass (other roots continue)", seg_root)
+                continue
             removed += 1
             freed += int(b or 0)
         if not rows:
@@ -391,7 +428,8 @@ class Storage:
         try:
             for r in self.roots():
                 r.mkdir(parents=True, exist_ok=True)
-            self.snapshots_root().mkdir(parents=True, exist_ok=True)
+            for sr in self.snapshot_roots():
+                sr.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             log.warning("Cannot create storage root: %s", e)
             return
@@ -1189,16 +1227,17 @@ class Storage:
                         break
 
         # Margin-based cleanup (deleting the oldest footage to make room
-        # on a full disk) no longer lives here — it used to run as part
-        # of this periodic tick (a "reclaim" phase scoped to low roots
-        # plus a separate "emergency" phase for when every root was low),
-        # but that only mattered because the tick could be up to
-        # purge_interval_seconds (60s default) late reacting to a disk
-        # filling up. It now runs synchronously at the moment that
-        # actually needs the room instead — see free_up_for_new_segment(),
-        # called from recorder.py right before every new segment starts.
-        # Retention and quota above stay here since they're age/size
-        # rules that don't need to react to a specific write event.
+        # on a full disk) mainly runs synchronously at the moment that
+        # actually needs the room — see free_up_for_new_segment(), called
+        # from recorder.py right before every new segment/snapshot
+        # starts. It's ALSO called here, once per tick, as a backstop:
+        # that per-write trigger only fires while something is actively
+        # writing. If recording is paused/disabled, or every camera is
+        # off, nothing would otherwise ever notice a disk filling up from
+        # some other cause (manual file copies, leftover snapshots) —
+        # this periodic call is what still catches that.
+        fu = self.free_up_for_new_segment()
+        removed += fu["removed"]; freed += fu["freed_bytes"]
 
         # Snapshot retention: keep only 3× retention days for snapshots (they're small)
         snap_retention = max(retention * 3, 30)
@@ -1269,7 +1308,10 @@ class Storage:
         being an opaque multi-minute black box on a large archive.
         """
         from app.recorder import _parse_fname_ts   # local import to avoid cycle
-        snap_root = self.snapshots_root().resolve()
+        # Snapshots can now land under ANY configured root's own
+        # "_snapshots" subdir (see pick_snapshot_root()), not just the
+        # primary root's — exclude all of them, not just one.
+        snap_roots = {sr.resolve() for sr in self.snapshot_roots()}
         roots = [r.resolve() for r in self.roots()]
 
         def _files():
@@ -1277,7 +1319,7 @@ class Storage:
                 for p in root.rglob("*.mp4"):
                     if not p.is_file(): continue
                     try:
-                        if snap_root in p.parents: continue
+                        if any(sr in p.parents for sr in snap_roots): continue
                     except Exception:
                         pass
                     yield root, p
