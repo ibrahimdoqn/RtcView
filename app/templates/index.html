@@ -303,36 +303,29 @@
           <label class="row"><input id="s-rec-enabled" type="checkbox" /> Kayıt sistemi aktif</label>
           <label>Kayıt klasörleri</label>
           <div id="s-rec-paths-list" class="rec-paths-list"></div>
-          <div class="row" style="gap:.4rem;">
-            <input id="s-rec-path-new" type="text" placeholder="/opt/rtcview/recordings veya /mnt/harici-disk/rtcview" style="flex:1;" />
+          <div class="rec-path-add">
+            <input id="s-rec-path-new" type="text" placeholder="/mnt/disk2/rtcview" />
             <button type="button" id="s-rec-path-add" class="btn ghost small">+ Ekle</button>
           </div>
-          <small>Diskleri buraya işaret etmeden önce sisteme kendiniz bağlayın (RtcView disk biçimlendirme/bağlama
-            yapmaz — bkz. Kurulum). Birden fazla klasör eklerseniz sırayla doldurulur: ilki dolana kadar ona
-            yazılır, dolunca listedeki bir sonraki devreye girer. Listeyi değiştirmek servisi kısa süreliğine
-            durdurup yeniden başlatır.</small>
+          <small>Diskleri önce siz bağlayın (RtcView mount/format yapmaz). Birden fazla eklerseniz
+            sırayla doldurulur — ayrıntı: README.</small>
           <div class="grid2">
             <label>Segment (sn) <input id="s-rec-segment" type="number" min="30" max="3600" /></label>
             <label>Retention (gün) <input id="s-rec-retention" type="number" min="0" /></label>
           </div>
-          <div class="grid2">
-            <label>Kota (GB, 0 = sınırsız) <input id="s-rec-quota" type="number" min="0" /></label>
-            <label>Düşük disk marjı (MB) <input id="s-rec-margin" type="number" min="64" max="102400" /></label>
-          </div>
-          <small>Bir disk bu marjın altına düşünce "dolu" sayılır: o diske yazım durur (sıradaki
-            diske geçilir), ve en eski kayıtlar silinerek yer açılmaya çalışılır. Küçük disklerde
-            (SD kart) düşürebilir, büyük dizilerde artırabilirsiniz.</small>
+          <label>Düşük disk marjı (MB) <input id="s-rec-margin" type="number" min="64" max="102400" /></label>
+          <small>Disk bu marjın altına düşünce yazım sıradaki diske geçer, en eski kayıtlar
+            silinerek yer açılır.</small>
           <label class="row"><input id="s-rec-tmpfs" type="checkbox" /> Segmentleri önce /tmp'de (RAM) oluştur, kapanınca kayıt diskine taşı</label>
-          <small>ffmpeg segmenti önce RAM'de yazar, kapanınca tek seferde diske taşır — SD kart
-            yükünü azaltır. RtcView <code>/tmp</code>'nin gerçekten tmpfs (RAM) olduğunu kendisi
-            doğrular; değilse bu özellik sessizce etkinleşmez (aşağıdaki durumdan kontrol edin).</small>
+          <small>SD kart yükünü azaltır. <code>/tmp</code> gerçekten RAM değilse sessizce
+            devre dışı kalır.</small>
           <div id="s-rec-tmpfs-bars" class="disk-bars"></div>
           <div id="s-rec-tmpfs-limits" class="grid2 hidden">
             <label>Gerekli boş RAM (MB) <input id="s-rec-tmpfs-margin" type="number" min="32" max="8192" /></label>
             <label>Kamera başına RAM sınırı (MB) <input id="s-rec-tmpfs-cap" type="number" min="32" max="16384" /></label>
           </div>
-          <small id="s-rec-tmpfs-limits-help" class="hidden">Bu kadar boş RAM yoksa özellik etkinleşmez.
-            Bir kameranın RAM'de biriken verisi sınırı aşarsa o kamera otomatik doğrudan diske döner.</small>
+          <small id="s-rec-tmpfs-limits-help" class="hidden">Boş RAM bu sınırın altındaysa etkinleşmez;
+            kamera sınırı aşarsa otomatik diske döner.</small>
           <div id="s-rec-usage-summary" class="usage-text">—</div>
           <div id="s-rec-disk-bars" class="disk-bars"></div>
           <div id="s-rec-health" class="rec-health rec-health-ok">

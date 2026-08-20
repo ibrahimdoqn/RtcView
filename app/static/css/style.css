@@ -971,6 +971,9 @@ kbd{
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .rec-path-empty{color:var(--muted);font-size:.75rem;font-style:italic;padding:.3rem;}
+.rec-path-add{display:flex;flex-wrap:wrap;gap:.4rem;}
+.rec-path-add input{flex:1 1 180px;min-width:0;}
+.rec-path-add .btn{flex:none;}
 
 /* "Diski yeniden tara" progress (Kayıt & Depolama) */
 .rescan-progress{display:flex;flex-direction:column;gap:.3rem;margin-top:.5rem;}

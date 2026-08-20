@@ -5,6 +5,15 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.8.0] - 2026-08-20
+
+### Kaldırıldı
+- **Kota (toplam boyut sınırı) özelliği arayüzden kaldırıldı.** Ayarlar → Kayıt & Depolama'daki "Kota (GB)" alanı ve disk kullanım çubuğundaki kota satırı gitti; `POST /api/recording/settings` artık `max_gb` alanını kabul etmiyor. Tek depolama sınırı artık retention (gün) + düşük disk marjı. Daha önce kota ayarlamış olan kurulumlarda değer sessizce etkisiz kalır (config'te durur, hiçbir şey silmez).
+
+### Değiştirildi
+- **Kayıt & Depolama sekmesindeki uzun açıklama metinleri kısaltıldı** (en fazla ~2 satır); tam ayrıntılar README'nin "Depolama" ve "Kayıt yolu değiştirme / birden fazla disk" bölümlerine taşındı.
+- **Disk ekleme kutusu mobilde artık taşmıyor** — çok uzun olan yer tutucu metni kısaltıldı ve satır, dar ekranlarda giriş kutusu ile butonun düzgün sarmalanacağı (flex-wrap) şekilde yeniden düzenlendi.
+
 ## [4.7.1] - 2026-08-20
 
 ### Düzeltildi

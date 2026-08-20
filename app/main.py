@@ -681,8 +681,14 @@ def create_app(config_path: str) -> Flask:
         # list edit needs its own stop-recorder/apply/restart dance and a
         # per-path validation error, which doesn't mix cleanly with this
         # route's "validate a batch of unrelated scalar settings" shape.
+        # max_gb (quota) intentionally not in this set anymore — the
+        # feature is off going forward (Settings UI no longer offers it;
+        # storage.py's quota phase stays but only ever sees max_gb=0 for
+        # any install using this route, which it already treats as
+        # unlimited). A pre-existing config that had it set some other
+        # way keeps working; there's just no way to set a NEW value here.
         allowed = {"enabled", "segment_seconds",
-                   "retention_days", "max_gb", "purge_interval_seconds", "ffmpeg_path",
+                   "retention_days", "purge_interval_seconds", "ffmpeg_path",
                    "mem_rss_ceiling_mb", "tmpfs_staging",
                    "tmpfs_safety_margin_mb", "tmpfs_hard_cap_mb", "low_space_margin_mb"}
         clean = {k: v for k, v in body.items() if k in allowed}
@@ -693,7 +699,7 @@ def create_app(config_path: str) -> Flask:
                 if s < 30 or s > 3600: return jsonify({"error": "segment_seconds 30-3600"}), 400
                 clean["segment_seconds"] = s
             except Exception: return jsonify({"error": "invalid segment_seconds"}), 400
-        for key in ("retention_days", "max_gb", "purge_interval_seconds"):
+        for key in ("retention_days", "purge_interval_seconds"):
             if key in clean:
                 try: clean[key] = int(clean[key])
                 except Exception: return jsonify({"error": f"invalid {key}"}), 400

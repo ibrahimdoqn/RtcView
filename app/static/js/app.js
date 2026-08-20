@@ -1981,7 +1981,6 @@
       _renderRecPaths(r.storage_paths);
       $("#s-rec-segment").value = r.segment_seconds || 300;
       $("#s-rec-retention").value = r.retention_days || 14;
-      $("#s-rec-quota").value = parseInt(r.max_gb || 0) || 0;
       $("#s-rec-margin").value = parseInt(r.low_space_margin_mb || 1024) || 1024;
       $("#s-rec-tmpfs").checked = !!r.tmpfs_staging;
       $("#s-rec-tmpfs-margin").value = parseInt(r.tmpfs_safety_margin_mb || 256) || 256;
@@ -2013,7 +2012,6 @@
       enabled: $("#s-rec-enabled").checked,
       segment_seconds: parseInt($("#s-rec-segment").value || 300),
       retention_days: parseInt($("#s-rec-retention").value || 14),
-      max_gb: Math.max(0, parseInt($("#s-rec-quota").value || 0) || 0),
       low_space_margin_mb: Math.min(102400, Math.max(64, parseInt($("#s-rec-margin").value || 1024) || 1024)),
       tmpfs_staging: $("#s-rec-tmpfs").checked,
       tmpfs_safety_margin_mb: Math.max(32, parseInt($("#s-rec-tmpfs-margin").value || 256) || 256),
@@ -2180,7 +2178,7 @@
       if (list) {
         const roots = st.roots || [];
         list.innerHTML = roots.length
-          ? roots.map(_rootBarHtml).join("") + _quotaBarHtml(st)
+          ? roots.map(_rootBarHtml).join("")
           : '<div class="disk-bar-empty">Kayıt klasörü yok</div>';
       }
       _renderStorageHealth(s.health);
@@ -2244,33 +2242,6 @@
           <span class="disk-bar-num">${fmtBytes(dUsed)} / ${fmtBytes(total)} (%${diskPct.toFixed(0)})</span>
         </div>
       </div>`;
-  }
-  // Quota is global across every configured root (no per-disk quota —
-  // see storage.py's module docstring), so it's a single aggregate bar
-  // rendered once below the per-root list, not part of _rootBarHtml.
-  function _quotaBarHtml(st){
-    const recUsed = st.bytes_used || 0;
-    const maxBytes = st.max_bytes || 0;
-    let inner;
-    if (maxBytes > 0) {
-      const qPct = Math.max(0, Math.min(100, (recUsed / maxBytes) * 100));
-      let qCls = "";
-      if (qPct >= 100) qCls = "crit"; else if (qPct >= 85) qCls = "warn";
-      inner = `
-        <div class="disk-bar-line">
-          <span class="disk-bar-label">Kota</span>
-          <div class="disk-bar-track"><div class="disk-bar-fill quota ${qCls}" style="width:${qPct.toFixed(1)}%"></div></div>
-          <span class="disk-bar-num">${fmtBytes(recUsed)} / ${st.max_gb} GB (%${qPct.toFixed(0)})</span>
-        </div>`;
-    } else {
-      inner = `
-        <div class="disk-bar-line">
-          <span class="disk-bar-label">Kota</span>
-          <div class="disk-bar-track"><div class="disk-bar-fill quota" style="width:0%"></div></div>
-          <span class="disk-bar-num muted">kotasız · ${fmtBytes(recUsed)} kayıt (toplam)</span>
-        </div>`;
-    }
-    return `<div class="disk-bar">${inner}</div>`;
   }
   function _renderStorageHealth(h){
     const box = $("#s-rec-health");

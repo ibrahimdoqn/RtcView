@@ -28,7 +28,7 @@ kendi entegrasyonu, vb. — kaynak fark etmez).
 - **Manuel kayıt butonu** her tile'da (varsayılan 10 dk pencere)
 - **Snapshot** butonu (JPEG, opsiyonel diske kayıt + indir)
 - **Ses kaydı** kamera başına ayarlanabilir
-- **Otomatik retention** (gün) **VE** kota (GB) — çift kurallı background purger
+- **Otomatik retention** (gün) — background purger; disk dolarsa düşük disk marjı devreye girer (bkz. Depolama)
 - **Kayıt kilidi** — önemli segmentler otomatik temizlenmez
 - Kayıt aktifken tile'da REC noktası + kırmızı kayıt butonu
 
@@ -44,10 +44,11 @@ kendi entegrasyonu, vb. — kaynak fark etmez).
 
 ### Depolama
 - **Bir veya birden fazla kayıt klasörü** kullanılabilir — RtcView disk biçimlendirme, bağlama veya ayırma yapmaz; hedef diskleri işletim sisteminde siz bağlarsınız (bkz. [Kurulum](#kurulum)), RtcView sadece bu yollara yazar. Birden fazla yol eklenirse sırayla doldurulur: ilki dolana kadar ona yazılır, sonra sıradaki devreye girer
-- UI'dan (Ayarlar → Kayıt & Depolama) canlı olarak yol(lar), kota (GB), retention ve düşük disk marjı (MB) değiştirilir
-- Disk kullanım çubuğu, en eski kaydın tarih/saati, "diski yeniden tara" ve "şimdi temizle" butonları
-- **Depolama sağlığı akıllıdır**: disk dolması normal, rolling-storage davranışıdır — silinecek eski segment olduğu sürece hata/uyarı göstermez. Her yeni segment başlamadan hemen önce, yapılandırılmış klasörlerin **hepsi** ayarlanabilir düşük disk marjının altındaysa (varsayılan 1 GB), retention süresi dolmasa bile en eski kayıtlar (o an aktif kamera sayısı kadar) otomatik silinip yer açılır — en az bir klasörde yer olduğu sürece hiçbir şey silinmez, sıralı doldurma zaten oraya geçer. Yalnızca gerçekten çıkmaz sokaktaysa (silinecek hiçbir şey kalmadıysa veya izin/donanım sorunu varsa) kırmızı uyarı verir
-- Bir segment silinirken dosya diskten fiilen kaldırılamazsa (geçici I/O hatası), bir sonraki temizlik turunda otomatik olarak disk yeniden taranır — index'te görünmeyen ama fiilen diskte duran dosyalar kendiliğinden yeniden kayda alınır
+- UI'dan (Ayarlar → Kayıt & Depolama) canlı olarak yol(lar), retention (gün) ve düşük disk marjı (MB) değiştirilir. Kota (toplam boyut sınırı) özelliği kaldırıldı — tek sınır retention + düşük disk marjı
+- Disk kullanım çubuğu, en eski kaydın tarih/saati, "diski yeniden tara" butonu
+- **Depolama sağlığı akıllıdır**: disk dolması normal, rolling-storage davranışıdır — silinecek eski segment olduğu sürece hata/uyarı göstermez. Her yeni segment/anlık görüntü başlamadan hemen önce, yapılandırılmış klasörlerin **hepsi** ayarlanabilir düşük disk marjının altındaysa (varsayılan 1 GB), retention süresi dolmasa bile en eski kayıtlar (o an aktif kamera sayısı kadar) otomatik silinip yer açılır — en az bir klasörde yer olduğu sürece hiçbir şey silinmez, sıralı doldurma zaten oraya geçer. `purge_once()` (yaş bazlı retention temizliği, varsayılan 60 sn'de bir) bu kontrolü de periyodik olarak tekrarlar — kayıt tamamen kapalıyken bile bir güvenlik ağı olarak. Yalnızca gerçekten çıkmaz sokaktaysa (silinecek hiçbir şey kalmadıysa veya izin/donanım sorunu varsa) kırmızı uyarı verir
+- Bir segment silinirken dosya diskten fiilen kaldırılamazsa (geçici I/O hatası), bir sonraki temizlik turunda otomatik olarak disk yeniden taranır — index'te görünmeyen ama fiilen diskte duran dosyalar kendiliğinden yeniden kayda alınır. Arızalı/erişilemez bir disk, sağlıklı diğer disklerin temizliğini asla engellemez
+- **Segmentleri önce RAM'de oluşturma** (isteğe bağlı, Ayarlar'dan açılır): ffmpeg segmenti önce `/tmp` (tmpfs) üzerine yazar, kapanınca tek seferde kayıt diskine taşır — SD kart/eMMC üzerindeki yazma yükünü azaltır. RtcView `/tmp`'nin gerçekten tmpfs (RAM) olduğunu kendisi doğrular; değilse özellik sessizce etkinleşmez. "Gerekli boş RAM" eşiğinin altına düşülürse özellik hiç aktif olmaz; bir kameranın RAM'de biriken verisi "kamera başına RAM sınırı"nı aşarsa o kamera otomatik doğrudan diske yazmaya döner (oturum kalıcı olarak)
 - SQLite index (`<yol>/index.sqlite`), MP4 dosyaları `<yol>/<cam>/YYYY/MM/DD/`
 
 ### Hareket, İnsan & Araç Algılama (Home Assistant)
@@ -189,7 +190,7 @@ Playback:
 ├── app/            # Flask kaynak
 │   ├── main.py         # route'lar, uygulama fabrikası
 │   ├── recorder.py     # ffmpeg segment kaydı
-│   ├── storage.py      # çoklu-disk depolama (sıralı doldurma): sağlık, retention/kota/dolma-önleyici purge, playback index
+│   ├── storage.py      # çoklu-disk depolama (sıralı doldurma): sağlık, retention purge, dolma-önleyici temizlik, playback index
 │   ├── netmon.py        # ağ arayüzü izleme (netlink olayları + bant genişliği)
 │   ├── homeassistant.py # Home Assistant WebSocket bağlantısı: hareket/insan/araç algılama + grup bildirim anahtarları
 │   ├── ptz.py           # ONVIF PTZ
