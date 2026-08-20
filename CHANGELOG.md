@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.6.1] - 2026-08-20
+
+### Kaldırıldı
+- **"Şimdi temizle" butonu kaldırıldı** (Ayarlar → Kayıt & Depolama), beraberindeki `POST /api/recording/purge` route'u ile birlikte. 4.6.0'dan sonra disk-doluluk tabanlı silme zaten her segment başlangıcında otomatik çalıştığı için (`free_up_for_new_segment()`), manuel tetikleme artık hiçbir şey kazandırmıyordu.
+
 ## [4.6.0] - 2026-08-20
 
 ### Değiştirildi

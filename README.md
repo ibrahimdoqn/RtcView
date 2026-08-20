@@ -237,7 +237,7 @@ Home Assistant entegrasyonunun tamamı `app/homeassistant.py` içindedir (WebSoc
 **Kayıt / Playback**
 - `GET /api/recording/settings` · `POST /api/recording/settings`
 - `GET /api/recording/status` — kamera başına recorder + disk istatistikleri (en eski segment dahil)
-- `POST /api/recording/rescan` · `POST /api/recording/purge`
+- `POST /api/recording/rescan`
 - `POST /api/cameras/<id>/record/start` · `/stop` — manuel tetik
 - `GET /api/recordings?cam=<id>&from=<ts>&to=<ts>` — segment listesi (playback)
 - `GET /api/recordings/<id>/stream` — Range destekli MP4 (HTML5 seek)

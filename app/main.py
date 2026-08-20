@@ -803,21 +803,6 @@ def create_app(config_path: str) -> Flask:
     def api_rec_rescan_status():
         return jsonify(storage.get_rescan_status())
 
-    @app.post("/api/recording/purge")
-    def api_rec_purge():
-        # purge_once() covers retention/quota/snapshot cleanup; margin-
-        # based cleanup (deleting the oldest footage because a disk is
-        # full) moved out of it and now runs at segment start — see
-        # storage.py's free_up_for_new_segment(). Call both so this
-        # manual "Şimdi temizle" button still does everything the old
-        # single purge_once() call used to.
-        r1 = storage.purge_once()
-        r2 = storage.free_up_for_new_segment()
-        return jsonify({
-            "removed": r1.get("removed", 0) + r2.get("removed", 0),
-            "freed_bytes": r1.get("freed_bytes", 0) + r2.get("freed_bytes", 0),
-        })
-
     # ---------- System stats + logs ----------
     @app.get("/api/system/stats")
     def api_system_stats():

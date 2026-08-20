@@ -2357,14 +2357,6 @@
       refreshUsageBar();
     }, 500);
   });
-  $("#s-rec-purge").addEventListener("click", async () => {
-    try {
-      const r = await api.post("/api/recording/purge");
-      toast(`${r.removed} segment silindi (${fmtBytes(r.freed_bytes)})`, "ok");
-      refreshUsageBar();
-    } catch (e) { toast("Temizleme başarısız: " + e.message, "err"); }
-  });
-
   // ---------- System stats panel ----------
   let _sysAutoTimer = null;
   async function refreshSysStats(){
