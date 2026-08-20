@@ -316,6 +316,16 @@
             <label>Retention (gün) <input id="s-rec-retention" type="number" min="0" /></label>
           </div>
           <label>Kota (GB, 0 = sınırsız) <input id="s-rec-quota" type="number" min="0" /></label>
+          <label class="row"><input id="s-rec-tmpfs" type="checkbox" /> Segmentleri önce /tmp'de (RAM) oluştur, kapanınca kayıt diskine taşı</label>
+          <small>SD kart/eMMC gibi yavaş/sınırlı ömürlü depolamalarda kaydın tamamı boyunca sürekli küçük
+            yazma yapmak yerine, ffmpeg segmenti önce RAM'de yazar; segment kapanınca tek seferde diske
+            taşınır — hem disk yükünü/yıpranmasını azaltır hem de yavaş bir diskin kayıt sırasında
+            takılmasına karşı daha dayanıklıdır. Yalnızca <code>/tmp</code> gerçekten bir tmpfs (RAM disk)
+            olarak bağlıysa fayda sağlar — normal bir dizinse (aynı diskin parçasıysa) hiçbir şey
+            değişmez. RAM'i korumak için: tmpfs'te yeterli boş alan yoksa bu özellik o oturum için
+            sessizce devre dışı kalır (doğrudan diske yazılır), ve bir kameranın biriktirdiği
+            taşınmamış veri belirli bir sınırı aşarsa (kayıt diski yetişemiyor demektir) o kamera
+            otomatik olarak doğrudan-diske-yazma moduna geri döner.</small>
           <div id="s-rec-usage-summary" class="usage-text">—</div>
           <div id="s-rec-disk-bars" class="disk-bars"></div>
           <div id="s-rec-health" class="rec-health rec-health-ok">

@@ -1924,6 +1924,7 @@
       $("#s-rec-segment").value = r.segment_seconds || 300;
       $("#s-rec-retention").value = r.retention_days || 14;
       $("#s-rec-quota").value = parseInt(r.max_gb || 0) || 0;
+      $("#s-rec-tmpfs").checked = !!r.tmpfs_staging;
     } catch {}
     refreshUsageBar();
   }
@@ -1936,6 +1937,7 @@
       segment_seconds: parseInt($("#s-rec-segment").value || 300),
       retention_days: parseInt($("#s-rec-retention").value || 14),
       max_gb: Math.max(0, parseInt($("#s-rec-quota").value || 0) || 0),
+      tmpfs_staging: $("#s-rec-tmpfs").checked,
     };
     try {
       state.recording = await api.post("/api/recording/settings", recBody);

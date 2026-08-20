@@ -5,6 +5,13 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.3.1] - 2026-08-20
+
+### Eklendi
+- **İsteğe bağlı: segmentleri önce /tmp'de (RAM) oluştur, kapanınca kayıt diskine taşı.** Ayarlar → Kayıt & Depolama'da yeni bir onay kutusu (`tmpfs_staging`, varsayılan kapalı). Açıldığında ffmpeg her segmenti doğrudan `storage_path`'e (tipik olarak SD kart/eMMC) yazmak yerine önce `/tmp/rtcview-stage/<kamera>` altına yazıyor; segment kapandığında (veya kayıt durdurulduğunda) dosya tek seferde gerçek kayıt diskine taşınıyor. Bu, kaydın tamamı boyunca sürekli küçük tamponlanmış yazma yerine segment başına tek bir toplu yazmaya dönüştürüyor — hem disk yıpranmasını azaltıyor hem de ffmpeg'in yavaş/takılan bir diski beklerken segmenti bozmasını (moov/trailer eksik kalması) daha az olası kılıyor. Yalnızca `/tmp` gerçekten bir tmpfs (RAM disk) olarak bağlıysa fayda sağlıyor; normal bir dizinse (aynı diskin parçasıysa) davranış değişmiyor.
+  - RAM güvenliği için iki bağımsız korunak var: (1) tmpfs'te en az 256MB boş alan yoksa bir kameranın oturumu bu özelliği hiç etkinleştirmiyor, sessizce doğrudan diske yazmaya devam ediyor; (2) bir kameranın taşınmamış (RAM'de bekleyen) verisi 512MB'ı aşarsa — ki bu normalde ancak kayıt diski yetişemiyorsa olur — o kamera otomatik olarak yeniden başlatılıp kalıcı olarak doğrudan-diske-yazma moduna dönüyor. Uygulama/kayıtçı yeniden başlatıldığında veya bu özellik daha sonra kapatıldığında, `/tmp`'te kalmış olabilecek herhangi bir dosya bir sonraki başlangıçta otomatik olarak kurtarılıp kayıt diskine taşınıyor — hiçbir segment RAM'de kaybolmuyor.
+  - Kapsamlı fonksiyonel testlerle doğrulandı: normal taşıma/kaydetme akışı, yetersiz RAM'de sessiz geri düşüş, önceki oturumdan kalan dosyaların kurtarılması, ve taşma sınırının kalıcı geri düşüşü doğru tetiklediği.
+
 ## [4.2.11] - 2026-08-19
 
 ### Değişti

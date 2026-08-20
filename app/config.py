@@ -68,6 +68,15 @@ DEFAULT_CONFIG = {
         # concurrent camera recorders matters; tune up if you'd rather
         # tolerate bigger legitimate bumps before restarting.
         "mem_rss_ceiling_mb": 128,
+        # Optional: ffmpeg writes each segment into tmpfs (/tmp) first,
+        # then it's moved onto storage_path once closed, instead of
+        # writing directly to storage_path the whole time — trades SD
+        # card/eMMC write load for RAM. Off by default: only useful if
+        # /tmp is actually a tmpfs mount (not guaranteed on every board),
+        # and does carry a real — if bounded, see recorder.py's
+        # TMPFS_STAGE_* constants — RAM-usage tradeoff. See Ayarlar >
+        # Kayıt & Depolama.
+        "tmpfs_staging": False,
     },
     "cameras": [],
     "groups": [],  # [{"id": "grp_xxxxxxxx", "name": "İç Mekan"}]

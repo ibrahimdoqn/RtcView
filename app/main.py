@@ -654,7 +654,7 @@ def create_app(config_path: str) -> Flask:
         body = request.get_json(force=True) or {}
         allowed = {"enabled", "storage_path", "segment_seconds",
                    "retention_days", "max_gb", "purge_interval_seconds", "ffmpeg_path",
-                   "mem_rss_ceiling_mb"}
+                   "mem_rss_ceiling_mb", "tmpfs_staging"}
         clean = {k: v for k, v in body.items() if k in allowed}
         new_path = clean.pop("storage_path", None)
         # Validate simple integer / bool fields BEFORE mutating anything.
@@ -680,6 +680,7 @@ def create_app(config_path: str) -> Flask:
             # makes it a busy loop pegging a core forever.
             clean["purge_interval_seconds"] = max(5, clean["purge_interval_seconds"])
         if "enabled" in clean: clean["enabled"] = bool(clean["enabled"])
+        if "tmpfs_staging" in clean: clean["tmpfs_staging"] = bool(clean["tmpfs_staging"])
         # Storage-path change is validated + applied FIRST, and everything
         # else in this request is only persisted once that succeeds — a
         # rejected path (unwritable, uncreatable) must leave every other
