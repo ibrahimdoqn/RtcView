@@ -371,21 +371,6 @@ input,select{font:inherit;color:inherit;}
 .modal-body{padding:1.1rem;display:flex;flex-direction:column;gap:.85rem;}
 .modal-body label{display:flex;flex-direction:column;gap:.35rem;color:var(--muted);font-size:.82rem;font-weight:500;}
 .modal-body label small{font-size:.72rem;opacity:.75;font-weight:400;}
-
-/* Ayarlar sayfasındaki açıklama metinleri (small.info-text): UI'yi
-   kalabalıklaştırmamak için varsayılan kapalı, yanlarındaki ⓘ düğmesiyle
-   açılıp kapanır — bkz. app.js _setupInfoToggles(). */
-.info-toggle{
-  display:inline-flex;align-items:center;justify-content:center;
-  width:16px;height:16px;border-radius:50%;flex:none;
-  border:1px solid var(--border-solid);background:var(--panel-2);
-  color:var(--muted);font-size:.62rem;line-height:1;cursor:pointer;
-  margin:.15rem 0;padding:0;transition:color .12s var(--ease-out),border-color .12s var(--ease-out);
-}
-.info-toggle:hover{color:var(--text);border-color:var(--text);}
-.info-toggle[aria-expanded="true"]{color:var(--text);border-color:var(--text);}
-small.info-text{display:block;margin-top:.3rem;}
-small.info-text.collapsed{display:none;}
 .modal-body label input,.modal-body label select{
   background:var(--panel-2);border:1px solid var(--border-solid);
   border-radius:9px;padding:.6rem .75rem;color:var(--text);min-height:40px;

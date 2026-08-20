@@ -3893,37 +3893,5 @@
     });
   }
 
-  // -------- Ayarlar açıklama metinleri (varsayılan kapalı) --------
-  // Settings sayfasındaki her <small class="info-text"> yardım metni UI'yi
-  // kalabalıklaştırmasın diye varsayılan gizli; yanına eklenen küçük bir ⓘ
-  // düğmesiyle istendiğinde açılır/kapanır. Tek seferlik DOM taraması
-  // (script `defer` ile yüklendiği için DOM zaten hazır) + tek bir delege
-  // edilmiş click handler -- 15+ ayrı açıklama bloğunun her biri için ayrı
-  // ayrı wiring gerekmiyor, ileride eklenecek yeni bir info-text de
-  // otomatik bu davranışı alır.
-  function _setupInfoToggles(){
-    $$("small.info-text").forEach(el => {
-      if (el.dataset.infoWired) return;
-      el.dataset.infoWired = "1";
-      el.classList.add("collapsed");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "info-toggle";
-      btn.setAttribute("aria-expanded", "false");
-      btn.setAttribute("aria-label", "Açıklamayı göster/gizle");
-      btn.textContent = "ⓘ";
-      el.parentNode.insertBefore(btn, el);
-    });
-  }
-  document.addEventListener("click", (e) => {
-    const btn = e.target.closest(".info-toggle");
-    if (!btn) return;
-    const el = btn.nextElementSibling;
-    if (!el || !el.classList.contains("info-text")) return;
-    const collapsed = el.classList.toggle("collapsed");
-    btn.setAttribute("aria-expanded", String(!collapsed));
-  });
-  _setupInfoToggles();
-
   init();
 })();

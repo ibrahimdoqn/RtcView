@@ -161,13 +161,12 @@
             <option value="rtc">WebRTC (düşük gecikme)</option>
             <option value="mse">MSE (fragmented MP4)</option>
           </select>
-          <small class="info-text">Sadece bu cihaz için geçerlidir. Seçilen mod çalışmıyorsa diğerini deneyin.</small>
+          <small>Sadece bu cihaz için geçerlidir. Seçilen mod çalışmıyorsa diğerini deneyin.</small>
         </label>
         <fieldset>
           <legend>Home Assistant bağlantısı</legend>
-          <small class="info-text">Hareket/insan/araç algılama artık Home Assistant'taki <code>binary_sensor</code>
-            varlıklarından okunuyor. Buradan tek bir HA örneğine bağlanın; hangi sensörün hangi kamerayı
-            temsil ettiğini her kameranın kendi ayarlarından (Kameralar sekmesi) seçersiniz.</small>
+          <small>Hareket/insan/araç algılama Home Assistant <code>binary_sensor</code>'lerinden okunur.
+            Hangi sensörün hangi kamerayı temsil ettiğini kameranın kendi ayarlarından seçersiniz.</small>
           <label>URL <input id="s-ha-url" placeholder="http://homeassistant.local:8123" /></label>
           <label>Erişim Jetonu (Long-Lived Access Token)
             <input id="s-ha-token" type="password" placeholder="HA profilinizden oluşturun" autocomplete="off" />
@@ -207,7 +206,7 @@
                 <select name="stream" id="stream-select" style="flex:1;"></select>
                 <button type="button" id="btn-refresh-streams" class="btn ghost small" title="Yenile">↻</button>
               </div>
-              <small class="info-text">go2rtc.yaml içindeki stream adı.</small>
+              <small>go2rtc.yaml içindeki stream adı.</small>
             </label>
             <fieldset>
               <legend>PTZ (ONVIF) – isteğe bağlı</legend>
@@ -244,7 +243,7 @@
               <label>Araç sensörü
                 <select name="ha_vehicle_entity" class="ha-entity-select"><option value="">— seçilmedi —</option></select>
               </label>
-              <small class="info-text">Sensör listesi, Ayarlar → Genel'deki Home Assistant bağlantısından çekilir (sadece
+              <small>Sensör listesi, Ayarlar → Genel'deki Home Assistant bağlantısından çekilir (sadece
                 <code>binary_sensor.*</code> varlıkları listelenir). Bağlantı kurulu değilse liste boş görünür.</small>
               <details id="motion-debug">
                 <summary>Gelişmiş / Hata Ayıklama</summary>
@@ -257,7 +256,7 @@
             <fieldset id="group-fieldset">
               <legend>Gruplar</legend>
               <div id="cam-group-chips" class="chip-row"></div>
-              <small class="info-text">Kamera birden fazla gruba ait olabilir. Bildirim ayarları (zamanlama, erteleme) artık
+              <small>Kamera birden fazla gruba ait olabilir. Bildirim ayarları (zamanlama, erteleme) artık
                 kamera bazında değil, Ayarlar → Bildirimler sekmesinden grup bazında yapılır.</small>
             </fieldset>
             <fieldset>
@@ -269,7 +268,7 @@
                   <option value="schedule">Zamanlı</option>
                   <option value="manual">Sadece manuel</option>
                 </select>
-                <small class="info-text">"Zamanlı" seçildiğinde aşağıdan haftalık pencereler tanımlayın.</small>
+                <small>"Zamanlı" seçildiğinde aşağıdan haftalık pencereler tanımlayın.</small>
               </label>
               <div id="rec-schedule-editor" class="rec-schedule hidden">
                 <div id="rec-schedule-rows"></div>
@@ -291,13 +290,9 @@
 
       <!-- Bildirimler -->
       <div class="settings-tabpanel modal-body" data-tab="bildirimler">
-        <small class="info-text">Bildirim gelip gelmeyeceğini <b>tamamen Home Assistant</b> belirler: her grup bir
-          <code>input_boolean.*</code> değişkenine bağlanır (ör. <code>input_boolean.fabrika_bildirim</code>) —
-          o değişken açıksa bildirim gelir, kapalıysa gelmez. Ne zaman açılıp kapanacağı
-          (zamanlama, otomasyon, elle açma/kapama) tamamen Home Assistant tarafında yönetilir;
-          RtcView yalnızca değişkenin o anki durumunu okur. Aşağıdan her grup için hangi
-          değişkeni izleyeceğini seçin. Aynı durum kenar çubuğundaki grup listesinde bir nokta
-          olarak da gösterilir. Grupsuz kameralar bildirim göndermez.</small>
+        <small>Her grup bir <code>input_boolean.*</code> değişkenine bağlanır — o değişken açıksa
+          bildirim gelir, kapalıysa gelmez. Ne zaman açılıp kapanacağını Home Assistant belirler.
+          Aşağıdan her grup için hangi değişkeni izleyeceğini seçin. Grupsuz kameralar bildirim göndermez.</small>
         <div id="notif-groups-list"></div>
       </div>
 
@@ -308,7 +303,7 @@
           <label class="row"><input id="s-rec-enabled" type="checkbox" /> Kayıt sistemi aktif</label>
           <label>Kayıt klasörü
             <input id="s-rec-path" type="text" placeholder="/opt/rtcview/recordings veya /mnt/harici-disk/rtcview" />
-            <small class="info-text">Diski buraya işaret etmeden önce sisteme kendiniz bağlayın (RtcView disk biçimlendirme/bağlama
+            <small>Diski buraya işaret etmeden önce sisteme kendiniz bağlayın (RtcView disk biçimlendirme/bağlama
               yapmaz — bkz. Kurulum). Kayıt yolunu değiştirmek servisi kısa süreliğine durdurup yeniden başlatır.</small>
           </label>
           <div class="grid2">
@@ -317,21 +312,16 @@
           </div>
           <label>Kota (GB, 0 = sınırsız) <input id="s-rec-quota" type="number" min="0" /></label>
           <label class="row"><input id="s-rec-tmpfs" type="checkbox" /> Segmentleri önce /tmp'de (RAM) oluştur, kapanınca kayıt diskine taşı</label>
-          <small class="info-text">SD kart/eMMC gibi yavaş/sınırlı ömürlü depolamalarda kaydın tamamı boyunca sürekli küçük
-            yazma yapmak yerine, ffmpeg segmenti önce RAM'de yazar; segment kapanınca tek seferde diske
-            taşınır — hem disk yükünü/yıpranmasını azaltır hem de yavaş bir diskin kayıt sırasında
-            takılmasına karşı daha dayanıklıdır. RtcView, <code>/tmp</code>'nin gerçekten bir tmpfs (RAM disk)
-            olarak bağlı olduğunu kendisi doğrular; değilse (normal bir dizinse, aynı diskin parçasıysa)
-            bu özellik o oturum için sessizce etkinleşmez — aşağıdaki durumdan kontrol edebilirsiniz.</small>
+          <small>ffmpeg segmenti önce RAM'de yazar, kapanınca tek seferde diske taşır — SD kart
+            yükünü azaltır. RtcView <code>/tmp</code>'nin gerçekten tmpfs (RAM) olduğunu kendisi
+            doğrular; değilse bu özellik sessizce etkinleşmez (aşağıdaki durumdan kontrol edin).</small>
           <div id="s-rec-tmpfs-bars" class="disk-bars"></div>
           <div id="s-rec-tmpfs-limits" class="grid2 hidden">
             <label>Gerekli boş RAM (MB) <input id="s-rec-tmpfs-margin" type="number" min="32" max="8192" /></label>
             <label>Kamera başına RAM sınırı (MB) <input id="s-rec-tmpfs-cap" type="number" min="32" max="16384" /></label>
           </div>
-          <small id="s-rec-tmpfs-limits-help" class="hidden">tmpfs'te bu kadar boş alan yoksa bir kameranın
-            oturumu bu özelliği hiç etkinleştirmiyor (sessizce doğrudan diske yazıyor). Bir kameranın
-            RAM'de biriken taşınmamış verisi bu sınırı aşarsa (kayıt diski yetişemiyor demektir) o kamera
-            otomatik olarak kalıcı şekilde doğrudan-diske-yazma moduna dönüyor.</small>
+          <small id="s-rec-tmpfs-limits-help" class="hidden">Bu kadar boş RAM yoksa özellik etkinleşmez.
+            Bir kameranın RAM'de biriken verisi sınırı aşarsa o kamera otomatik doğrudan diske döner.</small>
           <div id="s-rec-usage-summary" class="usage-text">—</div>
           <div id="s-rec-disk-bars" class="disk-bars"></div>
           <div id="s-rec-health" class="rec-health rec-health-ok">
@@ -356,7 +346,7 @@
 
       <!-- go2rtc -->
       <div class="settings-tabpanel modal-body" data-tab="go2rtc">
-        <small class="info-text">RtcView kendi go2rtc'sini kurar ve yönetir — kamera akışlarını (streams) ve diğer
+        <small>RtcView kendi go2rtc'sini kurar ve yönetir — kamera akışlarını (streams) ve diğer
           ayarları aşağıdaki yapılandırma editöründen düzenleyebilirsiniz.</small>
         <fieldset>
           <legend>go2rtc bağlantısı</legend>
@@ -371,7 +361,7 @@
         </fieldset>
         <fieldset>
           <legend>Yapılandırma (go2rtc.yaml)</legend>
-          <small class="info-text">Kamera akışları burada tanımlanır. Kaydettikten sonra değişikliklerin etkili olması
+          <small>Kamera akışları burada tanımlanır. Kaydettikten sonra değişikliklerin etkili olması
             için go2rtc'yi yeniden başlatmanız gerekir — bu, canlı yayını birkaç saniyeliğine keser.</small>
           <textarea id="s-g2-config" class="config-editor" spellcheck="false" rows="14"></textarea>
           <div class="row" style="gap:.4rem;flex-wrap:wrap;margin-top:.5rem;">
@@ -442,11 +432,8 @@
               </summary>
               <div class="sys-row-body">
                 <label>ffmpeg bellek sınırı (MB) <input id="s-sys-mem-ceiling" type="number" min="32" max="4096" /></label>
-                <small class="info-text">Bir kameranın kayıt işlemi (ffmpeg) bu değeri aşarsa otomatik olarak
-                  yeniden başlatılır — bellek sızıntısının cihazı bunaltmasını önler.
-                  Sağlıklı bir kayıt normalde 50-90 MB civarında sabit kalır; düşük
-                  RAM'li cihazlarda (SBC) değeri düşük tutmak, güçlü sunucularda
-                  yükseltmek isteyebilirsiniz.</small>
+                <small>Bir kameranın kayıt işlemi bu değeri aşarsa otomatik yeniden başlatılır.
+                  Sağlıklı bir kayıt normalde 50-90 MB civarında kalır.</small>
                 <div class="modal-actions">
                   <button type="button" id="s-save-mem-ceiling" class="btn primary small">Kaydet</button>
                 </div>
@@ -462,12 +449,8 @@
               </summary>
               <div class="sys-row-body">
                 <label>Sensör yolu <input id="s-temp-path" type="text" placeholder="/sys/class/thermal/thermal_zone0/temp" /></label>
-                <small class="info-text">Cihaza göre değişir — NanoPi R4S gibi ARM SBC'lerde genelde
-                  <code>thermal_zone0</code>, ama farklı kartlarda numara ya da
-                  hiç olmayabilir. Cihazınızdaki seçenekleri görmek için sunucuda
-                  <code>ls /sys/class/thermal/</code> ve her birinin
-                  <code>type</code> dosyasını kontrol edin. Boş bırakılırsa
-                  sıcaklık gösterilmez.</small>
+                <small>Cihaza göre değişir — R4S gibi kartlarda genelde <code>thermal_zone0</code>.
+                  Seçenekleri görmek için sunucuda <code>ls /sys/class/thermal/</code> çalıştırın.</small>
                 <div class="modal-actions">
                   <button type="button" id="s-save-temp-path" class="btn primary small">Kaydet</button>
                 </div>
@@ -488,7 +471,7 @@
                   <button type="button" id="s-update-refresh" class="btn ghost small">Yenile</button>
                   <button type="button" id="s-update-now" class="btn primary small">Şimdi Güncelle</button>
                 </div>
-                <small class="info-text">GitHub'daki en son sürümü indirir, dosyaları günceller ve servisi yeniden başlatır.
+                <small>GitHub'daki en son sürümü indirir, dosyaları günceller ve servisi yeniden başlatır.
                   Bu sırada uygulama birkaç dakika erişilemez olabilir.</small>
               </div>
             </details>
@@ -505,10 +488,8 @@
                   <button type="button" id="s-restart-app" class="btn ghost small">Uygulamayı Yeniden Başlat</button>
                   <button type="button" id="s-restart-system" class="btn danger small">Sistemi Yeniden Başlat</button>
                 </div>
-                <small class="info-text">"Uygulamayı Yeniden Başlat", sadece RtcView servisini yeniden başlatır — kameralar
-                  birkaç saniye içinde geri gelir. "Sistemi Yeniden Başlat", cihazın tamamını reboot eder —
-                  tüm kayıtlar ve bağlı diskler bir süreliğine kesintiye uğrar, açılışta diskler otomatik
-                  yeniden bağlanır.</small>
+                <small>"Uygulamayı Yeniden Başlat" sadece RtcView servisini yeniden başlatır (birkaç saniye).
+                  "Sistemi Yeniden Başlat" cihazın tamamını reboot eder.</small>
                 <div id="s-restart-status" class="usage-text"></div>
               </div>
             </details>

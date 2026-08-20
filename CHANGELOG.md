@@ -5,6 +5,12 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.3.5] - 2026-08-20
+
+### Değişti
+- **4.3.4'teki açılıp-kapanır açıklama metinleri geri alındı** — kullanıcı geri bildirimi üzerine. Ayarlar sayfasındaki tüm açıklama metinleri artık tekrar her zaman görünür (ⓘ düğmesi yok, tıklamaya gerek yok).
+- Bunun yerine **gerçekten uzun olan açıklama metinleri sadeleştirildi** (Home Assistant bağlantısı, Bildirimler girişi, tmpfs staging, ffmpeg bellek sınırı, sıcaklık sensörü yolu, yeniden başlatma notu) — aynı bilgiyi daha kısa cümlelerle veriyor, kısa olanlar (tek satırlık ipuçları) değiştirilmedi.
+
 ## [4.3.4] - 2026-08-20
 
 ### Eklendi
