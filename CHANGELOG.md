@@ -5,6 +5,12 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.3.4] - 2026-08-20
+
+### Eklendi
+- **Ayarlar → Kayıt & Depolama'daki tmpfs kullanım çubuğu artık canlı** — bu sekme ekrandayken 1 saniyede bir yenileniyor, sekmeden çıkılınca veya Ayarlar kapatılınca otomatik duruyor (Sistem sekmesinin auto-refresh'iyle aynı desen, gereksiz arka plan isteği bırakmıyor).
+- **Ayarlar sayfasındaki tüm açıklama metinleri artık açılıp kapanabilir.** Önceden her sekmede (Genel, Kameralar, Bildirimler, Kayıt & Depolama, go2rtc, Sistem) sabit duran yardım paragrafları UI'yi kalabalıklaştırıyordu. Artık varsayılan olarak gizli; yanlarındaki küçük ⓘ düğmesiyle istendiğinde açılıp kapanıyor. Tek bir genel mekanizma (`small.info-text` + tek bir delege edilmiş tıklama işleyicisi) — 15 ayrı açıklama bloğunun her biri ayrı ayrı kodlanmadı, ileride eklenecek yeni bir açıklama da otomatik aynı davranışı alıyor. Gerçek tarayıcı (Playwright) testiyle doğrulandı.
+
 ## [4.3.3] - 2026-08-20
 
 ### Değişti

@@ -1757,7 +1757,9 @@
     $("#settings-page").classList.add("hidden");
     stopMotionPoll();
     clearInterval(_sysAutoTimer); _sysAutoTimer = null;
+    clearInterval(_recTmpfsTimer); _recTmpfsTimer = null;
   }
+  let _recTmpfsTimer = null;
   function switchSettingsTab(name){
     _lastSettingsTab = name;
     // Both of these only naturally stop themselves in the narrow case
@@ -1769,9 +1771,12 @@
     // in the background for the rest of the session. Harmless to call
     // unconditionally: both are no-ops if nothing was running, and
     // showCameraList()/the <details> toggle below still call them again
-    // redundantly on their own paths.
+    // redundantly on their own paths. Same reasoning for the Kayıt tab's
+    // tmpfs usage bar (see loadKayitTab) — only meant to live-refresh
+    // while that tab is actually the one on screen.
     stopMotionPoll();
     clearInterval(_sysAutoTimer); _sysAutoTimer = null;
+    clearInterval(_recTmpfsTimer); _recTmpfsTimer = null;
     $$(".settings-tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
     $$(".settings-tabpanel").forEach(p => p.classList.toggle("hidden", p.dataset.tab !== name));
     if (name === "genel") loadGenelTab();
@@ -1930,6 +1935,12 @@
       _updateTmpfsLimitsVisibility();
     } catch {}
     refreshUsageBar();
+    // Live doluluk oranı: yalnızca bu sekme ekrandayken 1sn'de bir
+    // yenile (kapatılınca/başka sekmeye geçilince switchSettingsTab/
+    // closeSettingsPage durduruyor — Sistem sekmesinin 2sn'lik
+    // auto-refresh'iyle aynı desen).
+    clearInterval(_recTmpfsTimer);
+    _recTmpfsTimer = setInterval(refreshUsageBar, 1000);
   }
   function _updateTmpfsLimitsVisibility(){
     const on = $("#s-rec-tmpfs").checked;
@@ -3881,6 +3892,38 @@
       window.location.reload();
     });
   }
+
+  // -------- Ayarlar açıklama metinleri (varsayılan kapalı) --------
+  // Settings sayfasındaki her <small class="info-text"> yardım metni UI'yi
+  // kalabalıklaştırmasın diye varsayılan gizli; yanına eklenen küçük bir ⓘ
+  // düğmesiyle istendiğinde açılır/kapanır. Tek seferlik DOM taraması
+  // (script `defer` ile yüklendiği için DOM zaten hazır) + tek bir delege
+  // edilmiş click handler -- 15+ ayrı açıklama bloğunun her biri için ayrı
+  // ayrı wiring gerekmiyor, ileride eklenecek yeni bir info-text de
+  // otomatik bu davranışı alır.
+  function _setupInfoToggles(){
+    $$("small.info-text").forEach(el => {
+      if (el.dataset.infoWired) return;
+      el.dataset.infoWired = "1";
+      el.classList.add("collapsed");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "info-toggle";
+      btn.setAttribute("aria-expanded", "false");
+      btn.setAttribute("aria-label", "Açıklamayı göster/gizle");
+      btn.textContent = "ⓘ";
+      el.parentNode.insertBefore(btn, el);
+    });
+  }
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".info-toggle");
+    if (!btn) return;
+    const el = btn.nextElementSibling;
+    if (!el || !el.classList.contains("info-text")) return;
+    const collapsed = el.classList.toggle("collapsed");
+    btn.setAttribute("aria-expanded", String(!collapsed));
+  });
+  _setupInfoToggles();
 
   init();
 })();
