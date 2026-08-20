@@ -43,10 +43,10 @@ kendi entegrasyonu, vb. — kaynak fark etmez).
 - Tarih navigasyonu (◀ önceki / bugün / sonraki ▶)
 
 ### Depolama
-- **Tek bir kayıt diski/klasörü** kullanılır — RtcView disk biçimlendirme, bağlama veya ayırma yapmaz; hedef diski işletim sisteminde siz bağlarsınız (bkz. [Kurulum](#kurulum)), RtcView sadece o yola yazar
-- UI'dan (Ayarlar → Kayıt & Depolama) canlı olarak yol, kota (GB) ve retention değiştirilir
+- **Bir veya birden fazla kayıt klasörü** kullanılabilir — RtcView disk biçimlendirme, bağlama veya ayırma yapmaz; hedef diskleri işletim sisteminde siz bağlarsınız (bkz. [Kurulum](#kurulum)), RtcView sadece bu yollara yazar. Birden fazla yol eklenirse sırayla doldurulur: ilki dolana kadar ona yazılır, sonra sıradaki devreye girer
+- UI'dan (Ayarlar → Kayıt & Depolama) canlı olarak yol(lar), kota (GB), retention ve düşük disk marjı (MB) değiştirilir
 - Disk kullanım çubuğu, en eski kaydın tarih/saati, "diski yeniden tara" ve "şimdi temizle" butonları
-- **Depolama sağlığı akıllıdır**: disk dolması normal, rolling-storage davranışıdır — silinecek eski segment olduğu sürece hata/uyarı göstermez; disk fiziksel olarak güvenlik payının (1 GB) altına düştüğünde retention süresi dolmasa bile en eski kayıtlar otomatik silinip yer açılır. Yalnızca gerçekten çıkmaz sokaktaysa (silinecek hiçbir şey kalmadıysa veya izin/donanım sorunu varsa) kırmızı uyarı verir
+- **Depolama sağlığı akıllıdır**: disk dolması normal, rolling-storage davranışıdır — silinecek eski segment olduğu sürece hata/uyarı göstermez. Her yeni segment başlamadan hemen önce, yapılandırılmış klasörlerin **hepsi** ayarlanabilir düşük disk marjının altındaysa (varsayılan 1 GB), retention süresi dolmasa bile en eski kayıtlar (o an aktif kamera sayısı kadar) otomatik silinip yer açılır — en az bir klasörde yer olduğu sürece hiçbir şey silinmez, sıralı doldurma zaten oraya geçer. Yalnızca gerçekten çıkmaz sokaktaysa (silinecek hiçbir şey kalmadıysa veya izin/donanım sorunu varsa) kırmızı uyarı verir
 - Bir segment silinirken dosya diskten fiilen kaldırılamazsa (geçici I/O hatası), bir sonraki temizlik turunda otomatik olarak disk yeniden taranır — index'te görünmeyen ama fiilen diskte duran dosyalar kendiliğinden yeniden kayda alınır
 - SQLite index (`<yol>/index.sqlite`), MP4 dosyaları `<yol>/<cam>/YYYY/MM/DD/`
 
@@ -114,7 +114,7 @@ Harici bir diske geçmek (veya ikinci bir disk eklemek) istediğinizde: diski ö
 
 **UI'dan:** Ayarlar → "Kayıt & Depolama" → "Kayıt klasörleri" listesine yeni bir klasör ekleyin (yazılabilir mi kontrol edilir) veya mevcut birini kaldırın.
 
-**Birden fazla disk — sıralı doldurma:** Listeye birden fazla klasör eklerseniz kayıt sırayla doldurulur: ilk klasör dolana kadar (güvenlik payı düşene kadar) her segment ona yazılır; dolunca listedeki bir sonraki klasör devreye girer, üçüncü bir disk varsa aynı şekilde devam eder. RtcView disklerin hiçbirini kendisi biçimlendirmez/bağlamaz/ayırmaz — her klasörü siz mount etmiş ve elle yönetiyor olmalısınız. Bu bilinçli bir sınır: RtcView'ın kendi kendine disk yönetimi yaptığı bir önceki sürümde, harici bir USB diskin donanımsal arızaya girmesi ve uygulamanın buna otomatik tepki veren temizlik mantığı birleşince ciddi bir olay yaşanmıştı. Mevcut tasarımda her disk bağımsız değerlendirilir — biri arızalanır/dolarsa yalnızca o diskin kendi temizlik/kurtarma mantığı devreye girer, diğer disklerin durumu hiç etkilenmez.
+**Birden fazla disk — sıralı doldurma:** Listeye birden fazla klasör eklerseniz kayıt sırayla doldurulur: ilk klasör dolana kadar (güvenlik payı düşene kadar) her segment ona yazılır; dolunca listedeki bir sonraki klasör devreye girer, üçüncü bir disk varsa aynı şekilde devam eder. RtcView disklerin hiçbirini kendisi biçimlendirmez/bağlamaz/ayırmaz — her klasörü siz mount etmiş ve elle yönetiyor olmalısınız. Bu bilinçli bir sınır: RtcView'ın kendi kendine disk yönetimi yaptığı bir önceki sürümde, harici bir USB diskin donanımsal arızaya girmesi ve uygulamanın buna otomatik tepki veren temizlik mantığı birleşince ciddi bir olay yaşanmıştı. En az bir klasörde yer olduğu sürece hiçbir şey silinmez — sıralı doldurma zaten sıradaki klasöre geçer. Yapılandırılmış klasörlerin **hepsi** aynı anda düşük disk marjının altına düşerse (Ayarlar'dan ayarlanabilir, varsayılan 1 GB), her yeni segment başlamadan önce en eski kayıtlardan (o an aktif kamera sayısı kadar) otomatik silinip yer açılır — hangi klasörde olduklarına bakılmaksızın, en eskiden başlanarak.
 
 **Komut satırından (sandbox dışında bir yol için):**
 

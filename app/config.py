@@ -60,21 +60,19 @@ DEFAULT_CONFIG = {
         # per-disk purge logic reacting badly to it, caused a real
         # production incident. This reintroduces multiple write targets
         # without reintroducing that — every path here is something a
-        # human already mounted and can unmount, and each root's purge/
-        # reclaim is isolated from the others (see storage.py's
-        # purge_once(): a delete failure on one root stops only that
-        # root's own reclaim phase, never cascades to another root or
-        # drains its whole index).
+        # human already mounted and can unmount; RtcView only ever writes
+        # to and deletes from paths it's told about here.
         "storage_paths": ["/opt/rtcview/recordings"],
         "segment_seconds": 300,
         "retention_days": 14,
         # 0 = unlimited (bounded only by physical disk size + the
-        # near-full rolling purge in storage.py).
+        # margin-triggered cleanup — see low_space_margin_mb below).
         "max_gb": 0,
         "purge_interval_seconds": 60,
         # Free-space floor (per root) below which a disk is treated as
         # "no room" — by both the write picker (which root gets new
-        # segments) and the reclaim/emergency purge in storage.py. What
+        # segments) and free_up_for_new_segment() in storage.py, which
+        # deletes the oldest footage when EVERY root is below this. What
         # counts as "a sensible safety margin" isn't the same number on a
         # 128 GB SD card as it is on an 8 TB array, so this is a setting,
         # not a fixed constant. ffmpeg still needs SOME slack to flush a

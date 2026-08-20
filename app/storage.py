@@ -9,17 +9,28 @@ external-USB drive it was recording to went into a hardware failure
 loop; the app's own automated per-disk purge logic reacted badly to that
 instability and made a bad situation worse — a real production incident.
 This reintroduces multiple write targets without reintroducing that: a
-human mounts (and can unmount) every path here, and every purge/reclaim
-phase below is isolated per root — a delete failure on one root stops
-only that root's own reclaim phase (see purge_once()'s
-_delete_and_keep_going), never cascades into another root or drains its
-whole tracked index.
+human mounts (and can unmount) every path here, RtcView only ever writes
+to and deletes from paths it's told about.
 
 Writes fill sequentially: the first configured root that currently has
 room takes every new segment; once it doesn't, the next one takes over
 (see pick_write_root()). One disk managed by a human per path, several
 paths composed simply, is the goal — not automated disk topology
 management.
+
+Two separate, deliberately simple cleanup mechanisms, kept apart because
+they react to different things:
+  - purge_once() (background thread, every purge_interval_seconds):
+    age-based retention and size-based quota — rules that don't need to
+    react to a specific write event, just periodic sweeps.
+  - free_up_for_new_segment() (called synchronously from recorder.py
+    right before every new segment starts): the "a disk is full" case.
+    A no-op unless EVERY configured root is below the configured
+    low-space margin; when that happens, it deletes exactly N
+    globally-oldest unlocked segments (N = configured camera count) and
+    stops. Deliberately not "keep deleting until margin clears" — a
+    fixed, predictable amount is simpler to reason about, and if it
+    wasn't enough this call runs again at the very next segment start.
 """
 import errno
 import logging
@@ -304,6 +315,77 @@ class Storage:
             except Exception:
                 continue
         return False
+
+    def _any_root_has_room(self, margin: int) -> bool:
+        """True if AT LEAST ONE configured root is both writable and has
+        at least `margin` bytes free right now — the same "room" that
+        pick_write_root() looks for. A root with plenty of free bytes but
+        a broken write (wrong permissions after a remount, for example)
+        is NOT room."""
+        for r in self.roots():
+            try:
+                probe = r / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
+                probe.write_text("ok"); probe.unlink()
+                du = shutil.disk_usage(str(r))
+            except Exception:
+                continue
+            if du.free >= margin:
+                return True
+        return False
+
+    def free_up_for_new_segment(self) -> dict:
+        """Called right before every new segment starts (recorder.py's
+        CameraRecorder.start() and _finish_segment()) — the simple
+        replacement for the old periodic "reclaim" machinery.
+
+        If ANY configured root already has room, this does nothing: the
+        sequential-fill write picker (pick_write_root()) will just use
+        that root, no need to delete anything. Deleting is only ever
+        useful once EVERY root is below the configured margin — that's
+        the one moment recording genuinely has nowhere to go without
+        making room first.
+
+        When that happens, it deletes exactly N globally-oldest unlocked
+        segments, where N is the number of configured cameras — one
+        segment's worth of headroom per camera that could be about to
+        start writing a new one, regardless of which root or which
+        camera each deleted segment actually belonged to. This is a
+        fixed, predictable amount, not a "keep deleting until X" loop:
+        simple and easy to reason about, at the cost of not being exactly
+        precise about how many bytes it actually frees (that's fine — if
+        it wasn't enough, the very next segment start calls this again).
+
+        Stops early the moment a single delete's unlink fails (same
+        stop-on-failure safety this whole module uses everywhere else —
+        see _delete_and_keep_going in purge_once()): ploughing through
+        the rest of the list after a disk starts refusing deletes only
+        turns more of its tracked history into untracked orphans for no
+        space gained. The next purge_once() tick's auto-rescan recovers
+        from it (self._orphan_suspected)."""
+        margin = self._margin_bytes()
+        if self._any_root_has_room(margin):
+            return {"removed": 0, "freed_bytes": 0}
+        n = max(1, len(self.config_store.get_cameras()))
+        log.warning("free_up_for_new_segment: no root has room — deleting the %d globally-oldest segment(s)", n)
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, bytes FROM segments WHERE locked = 0 ORDER BY started_at ASC LIMIT ?",
+                (n,)
+            ).fetchall()
+        removed = 0; freed = 0
+        for sid, b in rows:
+            deleted, unlink_ok = self._delete_segment_impl(sid)
+            if not deleted:
+                continue  # already gone/locked — not a failure, try the next one
+            if not unlink_ok:
+                log.warning("free_up_for_new_segment: a delete failed, stopping this pass")
+                break
+            removed += 1
+            freed += int(b or 0)
+        if not rows:
+            log.error("free_up_for_new_segment: no room anywhere and nothing left to delete "
+                       "(everything locked?) — the new segment may fail to write")
+        return {"removed": removed, "freed_bytes": freed}
 
     def _ensure_roots(self):
         try:
@@ -1106,170 +1188,17 @@ class Storage:
                     if not keep_going:
                         break
 
-        # Rolling-buffer reclaim: once a root's free space drops under the
-        # safety margin, age out unlocked segments until it has room
-        # again — the backstop that keeps a quota-less setup (or one
-        # whose footage volume outgrows retention_days) from running a
-        # disk into the ground.
-        #
-        # Deletion order is oldest-first ACROSS every root that is
-        # currently low, not each low root deleting only its own oldest
-        # segments in isolation. In a sequential-fill setup the disk that
-        # filled up first (and holds the oldest footage) is often no
-        # longer the one being written to — once writes move on to a
-        # later disk, that later disk is the one that eventually runs
-        # low too, but its own segments are NEWER than whatever's still
-        # sitting on the earlier, already-full disk. If both are low
-        # simultaneously (the common way this triggers — sequential fill
-        # already means the earlier disk had no room left when the later
-        # one took over), the earlier disk's genuinely older footage
-        # should go first, system-wide — not each disk blindly aging out
-        # its own newest-of-its-old segments independently.
-        #
-        # This is deliberately NOT "delete the single globally-oldest
-        # segment on ANY root" — a root that ISN'T low is never touched,
-        # even if it happens to hold older footage than a root that is:
-        # deleting a file on a healthy root frees not one byte on a
-        # DIFFERENT, actually-short-on-space root (they're separate
-        # physical disks), so that would just destroy footage on a disk
-        # that never needed the space, for zero benefit to the one that
-        # does. See "candidates" below.
-        #
-        # Multi-root ordering alone would reintroduce the exact class of
-        # incident that originally motivated removing multi-disk support:
-        # if the oldest eligible segment happens to sit on a flaky disk,
-        # a plain "stop the whole reclaim on any failure" rule would let
-        # that ONE bad disk block every other (healthy, still-low) disk
-        # from ever freeing space, since its old segments are always
-        # tried first. broken_roots is the fix — the moment a delete
-        # fails, that segment's root is quarantined for the REST OF THIS
-        # TICK ONLY (a fresh set every purge_once() call, so a disk that
-        # recovers gets retried on the very next tick, same self-healing
-        # story _orphan_suspected already relies on elsewhere in this
-        # method): its remaining segments are skipped rather than
-        # retried, so reclaim keeps making progress for every other low
-        # root using healthy disks' segments, and the flaky disk never
-        # gets hammered in a tight retry loop.
-        #
-        # Ground truth for "low" is shutil.disk_usage(), not the
-        # write-test's errno: some filesystems (f2fs once it runs out of
-        # free segments for a checkpoint, in particular) return EIO
-        # instead of ENOSPC for what is still fundamentally "disk is
-        # full" — but a low disk_usage() free reading means the same
-        # thing regardless of which errno the filesystem happened to
-        # surface.
-        #
-        # Deletes exactly one segment at a time, rechecking ONLY the
-        # affected root's free space after each one and dropping that
-        # root out of contention the moment it clears the margin — never
-        # a fixed batch. A fixed batch (this used to pull and delete 20
-        # candidates per round before rechecking anything) always deletes
-        # AT LEAST that many even when freeing 4 segments' worth of space
-        # would already have been enough — that's real footage destroyed
-        # for no reason. One delete only ever changes the free space on
-        # the ONE root that segment came from, so only that root needs
-        # re-measuring; the other still-low roots' state hasn't changed
-        # and re-querying them here would just be wasted syscalls.
-        margin = self._margin_bytes()
-        still_low: set = set()
-        for r in self.roots():
-            try:
-                free = shutil.disk_usage(str(r)).free
-            except Exception:
-                continue  # root unreadable (unmounted, unplugged) — not a purge-fixable problem
-            if free < margin:
-                still_low.add(r)
-                log.warning("reclaim: %s below safety margin (%d MB free, margin %d MB)",
-                            r, free // (1024*1024), margin // (1024*1024))
-
-        if still_low:
-            broken_roots: set = set()
-            while not self._stop.is_set() and still_low:
-                # Candidate set is scoped to whichever roots are STILL
-                # low (minus any already given up on this tick) — never
-                # the globally-oldest segment full stop. Deleting a file
-                # on a healthy root that was never short on space frees
-                # not one byte on the root that actually needs it (they're
-                # separate physical disks); the "global-oldest" property
-                # this whole reclaim is trying to honor only makes sense
-                # evaluated AMONG the roots that genuinely need the
-                # space, oldest of those goes first.
-                candidates = [r for r in still_low if r not in broken_roots]
-                if not candidates:
-                    break  # every root that's still low is already known-broken this tick
-                with self._lock:
-                    where = " OR ".join(["path LIKE ? ESCAPE '\\'"] * len(candidates))
-                    patterns = [self._like_escape(str(r) + os.sep) + "%" for r in candidates]
-                    row = self._db.execute(
-                        f"SELECT id, bytes, path FROM segments"
-                        f" WHERE locked = 0 AND ({where})"
-                        f" ORDER BY started_at ASC LIMIT 1",
-                        (*patterns,)
-                    ).fetchone()
-                if not row:
-                    log.error("reclaim: nothing left to delete, still low: %s", [str(r) for r in candidates])
-                    break
-                sid, b, path = row
-                seg_root = self._root_for_path(path)
-                _, keep_going = _delete_and_keep_going(sid, b)
-                if not keep_going:
-                    if seg_root is not None:
-                        broken_roots.add(seg_root)
-                        still_low.discard(seg_root)
-                        log.warning("reclaim: %s — a delete failed, giving up on this root for the rest of "
-                                    "this tick (next tick, or the emergency purge below, retries it)", seg_root)
-                    continue
-                if seg_root is not None and seg_root in still_low:
-                    try:
-                        if shutil.disk_usage(str(seg_root)).free >= margin:
-                            still_low.discard(seg_root)
-                    except Exception:
-                        still_low.discard(seg_root)  # unreadable — not purge-fixable, stop trying for it
-
-        # Emergency global purge: when NO root has room, delete
-        # globally-oldest UNLOCKED segments (regardless of which disk
-        # they're on) until at least one root becomes writable again.
-        # "Room" means the same thing pick_write_root() means by it —
-        # writable AND enough free space — not just "has free bytes": a
-        # root with plenty of free space but a broken permission (e.g.
-        # wrong owner after a remount) is NOT room, and used to make this
-        # skip the emergency purge entirely while the actual writable
-        # root quietly ran itself down to ENOSPC.
-        def _any_has_room() -> bool:
-            for r in self.roots():
-                try:
-                    probe = r / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
-                    probe.write_text("ok"); probe.unlink()
-                    du = shutil.disk_usage(str(r))
-                except Exception:
-                    continue
-                if du.free >= margin:
-                    return True
-            return False
-
-        if not _any_has_room():
-            log.warning("emergency purge: no root has room")
-            # Same one-at-a-time, recheck-and-stop-as-soon-as-enough shape
-            # as the reclaim loop above, for the same reason: a fixed
-            # batch always over-deletes whenever fewer segments than the
-            # batch size would already have freed enough room on some
-            # root.
-            while not self._stop.is_set():
-                with self._lock:
-                    row = self._db.execute(
-                        "SELECT id, bytes FROM segments"
-                        " WHERE locked = 0 ORDER BY started_at ASC LIMIT 1"
-                    ).fetchone()
-                if not row:
-                    log.error("emergency purge: nothing left to delete — all segments locked")
-                    break
-                sid, b = row
-                _, keep_going = _delete_and_keep_going(sid, b)
-                if not keep_going:
-                    log.warning("emergency purge: a delete stopped freeing real space — pausing this tick")
-                    break
-                if _any_has_room():
-                    break
+        # Margin-based cleanup (deleting the oldest footage to make room
+        # on a full disk) no longer lives here — it used to run as part
+        # of this periodic tick (a "reclaim" phase scoped to low roots
+        # plus a separate "emergency" phase for when every root was low),
+        # but that only mattered because the tick could be up to
+        # purge_interval_seconds (60s default) late reacting to a disk
+        # filling up. It now runs synchronously at the moment that
+        # actually needs the room instead — see free_up_for_new_segment(),
+        # called from recorder.py right before every new segment starts.
+        # Retention and quota above stay here since they're age/size
+        # rules that don't need to react to a specific write event.
 
         # Snapshot retention: keep only 3× retention days for snapshots (they're small)
         snap_retention = max(retention * 3, 30)

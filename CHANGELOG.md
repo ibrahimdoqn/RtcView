@@ -5,6 +5,16 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.6.0] - 2026-08-20
+
+### Değiştirildi
+- **Disk-doluluk tabanlı silme mekanizması baştan aşağı basitleştirildi.** Önceki tasarım periyodik bir arka plan turunda (varsayılan 60 sn'de bir) çalışan, "düşük disklerin kümesi" (`still_low`), "bu turluk arızalı disk karantinası" (`broken_roots`) ve tek-tek-sil-kontrol-et döngüsünden oluşan, hem reclaim hem ayrı bir "acil global temizlik" fazı içeren çok katmanlı bir yapıydı. Artık:
+  - Yaş (retention_days) ve kota (max_gb) tabanlı temizlik **aynen kalıyor** — hâlâ `purge_once()` içinde, periyodik arka plan turunda çalışıyor.
+  - Disk-doluluk tabanlı silme artık **periyodik değil, olay tetiklemeli**: her yeni segment başlamadan hemen önce (`storage.free_up_for_new_segment()`, `recorder.py`'den çağrılır) çalışır. Yapılandırılmış klasörlerin **hepsi** aynı anda düşük disk marjının altındaysa (tek bir klasörde bile yer varsa hiçbir şey silinmez — sıralı doldurma zaten oraya geçer), en eski **N** kilitsiz segment silinir; **N = o an yapılandırılı kamera sayısı**, hangi diskten/kameradan oldukları önemsenmeden global en-eskiden başlanarak. Sabit ve öngörülebilir bir miktar — "marj temizlenene kadar sil" döngüsü yerine; yetmediyse bir sonraki segment başlangıcında tekrar çalışır.
+  - `still_low`/`broken_roots`/per-root LIKE sorgu scoping'i tamamen kaldırıldı — tek disk arızasının diğerini etkilememesi artık basitçe "bir silme başarısız olursa bu geçiş hemen durur" kuralıyla sağlanıyor (aynı `_delete_segment_impl`'in kendi unlink sonucunu döndürmesi mekanizması).
+  - Manuel "Şimdi temizle" butonu (`POST /api/recording/purge`) artık hem `purge_once()`'u hem `free_up_for_new_segment()`'i çağırıp sonuçları birleştiriyor — davranışı kullanıcı için değişmedi.
+  - Yeni testlerle doğrulandı: en az bir disk müsaitken hiçbir şey silinmediği, tüm diskler doluyken tam olarak kamera-sayısı-kadar segmentin (hangi diskten olduğuna bakılmaksızın global en-eskiden) silindiği, bir silme hatasında geçişin hemen durduğu, ve `purge_once()`'un artık marj tabanlı silme yapmadığı (sadece retention/kota).
+
 ## [4.5.0] - 2026-08-20
 
 ### Eklendi

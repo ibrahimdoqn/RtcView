@@ -350,6 +350,10 @@ class CameraRecorder:
     def start(self, trigger: str):
         with self._lock:
             if self.is_running(): return
+            # Make sure some root has room before picking one — see
+            # storage.py's free_up_for_new_segment() docstring. A no-op
+            # unless every configured root is currently below its margin.
+            self.storage.free_up_for_new_segment()
             # Pick the freshest, most-free storage root at spawn time.
             # A previous session may have used a different root — we
             # honour whatever has room now.
@@ -656,6 +660,11 @@ class CameraRecorder:
                 return False
         self.storage.register_segment(self.cam_id, final_path_str, started, ended,
                                        trigger=self.trigger, playable=playable)
+        # This segment just closed — ffmpeg is already writing the next
+        # one (or about to, for -f segment's continuous rotation). Make
+        # sure some root has room for it now, same check as start(); a
+        # no-op unless every root is currently below its margin.
+        self.storage.free_up_for_new_segment()
         return True
 
     def _flush_stage_leftovers(self, stage_dir: Path):
