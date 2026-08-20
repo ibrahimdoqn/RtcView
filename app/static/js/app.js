@@ -185,7 +185,22 @@
     // when it comes back, so a backgrounded tab costs nothing.
     setInterval(() => { if (!document.hidden) updateNotifications(); }, NOTIF_POLL_MS);
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden){ updateNotifications(); refreshGroups(); }
+      if (!document.hidden){
+        updateNotifications(); refreshGroups();
+        // Settings' Kayıt & Depolama / Sistem panels poll on their own
+        // timers (see loadKayitTab/_recTmpfsTimer, _sysAutoTimer) which
+        // now skip ticks while hidden instead of queueing them up — so
+        // whichever one is currently open needs one immediate refresh
+        // here instead of waiting up to a full tick period to show
+        // current state again.
+        if (!$("#settings-page").classList.contains("hidden")){
+          if (_lastSettingsTab === "kayit") refreshUsageBar();
+          else if (_lastSettingsTab === "sistem"){
+            const d = $("#s-sys-stats") && $("#s-sys-stats").closest("details");
+            if (d && d.open) refreshSysStats();
+          }
+        }
+      }
     });
     // Rule-driven switch flips happen server-side; re-read them so the
     // sidebar toggle can't sit stale on a long-open page.
@@ -1938,9 +1953,15 @@
     // Live doluluk oranı: yalnızca bu sekme ekrandayken 1sn'de bir
     // yenile (kapatılınca/başka sekmeye geçilince switchSettingsTab/
     // closeSettingsPage durduruyor — Sistem sekmesinin 2sn'lik
-    // auto-refresh'iyle aynı desen).
+    // auto-refresh'iyle aynı desen). document.hidden guard: a
+    // backgrounded mobile tab (switching apps/tabs with Settings still
+    // open) doesn't stop setInterval, it just gets throttled/queued by
+    // the OS/browser -- without this, coming back to the tab can fire a
+    // burst of several queued calls at once, hammering the backend and
+    // (before storage.py's write-test race fix) surfacing a spurious
+    // "Yazılamıyor" storage error that wasn't real.
     clearInterval(_recTmpfsTimer);
-    _recTmpfsTimer = setInterval(refreshUsageBar, 1000);
+    _recTmpfsTimer = setInterval(() => { if (!document.hidden) refreshUsageBar(); }, 1000);
   }
   function _updateTmpfsLimitsVisibility(){
     const on = $("#s-rec-tmpfs").checked;
@@ -2346,12 +2367,15 @@
   $("#s-sys-refresh").addEventListener("click", refreshSysStats);
   // First refresh happens when the <details> is opened
   const sysDetails = $("#s-sys-stats").closest("details");
+  // document.hidden guard — see loadKayitTab's _recTmpfsTimer comment:
+  // without it, a backgrounded mobile tab queues up ticks that fire in a
+  // burst on resume instead of just skipping while nothing can be seen.
   if (sysDetails){
     sysDetails.addEventListener("toggle", () => {
       if (sysDetails.open) refreshSysStats();
       // Auto refresh only while open AND checkbox on
       if (sysDetails.open && $("#s-sys-auto").checked){
-        _sysAutoTimer = _sysAutoTimer || setInterval(refreshSysStats, 2000);
+        _sysAutoTimer = _sysAutoTimer || setInterval(() => { if (!document.hidden) refreshSysStats(); }, 2000);
       } else {
         clearInterval(_sysAutoTimer); _sysAutoTimer = null;
       }
@@ -2360,7 +2384,7 @@
   $("#s-sys-auto").addEventListener("change", () => {
     clearInterval(_sysAutoTimer); _sysAutoTimer = null;
     if ($("#s-sys-auto").checked && sysDetails && sysDetails.open){
-      _sysAutoTimer = setInterval(refreshSysStats, 2000);
+      _sysAutoTimer = setInterval(() => { if (!document.hidden) refreshSysStats(); }, 2000);
     }
   });
 

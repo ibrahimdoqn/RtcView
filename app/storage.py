@@ -582,7 +582,17 @@ class Storage:
             except Exception as e:
                 errors.append(f"Disk okunamadı: {e}")
             near_full = du is not None and du.free < 1 * 1024**3
-            test = r / ".rtcview_write_test"
+            # Unique per call (pid+thread), not a fixed name: health() is
+            # cached for 15s but that cache check-then-set isn't atomic,
+            # so a burst of concurrent callers (e.g. several browser polls
+            # queued while a mobile tab was backgrounded all firing at
+            # once on resume) can each decide to run a fresh write-test at
+            # the same moment. With a shared fixed filename, one caller's
+            # unlink() removing the file before another caller's own
+            # unlink() runs raised a genuine FileNotFoundError that got
+            # reported to the user as "Yazılamıyor: ..." even though
+            # nothing was actually wrong with the disk.
+            test = r / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
             write_err: Optional[Exception] = None
             try:
                 test.write_text("ok"); test.unlink()

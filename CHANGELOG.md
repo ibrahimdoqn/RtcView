@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.3.6] - 2026-08-20
+
+### Düzeltildi
+- **Mobilde sekmeler arası geçişten dönünce "Depolama yazılamıyor" gibi sahte hatalar görünmesi giderildi.** Kök neden: `storage.health()`'in yazma testi, her çağrıda aynı sabit dosya adını (`.rtcview_write_test`) kullanıyordu — eşzamanlı iki çağrı bu dosyayı aynı anda yazıp silmeye çalışınca, biri diğerinin sildiği dosyayı silmeye çalışıp `FileNotFoundError` alıyor ve bu, gerçek bir disk sorunu yokken "Yazılamıyor: ..." hatası olarak kullanıcıya gösteriliyordu. Mobil tarayıcıda sekme arka plana alındığında Ayarlar sayfasındaki periyodik yenileme zamanlayıcıları (Kayıt & Depolama'nın 1sn'lik, Sistem Kaynakları'nın 2sn'lik) durmuyor, sadece işletim sistemi tarafından erteleniyordu — sekmeye geri dönüldüğünde bunlar art arda birikmiş halde neredeyse aynı anda ateşleniyor, bu da tam olarak bu yarış durumunu tetikliyordu. İki parçalı düzeltme: (1) yazma testi artık her çağrıda benzersiz bir dosya adı kullanıyor (süreç+iş parçacığı kimliğine göre), eşzamanlı çağrılar birbirini asla etkilemiyor; (2) bu zamanlayıcılar artık sekme arka plandayken hiç çalışmıyor (bildirim zilinin zaten kullandığı desenle aynı), sekme tekrar görünür olduğunda ise ilgili panel bir kerelik anında yenileniyor — hem birikmiş patlama önleniyor hem de eski/donmuş durum ekranda kalmıyor. Gerçek eşzamanlılık testiyle doğrulandı: eski kod 200 eşzamanlı çağrıdan 90'ında sahte hata veriyordu, düzeltmeyle 0.
+
 ## [4.3.5] - 2026-08-20
 
 ### Değişti
