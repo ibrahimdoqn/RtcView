@@ -48,11 +48,24 @@ DEFAULT_CONFIG = {
     },
     "recording": {
         "enabled": True,
-        # Single recording root. Deliberately ONE disk, mounted by the
-        # admin outside the app (see README's Kurulum) — RtcView never
-        # formats, mounts, or manages disks itself. Point this at
-        # wherever that disk is mounted.
-        "storage_path": "/opt/rtcview/recordings",
+        # One or more recording roots, tried in order (sequential fill —
+        # see storage.py's pick_write_root()): every write goes to the
+        # first root that still has room; once it doesn't, the next one
+        # takes over. Every path must be mounted by the admin outside the
+        # app (see README's Kurulum) — RtcView never formats, mounts, or
+        # unmounts disks itself, on ANY of these paths. That boundary is
+        # deliberate: an earlier version of this feature let RtcView
+        # manage disks itself, and a flaky external USB drive going into
+        # a hardware failure loop, combined with the app's own automated
+        # per-disk purge logic reacting badly to it, caused a real
+        # production incident. This reintroduces multiple write targets
+        # without reintroducing that — every path here is something a
+        # human already mounted and can unmount, and each root's purge/
+        # reclaim is isolated from the others (see storage.py's
+        # purge_once(): a delete failure on one root stops only that
+        # root's own reclaim phase, never cascades to another root or
+        # drains its whole index).
+        "storage_paths": ["/opt/rtcview/recordings"],
         "segment_seconds": 300,
         "retention_days": 14,
         # 0 = unlimited (bounded only by physical disk size + the
@@ -69,22 +82,23 @@ DEFAULT_CONFIG = {
         # tolerate bigger legitimate bumps before restarting.
         "mem_rss_ceiling_mb": 128,
         # Optional: ffmpeg writes each segment into tmpfs (/tmp) first,
-        # then it's moved onto storage_path once closed, instead of
-        # writing directly to storage_path the whole time — trades SD
-        # card/eMMC write load for RAM. Off by default: only useful if
-        # /tmp is actually a tmpfs mount (not guaranteed on every board),
-        # and does carry a real — if bounded by the two settings below —
-        # RAM-usage tradeoff. See Ayarlar > Kayıt & Depolama.
+        # then it's moved onto whichever storage_paths root is currently
+        # taking writes once closed, instead of writing directly to disk
+        # the whole time — trades SD card/eMMC write load for RAM. Off by
+        # default: only useful if /tmp is actually a tmpfs mount (not
+        # guaranteed on every board), and does carry a real — if bounded
+        # by the two settings below — RAM-usage tradeoff. See Ayarlar >
+        # Kayıt & Depolama.
         "tmpfs_staging": False,
         # Free tmpfs space required for a camera to start staging at all;
-        # below this it silently records straight to storage_path instead
-        # (see recorder.py's CameraRecorder.start()). Only relevant when
+        # below this it silently records straight to disk instead (see
+        # recorder.py's CameraRecorder.start()). Only relevant when
         # tmpfs_staging is on.
         "tmpfs_safety_margin_mb": 256,
         # Per-camera ceiling on unmoved (staged-but-not-yet-on-disk) data;
         # past this the destination disk clearly can't keep up, and that
-        # camera permanently falls back to writing directly to
-        # storage_path for the rest of its session (see recorder.py's
+        # camera permanently falls back to writing directly to disk for
+        # the rest of its session (see recorder.py's
         # CameraRecorder._check_stage_overflow()). Only relevant when
         # tmpfs_staging is on.
         "tmpfs_hard_cap_mb": 512,
@@ -193,25 +207,36 @@ class ConfigStore:
             elif isinstance(v, dict):
                 for sk, sv in v.items():
                     self._data[k].setdefault(sk, sv)
-        # storage_path schema evolution: an earlier version supported
-        # multiple storage roots via recording.storage_paths (a list of
-        # {"path", "max_gb"} — or, before that, of bare strings). RtcView
-        # is single-disk only now — collapse any of those old shapes down
-        # to the one path a pre-existing config.json might still carry.
-        # The disk that path pointed at keeps working exactly as before;
-        # only the "add another folder" capability is gone.
+        # storage_path(s) schema evolution: recording.storage_path (one
+        # path, singular) was itself a simplification of an earlier
+        # recording.storage_paths list, later reintroduced as a list
+        # again (multi-disk sequential-fill — see storage.py). Migrate a
+        # pre-existing single storage_path into a one-element
+        # storage_paths list.
+        #
+        # legacy_single, when present, always wins over whatever the
+        # generic defaults-merge loop above just filled storage_paths
+        # with (DEFAULT_CONFIG's own placeholder default) — an old
+        # single-disk config never had storage_paths set at all, only
+        # storage_path, so seeing storage_path means this config hasn't
+        # been migrated yet and its real value must not be discarded in
+        # favor of a just-applied default.
         rec = self._data.get("recording", {})
-        legacy_paths = rec.pop("storage_paths", None)
-        # legacy_paths, when present, always wins over whatever the
-        # defaults-merge loop above just filled storage_path with — an old
-        # config never had storage_path set at all, only storage_paths.
-        if legacy_paths:
-            first = legacy_paths[0] if legacy_paths else None
-            if isinstance(first, dict) and first.get("path"):
-                rec["storage_path"] = str(first["path"])
-            elif isinstance(first, str) and first:
-                rec["storage_path"] = first
-        rec.setdefault("storage_path", "/opt/rtcview/recordings")
+        legacy_single = rec.pop("storage_path", None)
+        if legacy_single:
+            rec["storage_paths"] = [str(legacy_single)]
+        else:
+            # Already on the list schema (or a fresh install) — just
+            # normalize shape: older multi-disk builds stored
+            # {"path", "max_gb"} dicts (per-disk quotas, since dropped —
+            # quota is global only now), tolerate reading those too.
+            normalized = []
+            for p in (rec.get("storage_paths") or []):
+                if isinstance(p, dict):
+                    p = p.get("path")
+                if p:
+                    normalized.append(str(p))
+            rec["storage_paths"] = normalized or ["/opt/rtcview/recordings"]
         self._data.pop("disks", None)
         for cam in self._data.get("cameras", []):
             for k, v in CAMERA_RECORDING_DEFAULTS.items():

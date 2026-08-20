@@ -240,16 +240,6 @@ def _mp4_has_moov(path: Path, max_boxes: int = 64) -> bool:
         return True  # couldn't verify — don't falsely flag on our own I/O error
 
 
-def _is_root_usable(r: Path) -> bool:
-    try:
-        r.mkdir(parents=True, exist_ok=True)
-        probe = r / ".rtcview_write_test"
-        probe.write_text("ok"); probe.unlink()
-        return True
-    except Exception:
-        return False
-
-
 def _schedule_active(schedule: list, now: Optional[datetime] = None) -> bool:
     """Return True if a schedule window covers ``now``.
 
@@ -968,7 +958,7 @@ class RecordingManager:
         if not shutil.which(ffmpeg) and not os.path.isfile(ffmpeg):
             log.warning("ffmpeg not available at %r — recording disabled for %s", ffmpeg, cam["id"])
             return None
-        if not _is_root_usable(self.storage.root()):
+        if not self.storage.has_usable_root():
             log.warning("no usable storage root — skipping recorder for %s", cam["id"])
             return None
         return CameraRecorder(

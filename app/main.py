@@ -676,12 +676,16 @@ def create_app(config_path: str) -> Flask:
     @app.post("/api/recording/settings")
     def api_rec_settings_set():
         body = request.get_json(force=True) or {}
-        allowed = {"enabled", "storage_path", "segment_seconds",
+        # storage_paths (the list of recording roots) is changed via its
+        # own POST /api/recording/storage/paths below, not here — a path
+        # list edit needs its own stop-recorder/apply/restart dance and a
+        # per-path validation error, which doesn't mix cleanly with this
+        # route's "validate a batch of unrelated scalar settings" shape.
+        allowed = {"enabled", "segment_seconds",
                    "retention_days", "max_gb", "purge_interval_seconds", "ffmpeg_path",
                    "mem_rss_ceiling_mb", "tmpfs_staging",
                    "tmpfs_safety_margin_mb", "tmpfs_hard_cap_mb"}
         clean = {k: v for k, v in body.items() if k in allowed}
-        new_path = clean.pop("storage_path", None)
         # Validate simple integer / bool fields BEFORE mutating anything.
         if "segment_seconds" in clean:
             try:
@@ -718,31 +722,27 @@ def create_app(config_path: str) -> Flask:
             clean["purge_interval_seconds"] = max(5, clean["purge_interval_seconds"])
         if "enabled" in clean: clean["enabled"] = bool(clean["enabled"])
         if "tmpfs_staging" in clean: clean["tmpfs_staging"] = bool(clean["tmpfs_staging"])
-        # Storage-path change is validated + applied FIRST, and everything
-        # else in this request is only persisted once that succeeds — a
-        # rejected path (unwritable, uncreatable) must leave every other
-        # field in this same request untouched rather than saving them
-        # alongside the 400, which used to happen because update_recording
-        # ran on `clean` before set_root got a chance to reject the path.
-        moving_root = False
-        if new_path is not None:
-            wanted = str(Path(str(new_path)).expanduser().resolve())
-            moving_root = wanted != str(storage.root())
-        if moving_root:
-            recorder.stop()
-        if new_path is not None:
-            # set_root persists storage_path (and max_gb, if given here)
-            # in one shot — pulled out of `clean` so a rejected path can
-            # never leave max_gb saved without it.
-            ok, msg = storage.set_root(new_path, max_gb=clean.pop("max_gb", None))
-            if not ok:
-                if moving_root: recorder.start()
-                return jsonify({"error": msg}), 400
         if clean: store.update_recording(clean)
-        if moving_root:
+        recorder.reload_all()
+        return jsonify(store.get_recording())
+
+    @app.post("/api/recording/storage/paths")
+    def api_rec_storage_paths_set():
+        """Replace the whole storage_paths list (sequential-fill recording
+        roots — see storage.py's module docstring). Recording is stopped
+        before applying and restarted after, same as any live change to
+        where ffmpeg is currently writing — an in-flight segment must
+        never straddle an old and new root."""
+        body = request.get_json(force=True) or {}
+        paths = body.get("paths")
+        if not isinstance(paths, list):
+            return jsonify({"error": "paths bir liste olmalı"}), 400
+        recorder.stop()
+        ok, msg = storage.set_roots(paths)
+        if not ok:
             recorder.start()
-        else:
-            recorder.reload_all()
+            return jsonify({"error": msg}), 400
+        recorder.start()
         return jsonify(store.get_recording())
 
     @app.get("/api/recording/status")

@@ -1,14 +1,25 @@
 """Recording storage: SQLite segment index + retention/quota purger.
 
-Single-disk by design: RtcView records to exactly ONE storage root, which
-the admin mounts and points the app at (see README's Kurulum). RtcView
-itself never formats, mounts, or manages disks — that's deliberately kept
-out of this app's blast radius (a previous multi-disk auto-management
-feature was removed after a flaky external-USB drive it was recording to
-went into a hardware failure loop, and the app's own automated per-disk
-purge logic amplified the resulting mess). One disk, chosen and mounted
-by a human, is a much smaller and easier thing to reason about and keep
-healthy.
+Multi-root by design: RtcView can record across one or more storage
+roots, each mounted by the admin outside the app (see README's Kurulum).
+RtcView itself never formats, mounts, or unmounts a disk on ANY of these
+paths — that boundary is deliberate. An earlier version of this feature
+let RtcView manage disks itself (auto-mount/format), and a flaky
+external-USB drive it was recording to went into a hardware failure
+loop; the app's own automated per-disk purge logic reacted badly to that
+instability and made a bad situation worse — a real production incident.
+This reintroduces multiple write targets without reintroducing that: a
+human mounts (and can unmount) every path here, and every purge/reclaim
+phase below is isolated per root — a delete failure on one root stops
+only that root's own reclaim phase (see purge_once()'s
+_delete_and_keep_going), never cascades into another root or drains its
+whole tracked index.
+
+Writes fill sequentially: the first configured root that currently has
+room takes every new segment; once it doesn't, the next one takes over
+(see pick_write_root()). One disk managed by a human per path, several
+paths composed simply, is the goal — not automated disk topology
+management.
 """
 import errno
 import logging
@@ -22,7 +33,7 @@ from typing import Optional
 
 log = logging.getLogger("storage")
 
-# Physical free space below which the disk is considered "no room". Both
+# Physical free space below which a root is considered "no room". Both
 # the write picker and the fullness purge respect this — ffmpeg needs
 # some slack to flush its buffer without hitting ENOSPC mid-segment.
 SAFETY_MARGIN_BYTES = 1 * 1024**3  # 1 GB
@@ -83,18 +94,19 @@ NOTIF_MAX_ROWS = 2000
 class Storage:
     """
     Thread-safe SQLite index for recording segments and snapshots plus a
-    background purger enforcing retention (days) and quota (bytes) against
-    a single storage root.
+    background purger enforcing retention (days) and quota (bytes) across
+    one or more storage roots.
 
     index.sqlite itself lives in the app's config directory (next to
-    config.json), NOT under the recording storage root. It used to live at
-    root()/index.sqlite, which meant changing the storage path in Kayıt &
-    Depolama settings — an ordinary thing to do when switching disks —
-    opened a brand-new empty database at the new location: every
-    previously indexed segment vanished from the UI (playback, stats,
-    health) even though every video file was untouched on disk. The index
-    is app STATE, not recording data, and its location must not depend on
-    which path the admin currently points recording at.
+    config.json), NOT under any recording storage root. It used to live
+    at a root's own index.sqlite, which meant changing/reordering
+    storage_paths in Kayıt & Depolama settings — an ordinary thing to do
+    when a disk fills up and another should take over — opened a
+    brand-new empty database at the new location: every previously
+    indexed segment vanished from the UI (playback, stats, health) even
+    though every video file was untouched on disk. The index is app
+    STATE, not recording data, and its location must not depend on which
+    path(s) the admin currently points recording at.
     """
 
     def __init__(self, config_store):
@@ -106,8 +118,9 @@ class Storage:
         self._thread: Optional[threading.Thread] = None
         # Cached derived state — a 4-s status poll shouldn't fire a real
         # write-test / statfs on every hit. Invalidated opportunistically
-        # on register/delete/set_root.
-        self._disk_cache: Optional[tuple[float, dict]] = None
+        # on register/delete/set_roots. _disk_cache is per-root (keyed by
+        # resolved path string).
+        self._disk_cache: dict[str, tuple[float, dict]] = {}
         self._stats_cache: Optional[tuple[float, dict]] = None
         self._health_cache: Optional[tuple[float, dict]] = None
         # Set when delete_segment() drops an index row but the file itself
@@ -130,17 +143,46 @@ class Storage:
             "added": 0, "removed": 0, "done": True, "ok": True, "error": None,
             "started_at": None, "finished_at": None,
         }
-        self._ensure_root()
+        self._ensure_roots()
 
-    # ---------- Root / DB ----------
+    # ---------- Roots / DB ----------
     def _rec_cfg(self):
         return self.config_store.get_recording()
 
-    def root(self) -> Path:
-        """The single configured storage root, resolved."""
+    def roots(self) -> list[Path]:
+        """All configured storage roots, in preference (fill) order.
+        Blank entries dropped, duplicates (after resolving) collapsed to
+        their first occurrence, ~ expanded. Falls back to the single
+        built-in default if the config is somehow empty (shouldn't
+        happen — config.py always seeds at least one)."""
         rc = self._rec_cfg()
-        p = str(rc.get("storage_path") or "/opt/rtcview/recordings")
-        return Path(p).expanduser().resolve()
+        raw = rc.get("storage_paths") or []
+        out: list[Path] = []
+        seen: set = set()
+        for r in raw:
+            if isinstance(r, dict):
+                r = r.get("path")
+            s = str(r or "").strip()
+            if not s:
+                continue
+            p = Path(s).expanduser().resolve()
+            if p in seen:
+                continue
+            seen.add(p)
+            out.append(p)
+        return out or [Path("/opt/rtcview/recordings").resolve()]
+
+    def primary_root(self) -> Path:
+        """The first configured root — where the index/snapshots live
+        relative to, and the answer to any legacy single-root question."""
+        return self.roots()[0]
+
+    def root(self) -> Path:
+        """Legacy single-root accessor, kept for the couple of call sites
+        (recorder.py's usability pre-check, main.py's settings diffing)
+        that only need "a" root, not the full list. Prefer roots()/
+        pick_write_root()/has_usable_root() in new code."""
+        return self.primary_root()
 
     def max_bytes(self) -> int:
         try:
@@ -150,7 +192,7 @@ class Storage:
         return max(0, gb) * (1024**3)
 
     def snapshots_root(self) -> Path:
-        return self.root() / "_snapshots"
+        return self.primary_root() / "_snapshots"
 
     @staticmethod
     def _like_escape(s: str) -> str:
@@ -163,13 +205,20 @@ class Storage:
         return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     def _bytes_used(self) -> int:
-        """SUM(bytes) for every segment under the storage root.
+        """SUM(bytes) for every segment in the index, across every root.
+        Quota is global (not per-disk — see the module docstring), so
+        this needs no path scoping."""
+        with self._lock:
+            row = self._db.execute("SELECT COALESCE(SUM(bytes), 0) FROM segments").fetchone()
+        return int(row[0] or 0)
 
-        Computed in SQL — a LIKE 'prefix%' pattern lets SQLite range-scan
-        the UNIQUE index already on path — rather than pulling every
-        segment row into Python and filtering with str.startswith.
-        """
-        pattern = self._like_escape(str(self.root()) + os.sep) + "%"
+    def _bytes_used_under(self, root_path: str) -> int:
+        """SUM(bytes) for segments whose path is under root_path
+        specifically — used by the per-root reclaim loop (each root's own
+        rolling buffer is judged against its own footage, not the global
+        total) via an indexed LIKE 'prefix%' range scan rather than
+        pulling every segment into Python."""
+        pattern = self._like_escape(root_path + os.sep) + "%"
         with self._lock:
             row = self._db.execute(
                 "SELECT COALESCE(SUM(bytes), 0) FROM segments WHERE path LIKE ? ESCAPE '\\'",
@@ -178,39 +227,75 @@ class Storage:
         return int(row[0] or 0)
 
     def _has_purgeable_segments(self) -> bool:
-        """Whether ANY unlocked segment exists. health() uses this to tell
-        "disk is at capacity, and is being actively kept there by the
-        rolling purge" (expected steady state for an unlimited-quota root
-        — not an error) apart from "disk is full AND there's nothing left
-        to delete" (an actual dead end — recording will start failing)."""
+        """Whether ANY unlocked segment exists anywhere (checked
+        globally — the emergency purge deletes the globally-oldest
+        segment regardless of which root it's on). health() uses this to
+        tell "disk is at capacity, and is being actively kept there by
+        the rolling purge" (expected steady state for an unlimited-quota
+        root — not an error) apart from "disk is full AND there's
+        nothing left to delete" (an actual dead end)."""
         with self._lock:
             row = self._db.execute("SELECT 1 FROM segments WHERE locked = 0 LIMIT 1").fetchone()
         return row is not None
 
     def pick_write_root(self) -> Path:
-        """Return the storage root, creating it if needed. Kept as its own
-        method (rather than inlining `root()` at call sites) because
-        recorder.py calls this once per recording-session start — the name
-        describes the historical multi-root API more than what it does
-        now, but changing every caller wasn't worth it for a one-line
-        method."""
-        r = self.root()
-        try:
-            r.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            log.warning("Cannot create storage root %s: %s", r, e)
-        return r
+        """Sequential fill: try each configured root in order, return the
+        FIRST one that's writable and has at least SAFETY_MARGIN_BYTES
+        free right now. This is the "önce A dolsun, sonra B" model — as
+        long as A has room, every new segment goes to A; once A can't fit
+        another safety-buffered write, B takes over automatically.
 
-    def _ensure_root(self):
+        If every root is out of room, return whichever root was merely
+        writable (last one checked that passed the write-test) so the
+        current segment still lands somewhere rather than the caller
+        getting None — purge_once()'s emergency path reclaims space on
+        its next tick. If NO root is even writable, return the primary
+        anyway (matches the single-root behavior this always had:
+        ffmpeg's own write failure is what actually surfaces the
+        problem, not a pre-emptive None here)."""
+        fallback: Optional[Path] = None
+        for r in self.roots():
+            try:
+                r.mkdir(parents=True, exist_ok=True)
+                probe = r / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
+                probe.write_text("ok"); probe.unlink()
+                du = shutil.disk_usage(str(r))
+            except Exception:
+                continue
+            fallback = r
+            if du.free < SAFETY_MARGIN_BYTES:
+                continue
+            return r
+        return fallback or self.primary_root()
+
+    def has_usable_root(self) -> bool:
+        """True if AT LEAST ONE configured root is currently writable —
+        used where a single-root usability gate used to check root()
+        alone (e.g. recorder.py deciding whether to even attempt
+        building a recorder). A specific root being unusable is fine as
+        long as another one can still take the write; only "every root
+        is broken" should actually block recording."""
+        for r in self.roots():
+            try:
+                r.mkdir(parents=True, exist_ok=True)
+                probe = r / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
+                probe.write_text("ok"); probe.unlink()
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _ensure_roots(self):
         try:
-            self.root().mkdir(parents=True, exist_ok=True)
+            for r in self.roots():
+                r.mkdir(parents=True, exist_ok=True)
             self.snapshots_root().mkdir(parents=True, exist_ok=True)
         except Exception as e:
             log.warning("Cannot create storage root: %s", e)
             return
-        # Stable regardless of storage_path — see the class docstring.
-        # config_path's parent is guaranteed to exist already (ConfigStore
-        # creates it), mkdir here is just defensive.
+        # Stable regardless of storage_paths order/content — see the class
+        # docstring. config_path's parent is guaranteed to exist already
+        # (ConfigStore creates it), mkdir here is just defensive.
         index_dir = self.config_store.config_path.parent
         index_dir.mkdir(parents=True, exist_ok=True)
         db_path = index_dir / "index.sqlite"
@@ -223,8 +308,8 @@ class Storage:
             is_fresh = not db_path.exists()
             if is_fresh:
                 # One-time upgrade path: installs from before the index
-                # moved out of the recording root have their real history
-                # sitting at <root>/index.sqlite. Move it (with its
+                # moved out of the recording roots have their real history
+                # sitting at <some root>/index.sqlite. Move it (with its
                 # WAL/SHM sidecars) to the new stable location instead of
                 # starting over. Best-effort — a failure here just means a
                 # fresh (empty) index opens below, same as any other
@@ -262,51 +347,63 @@ class Storage:
             log.info("Storage index open: %s", db_path)
 
     def _migrate_legacy_index(self, new_path: Path):
-        old_path = self.root() / "index.sqlite"
-        if old_path == new_path or not old_path.exists():
-            return
-        try:
-            for suffix in ("", "-wal", "-shm"):
-                src = Path(str(old_path) + suffix)
-                if src.exists():
-                    shutil.move(str(src), str(new_path) + suffix)
-            log.info("Migrated recording index from %s to %s", old_path, new_path)
-        except Exception as e:
-            log.warning("Could not migrate legacy index from %s: %s", old_path, e)
-
-    def set_root(self, new_path: str, max_gb: Optional[int] = None) -> tuple[bool, str]:
-        """Change the storage root. The new path must be creatable and
-        writable. max_gb is optional — pass None to leave the quota
-        unchanged."""
-        s = str(new_path or "").strip()
-        if not s:
-            return False, "Kayıt klasörü boş olamaz"
-        p = Path(s).expanduser()
-        try:
-            p.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            return False, f"Klasör oluşturulamadı: {p} ({e})"
-        probe = p / ".rtcview_write_test"
-        try:
-            probe.write_text("ok"); probe.unlink()
-        except Exception as e:
-            return False, f"Klasöre yazılamıyor: {p} ({e})"
-        rp = str(p.resolve())
-        updates = {"storage_path": rp}
-        if max_gb is not None:
+        for root in self.roots():
+            old_path = root / "index.sqlite"
+            if old_path == new_path or not old_path.exists():
+                continue
             try:
-                updates["max_gb"] = max(0, int(max_gb))
-            except (TypeError, ValueError):
-                pass
-        self.config_store.update_recording(updates)
-        self._ensure_root()
+                for suffix in ("", "-wal", "-shm"):
+                    src = Path(str(old_path) + suffix)
+                    if src.exists():
+                        shutil.move(str(src), str(new_path) + suffix)
+                log.info("Migrated recording index from %s to %s", old_path, new_path)
+            except Exception as e:
+                log.warning("Could not migrate legacy index from %s: %s", old_path, e)
+            return  # only one legacy location is ever plausible; stop either way
+
+    def set_roots(self, new_paths) -> tuple[bool, str]:
+        """Replace the entire storage_paths list. Every path must be
+        creatable and writable (validated with a unique-per-call probe
+        filename — see pick_write_root()'s comment on why a shared fixed
+        name would race under concurrent callers); the whole list is
+        rejected if any single path fails, so a typo can't silently drop
+        a working disk out of rotation."""
+        if not new_paths:
+            return False, "En az bir kayıt klasörü olmalı"
+        clean: list[str] = []
+        seen: set = set()
+        for np in new_paths:
+            if isinstance(np, dict):
+                np = np.get("path")
+            s = str(np or "").strip()
+            if not s:
+                continue
+            p = Path(s).expanduser()
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                return False, f"Klasör oluşturulamadı: {p} ({e})"
+            probe = p / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
+            try:
+                probe.write_text("ok"); probe.unlink()
+            except Exception as e:
+                return False, f"Klasöre yazılamıyor: {p} ({e})"
+            rp = str(p.resolve())
+            if rp in seen:
+                continue
+            seen.add(rp)
+            clean.append(rp)
+        if not clean:
+            return False, "Geçerli klasör bulunamadı"
+        self.config_store.update_recording({"storage_paths": clean})
+        self._ensure_roots()
         self._invalidate_caches()
-        return True, rp
+        return True, ", ".join(clean)
 
     def _invalidate_caches(self):
         self._stats_cache = None
         self._health_cache = None
-        self._disk_cache = None
+        self._disk_cache.clear()
 
     # ---------- Segments ----------
     def register_segment(self, cam_id: str, path: str, started_at: float,
@@ -394,6 +491,24 @@ class Storage:
         cols = ["id","cam_id","path","started_at","ended_at","duration","bytes","locked","trigger","playable"]
         return dict(zip(cols, r))
 
+    def _root_for_path(self, path: str) -> Optional[Path]:
+        """Which configured root a given absolute segment path actually
+        lives under, if any — used to prune the correct empty date/cam
+        subdirs after a delete. A segment from a root that's since been
+        removed from storage_paths won't match anything; that's fine,
+        pruning is just tidiness, not correctness."""
+        try:
+            p = Path(path).resolve()
+        except Exception:
+            return None
+        for r in self.roots():
+            try:
+                if r in p.parents:
+                    return r
+            except Exception:
+                continue
+        return None
+
     def delete_segment(self, seg_id: int, force: bool = False) -> bool:
         seg = self.get_segment(seg_id)
         if not seg: return False
@@ -426,12 +541,15 @@ class Storage:
         # Invalidate everything: the reclaim/write-picker logic relies on
         # fresh bytes_used AND disk_usage numbers.
         self._invalidate_caches()
-        # Prune empty date/cam subdirs up to (not including) the root.
-        parent = Path(seg["path"]).parent
-        try:
-            _try_prune_empty(parent, self.root())
-        except Exception:
-            pass
+        # Prune empty date/cam subdirs up to (not including) whichever
+        # root this segment actually belonged to.
+        seg_root = self._root_for_path(seg["path"])
+        if seg_root is not None:
+            parent = Path(seg["path"]).parent
+            try:
+                _try_prune_empty(parent, seg_root)
+            except Exception:
+                pass
         return True
 
     def set_locked(self, seg_id: int, locked: bool) -> bool:
@@ -545,13 +663,13 @@ class Storage:
 
     # ---------- Health ----------
     def health(self) -> dict:
-        """Report the storage subsystem's live state.
+        """Report the storage subsystem's live state across ALL roots.
 
         Cached 15 s so a 4-s polling client doesn't fire a real
         write-test / statfs on every hit. Cache is invalidated by
-        set_root() and by segment register/delete.
+        set_roots() and by segment register/delete.
 
-        status: "ok" | "warning" | "error"
+        Overall status = worst-of-any-root: "ok" | "warning" | "error"
         """
         now = time.time()
         cached = self._health_cache
@@ -560,79 +678,96 @@ class Storage:
 
         errors: list[str] = []
         warnings: list[str] = []
-        r = self.root()
-        exists = r.exists()
-        writable = False
-        disk = {"total": 0, "free": 0, "used": 0}
-        free_pct = 100.0
-        if not exists:
-            errors.append(f"Klasör yok: {r}")
-        else:
-            # Disk usage first — the write-test error below needs to know
-            # whether free space is already critically low, since some
-            # filesystems (f2fs in particular, once it runs out of free
-            # segments for a checkpoint) return EIO instead of ENOSPC for
-            # what is still fundamentally a "disk is full" condition, not
-            # a permissions/hardware fault.
-            du = None
-            try:
-                du = shutil.disk_usage(str(r))
-                disk = {"total": du.total, "free": du.free, "used": du.used}
-                free_pct = (du.free / du.total) * 100 if du.total else 0
-            except Exception as e:
-                errors.append(f"Disk okunamadı: {e}")
-            near_full = du is not None and du.free < 1 * 1024**3
-            # Unique per call (pid+thread), not a fixed name: health() is
-            # cached for 15s but that cache check-then-set isn't atomic,
-            # so a burst of concurrent callers (e.g. several browser polls
-            # queued while a mobile tab was backgrounded all firing at
-            # once on resume) can each decide to run a fresh write-test at
-            # the same moment. With a shared fixed filename, one caller's
-            # unlink() removing the file before another caller's own
-            # unlink() runs raised a genuine FileNotFoundError that got
-            # reported to the user as "Yazılamıyor: ..." even though
-            # nothing was actually wrong with the disk.
-            test = r / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
-            write_err: Optional[Exception] = None
-            try:
-                test.write_text("ok"); test.unlink()
-                writable = True
-            except Exception as e:
-                write_err = e
-            if write_err is not None:
-                is_space_related = near_full or (
-                    isinstance(write_err, OSError) and write_err.errno == errno.ENOSPC
-                )
-                if is_space_related:
-                    # A disk this full — whether the write-test hit ENOSPC
-                    # directly or disk_usage() already shows it under the
-                    # 1 GB margin — is the SAME "disk kapasitesine yakın"
-                    # story: the rolling/retention purge doesn't care how
-                    # it got full, only that something old enough still
-                    # exists to reclaim. A write failure while there's
-                    # PLENTY of free space is NOT something purging can
-                    # ever fix (wrong permissions, read-only fs, hardware
-                    # fault), so that stays a hard error, unconditionally.
-                    if not self._has_purgeable_segments():
-                        errors.append(
-                            "Yazılamıyor: disk dolu — silinecek kayıt kalmadı, kayıt durabilir"
-                        )
-                else:
-                    errors.append(f"Yazılamıyor: {write_err}")
-            elif near_full and not self._has_purgeable_segments():
-                # Sitting right at capacity is the EXPECTED steady state
-                # for an unlimited-quota (max_gb=0) root once footage
-                # volume outgrows the disk — purge_once() keeps deleting
-                # the oldest segments to hold it just above
-                # SAFETY_MARGIN_BYTES, forever, by design (a rolling
-                # buffer bounded by physical disk size rather than by
-                # retention_days alone). Not worth flagging at all while
-                # that's still working (stays "ok"/green) — only a
-                # genuine dead end, nothing left to purge, is actionable.
-                errors.append(
-                    f"Disk doldu: {du.free // (1024*1024)} MB boş — "
-                    "silinecek kayıt kalmadı, kayıt durabilir"
-                )
+        per_root: list[dict] = []
+        overall = "ok"
+        for r in self.roots():
+            r_errs: list[str] = []; r_warns: list[str] = []
+            exists = r.exists()
+            writable = False
+            disk = {"total": 0, "free": 0, "used": 0}
+            free_pct = 100.0
+            if not exists:
+                r_errs.append(f"Klasör yok: {r}")
+            else:
+                # Disk usage first — the write-test error below needs to
+                # know whether free space is already critically low, since
+                # some filesystems (f2fs in particular, once it runs out of
+                # free segments for a checkpoint) return EIO instead of
+                # ENOSPC for what is still fundamentally a "disk is full"
+                # condition, not a permissions/hardware fault.
+                du = None
+                try:
+                    du = shutil.disk_usage(str(r))
+                    disk = {"total": du.total, "free": du.free, "used": du.used}
+                    free_pct = (du.free / du.total) * 100 if du.total else 0
+                except Exception as e:
+                    r_errs.append(f"Disk okunamadı: {e}")
+                near_full = du is not None and du.free < 1 * 1024**3
+                # Unique per call (pid+thread), not a fixed name: health()
+                # is cached for 15s but that cache check-then-set isn't
+                # atomic, so a burst of concurrent callers (several
+                # browser polls queued while a mobile tab was backgrounded
+                # all firing at once on resume) can each decide to run a
+                # fresh write-test on the same root at the same moment.
+                # With a shared fixed filename, one caller's unlink()
+                # removing the file before another caller's own unlink()
+                # runs raised a genuine FileNotFoundError reported as
+                # "Yazılamıyor: ..." even though nothing was actually
+                # wrong.
+                test = r / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
+                write_err: Optional[Exception] = None
+                try:
+                    test.write_text("ok"); test.unlink()
+                    writable = True
+                except Exception as e:
+                    write_err = e
+                if write_err is not None:
+                    is_space_related = near_full or (
+                        isinstance(write_err, OSError) and write_err.errno == errno.ENOSPC
+                    )
+                    if is_space_related:
+                        # A root this full — whether the write-test hit
+                        # ENOSPC directly or disk_usage() already shows it
+                        # under the 1 GB margin — is the SAME "disk
+                        # kapasitesine yakın" story: the rolling/retention
+                        # purge doesn't care how it got full, only that
+                        # something old enough on THIS root still exists to
+                        # reclaim. A write failure on a root that ISN'T
+                        # actually low on space is NOT something purging
+                        # can ever fix (wrong permissions, read-only fs,
+                        # hardware fault, unmounted), so that stays a hard
+                        # error, unconditionally.
+                        if not self._has_purgeable_segments():
+                            r_errs.append(
+                                "Yazılamıyor: disk dolu — silinecek kayıt kalmadı, kayıt durabilir"
+                            )
+                    else:
+                        r_errs.append(f"Yazılamıyor: {write_err}")
+                elif near_full and not self._has_purgeable_segments():
+                    # A root sitting right at capacity is the EXPECTED
+                    # steady state for an unlimited-quota (max_gb=0)
+                    # setup once footage volume outgrows it — purge_once()
+                    # keeps deleting THIS root's oldest segments to hold
+                    # it just above SAFETY_MARGIN_BYTES, forever, by
+                    # design. Not worth flagging while that's still
+                    # working — only a genuine dead end, nothing left to
+                    # purge anywhere, is actionable.
+                    r_errs.append(
+                        f"Disk doldu: {du.free // (1024*1024)} MB boş — "
+                        "silinecek kayıt kalmadı, kayıt durabilir"
+                    )
+            rst = "error" if r_errs else ("warning" if r_warns else "ok")
+            per_root.append({
+                "path": str(r), "status": rst, "exists": exists, "writable": writable,
+                "disk": disk, "free_percent": round(free_pct, 1),
+                "bytes_used": self._bytes_used_under(str(r)),
+                "errors": r_errs, "warnings": r_warns,
+            })
+            for e in r_errs: errors.append(f"{r}: {e}")
+            for w in r_warns: warnings.append(f"{r}: {w}")
+            if rst == "error" or (rst == "warning" and overall == "ok"):
+                overall = rst
+
         used_by_rec = self._bytes_used()
         max_bytes = self.max_bytes()
         if max_bytes > 0:
@@ -651,15 +786,33 @@ class Storage:
         except Exception as e:
             errors.append(f"DB erişim: {e}")
 
-        overall = "error" if errors else ("warning" if warnings else "ok")
+        # Aggregate disk = SUM across every configured root, so a
+        # multi-disk setup reports combined free/total (matches stats()).
+        agg = {"total": 0, "free": 0, "used": 0}
+        for pr in per_root:
+            for k in ("total", "free", "used"):
+                agg[k] += pr["disk"].get(k, 0)
+        agg_free_pct = round((agg["free"] / agg["total"]) * 100, 1) if agg["total"] else 100.0
+
+        primary = str(self.primary_root())
+        prim = next((x for x in per_root if x["path"] == primary), None)
+        overall_status = "error" if errors else ("warning" if warnings else "ok")
         result = {
-            "status": overall,
-            "root": str(r),
-            "exists": exists,
-            "writable": writable,
+            "status": overall_status,
+            "root": primary,                      # legacy scalar for UI compat
+            "roots": per_root,                     # per-root breakdown
+            "exists": bool(prim and prim["exists"]),
+            # ANY root being writable, not just the primary (first-listed)
+            # one — the whole point of the sequential-fill model is that
+            # the primary root is EXPECTED to eventually fill up and go
+            # unwritable while recording keeps working fine via whichever
+            # other root still has room. Reporting this as "SALT-OKUR"
+            # whenever specifically the primary root goes full would read
+            # as "recording is broken" when it very much isn't.
+            "writable": any(pr["writable"] for pr in per_root),
             "db_ok": db_ok,
-            "disk": disk,
-            "free_percent": round(free_pct, 1),
+            "disk": agg,
+            "free_percent": agg_free_pct,
             "bytes_used": used_by_rec,
             "max_gb": max_bytes // (1024**3) if max_bytes else 0,
             "max_bytes": max_bytes,
@@ -686,34 +839,45 @@ class Storage:
                 " FROM segments GROUP BY cam_id"
             ).fetchall()
 
-        dc = self._disk_cache
-        if dc and (now_ts - dc[0]) < 5:
-            disk = dc[1]
-        else:
-            try:
-                du = shutil.disk_usage(str(self.root()))
-                disk = {"total": du.total, "free": du.free, "used": du.used}
-            except Exception:
-                disk = {"total": 0, "free": 0, "used": 0}
-            self._disk_cache = (now_ts, disk)
+        roots_stats = []
+        agg = {"total": 0, "free": 0, "used": 0}
+        for r in self.roots():
+            key = str(r)
+            dc = self._disk_cache.get(key)
+            if dc and (now_ts - dc[0]) < 5:
+                d = dc[1]
+            else:
+                try:
+                    du = shutil.disk_usage(key)
+                    d = {"total": du.total, "free": du.free, "used": du.used}
+                except Exception:
+                    d = {"total": 0, "free": 0, "used": 0}
+                self._disk_cache[key] = (now_ts, d)
+            roots_stats.append({
+                "path": key,
+                "disk": d,
+                "bytes_used": self._bytes_used_under(key),
+            })
+            for k in ("total", "free", "used"): agg[k] += d[k]
 
         rc = self._rec_cfg()
         max_bytes = self.max_bytes()
         result = {
-            "root": str(self.root()),
+            "root": str(self.primary_root()),   # legacy scalar
+            "roots": roots_stats,                # per-root disk+usage breakdown
             "bytes_used": int(total_bytes),
             "segment_count": int(total_count),
             # None when there are no segments at all yet, otherwise the
             # started_at of the single oldest segment across every camera
-            # — lets the Kayıt & Depolama tab show exactly how far back
-            # current footage goes, which is also a direct, concrete
-            # answer to "when will retention start freeing up space"
-            # (once this timestamp crosses retention_days).
+            # and root — lets the Kayıt & Depolama tab show exactly how
+            # far back current footage goes, which is also a direct,
+            # concrete answer to "when will retention start freeing up
+            # space" (once this timestamp crosses retention_days).
             "oldest_started_at": float(oldest_started_at) if oldest_started_at is not None else None,
             "max_gb": max_bytes // (1024**3) if max_bytes else 0,
             "max_bytes": max_bytes,
             "retention_days": int(rc.get("retention_days", 14)),
-            "disk": disk,
+            "disk": agg,                         # aggregate across every root
             "per_camera": [
                 {"cam_id": c, "bytes": int(b), "count": int(n),
                  "first_at": s, "last_at": e}
@@ -771,11 +935,17 @@ class Storage:
             keep_going turns False the instant a delete drops the index
             row without actually freeing the file (e.g. a filesystem so
             completely full that even unlink()'s own metadata write
-            fails — observed in production on f2fs): every purge phase
-            below must stop right there instead of ploughing through its
-            whole remaining batch/table, since continuing only turns more
-            of the root's tracked history into untracked orphans for zero
-            space gained. The next tick's auto-rescan (top of this
+            fails, or the disk went away mid-operation — observed in
+            production on f2fs, and the original incident that shaped
+            this whole safety pattern): every purge phase below must stop
+            right there instead of ploughing through its whole remaining
+            batch/table, since continuing only turns more of that root's
+            tracked history into untracked orphans for zero space gained
+            — and, critically, must not let one root's trouble affect any
+            OTHER root's phase (each call site below scopes its own
+            batch/rows to a single root or, for retention/quota, treats
+            a stop here as "pause this tick", never "keep trying this
+            root harder"). The next tick's auto-rescan (top of this
             function) recovers whatever got orphaned this way.
 
             freed_ok is True only when the file was genuinely deleted, so
@@ -796,7 +966,9 @@ class Storage:
         # cutoff scans (global scan excluding overridden cameras, then
         # one small scan per overridden camera) rather than pulling every
         # segment into Python to filter by camera, so a purge tick stays
-        # cheap regardless of how many segments exist in total.
+        # cheap regardless of how many segments exist in total. Not
+        # scoped by root — retention is a footage-age rule, independent
+        # of which disk a segment happens to live on.
         overrides: dict[str, int] = {}
         for c in self.config_store.get_cameras():
             try:
@@ -859,13 +1031,15 @@ class Storage:
                 (NOTIF_MAX_ROWS,),
             )
 
-        # Quota: max_gb=0 means unlimited.
+        # Quota: max_gb=0 means unlimited. Global across every root (see
+        # module docstring — no per-disk quota), so this stays a single
+        # unscoped scan exactly like the single-root version always was.
         max_bytes = self.max_bytes()
         if max_bytes > 0:
             # Over-quota must be judged against the TRUE total (locked +
             # unlocked) — the same figure health()/pick_write_root() use
             # via _bytes_used() — not just what's eligible to delete. A
-            # root sitting on a lot of locked (protected) footage still
+            # setup sitting on a lot of locked (protected) footage still
             # needs to be recognised as over its cap even though none of
             # that locked data can be freed here; getting this backwards
             # (summing only locked=0 rows) meant it could stay silently
@@ -886,13 +1060,27 @@ class Storage:
                     if not keep_going:
                         break
 
-        # Rolling-buffer reclaim: once the disk itself drops under the
-        # safety margin — regardless of quota, regardless of
-        # retention_days — age the oldest unlocked segments out until
-        # there's room again. This is what keeps a disk without a quota
-        # (or one whose footage volume outgrows retention_days) from
-        # running itself into the ground: physical capacity is always the
-        # backstop.
+        # Per-root rolling-buffer reclaim: each configured root is a
+        # physically finite disk in its own right. Waiting for
+        # retention_days to age footage out, or for EVERY root to run out
+        # simultaneously (the emergency purge below), would leave a
+        # single full root stuck indefinitely as long as some OTHER root
+        # still had room — recording would just silently stop using it
+        # instead of reclaiming its own old footage. This mirrors what a
+        # global quota already gives the whole setup, driven by each
+        # root's own physical free space instead: once THIS root
+        # specifically drops under the safety margin, age its own oldest
+        # unlocked segments out until it has room again, independent of
+        # every other root's state.
+        #
+        # This loop, and specifically its use of _delete_and_keep_going's
+        # stop-on-failure signal PER ROOT (never accumulating across
+        # roots, never retried more aggressively because a previous root
+        # had trouble), is the direct fix for the production incident
+        # that originally motivated removing multi-disk support entirely
+        # — a flaky disk's delete failures must stay contained to that
+        # one disk's reclaim phase, not cascade or drain another root's
+        # index.
         #
         # Ground truth is shutil.disk_usage(), not the write-test's errno:
         # some filesystems (f2fs once it runs out of free segments for a
@@ -900,22 +1088,26 @@ class Storage:
         # is still fundamentally "disk is full" — but a low disk_usage()
         # free reading means the same thing regardless of which errno the
         # filesystem happened to surface.
-        try:
-            free = shutil.disk_usage(str(self.root())).free
-        except Exception:
-            free = None
-        if free is not None and free < SAFETY_MARGIN_BYTES:
-            log.warning("reclaim: storage root below safety margin (%d MB free)", free // (1024*1024))
+        for r in self.roots():
+            try:
+                free = shutil.disk_usage(str(r)).free
+            except Exception:
+                continue  # root unreadable (unmounted, unplugged) — not a purge-fixable problem
+            if free >= SAFETY_MARGIN_BYTES:
+                continue
+            log.warning("reclaim: %s below safety margin (%d MB free)", r, free // (1024*1024))
+            pattern = self._like_escape(str(r) + os.sep) + "%"
             BATCH = 5
             while not self._stop.is_set():
                 with self._lock:
                     batch = self._db.execute(
                         "SELECT id, bytes FROM segments"
-                        " WHERE locked = 0 ORDER BY started_at ASC LIMIT ?",
-                        (BATCH,)
+                        " WHERE locked = 0 AND path LIKE ? ESCAPE '\\'"
+                        " ORDER BY started_at ASC LIMIT ?",
+                        (pattern, BATCH)
                     ).fetchall()
                 if not batch:
-                    log.error("reclaim: nothing left to delete — all segments locked")
+                    log.error("reclaim: %s — nothing tracked left to delete on this root", r)
                     break
                 stop_phase = False
                 for sid, b in batch:
@@ -924,12 +1116,58 @@ class Storage:
                         stop_phase = True
                         break
                 if stop_phase:
-                    log.warning("reclaim: a delete stopped freeing real space — pausing this tick")
+                    log.warning("reclaim: %s — a delete stopped freeing real space, pausing this root's reclaim this tick", r)
                     break
                 try:
-                    if shutil.disk_usage(str(self.root())).free >= SAFETY_MARGIN_BYTES:
+                    if shutil.disk_usage(str(r)).free >= SAFETY_MARGIN_BYTES:
                         break
                 except Exception:
+                    break
+
+        # Emergency global purge: when NO root has room, delete
+        # globally-oldest UNLOCKED segments (regardless of which disk
+        # they're on) until at least one root becomes writable again.
+        # "Room" means the same thing pick_write_root() means by it —
+        # writable AND enough free space — not just "has free bytes": a
+        # root with plenty of free space but a broken permission (e.g.
+        # wrong owner after a remount) is NOT room, and used to make this
+        # skip the emergency purge entirely while the actual writable
+        # root quietly ran itself down to ENOSPC.
+        def _any_has_room() -> bool:
+            for r in self.roots():
+                try:
+                    probe = r / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
+                    probe.write_text("ok"); probe.unlink()
+                    du = shutil.disk_usage(str(r))
+                except Exception:
+                    continue
+                if du.free >= SAFETY_MARGIN_BYTES:
+                    return True
+            return False
+
+        if not _any_has_room():
+            BATCH = 5
+            log.warning("emergency purge: no root has room")
+            while not self._stop.is_set():
+                with self._lock:
+                    batch = self._db.execute(
+                        "SELECT id, bytes FROM segments"
+                        " WHERE locked = 0 ORDER BY started_at ASC LIMIT ?",
+                        (BATCH,)
+                    ).fetchall()
+                if not batch:
+                    log.error("emergency purge: nothing left to delete — all segments locked")
+                    break
+                stop_phase = False
+                for sid, b in batch:
+                    _, keep_going = _delete_and_keep_going(sid, b)
+                    if not keep_going:
+                        stop_phase = True
+                        break
+                if stop_phase:
+                    log.warning("emergency purge: a delete stopped freeing real space — pausing this tick")
+                    break
+                if _any_has_room():
                     break
 
         # Snapshot retention: keep only 3× retention days for snapshots (they're small)
@@ -947,7 +1185,7 @@ class Storage:
                     self._db.execute("DELETE FROM snapshots WHERE id = ?", (sid,))
 
         # No-op unless auto_vacuum=INCREMENTAL was set at creation time
-        # (_ensure_root only does that for a brand-new database — an
+        # (_ensure_roots only does that for a brand-new database — an
         # existing one keeps whatever mode it already had, see there for
         # why). SQLite documents incremental_vacuum as a no-op when
         # auto_vacuum isn't enabled, but NOT as a no-op just because
@@ -979,12 +1217,13 @@ class Storage:
 
     # ---------- Rescan (index rebuild from disk) ----------
     def rescan(self, progress_cb=None) -> dict:
-        """Walk the storage root and register any MP4 not already in the
-        index, then drop any indexed row whose file no longer exists on
-        disk (deleted outside the app — manual rm, an external script).
-        This is the manual "Diski yeniden tara" action from Ayarlar (also
-        run automatically by purge_once() to recover a suspected orphan);
-        nothing else currently reconciles a file removed that way.
+        """Walk every configured root and register any MP4 not already in
+        the index, then drop any indexed row whose file no longer exists
+        on disk (deleted outside the app — manual rm, an external script,
+        a swapped disk). This is the manual "Diski yeniden tara" action
+        from Ayarlar (also run automatically by purge_once() to recover a
+        suspected orphan); nothing else currently reconciles a file
+        removed that way.
 
         Batches its DB work rather than one round-trip per file: on an
         archive with tens of thousands of segments, checking each file's
@@ -1001,16 +1240,17 @@ class Storage:
         """
         from app.recorder import _parse_fname_ts   # local import to avoid cycle
         snap_root = self.snapshots_root().resolve()
-        root = self.root()
+        roots = [r.resolve() for r in self.roots()]
 
         def _files():
-            for p in root.rglob("*.mp4"):
-                if not p.is_file(): continue
-                try:
-                    if snap_root in p.parents: continue
-                except Exception:
-                    pass
-                yield p
+            for root in roots:
+                for p in root.rglob("*.mp4"):
+                    if not p.is_file(): continue
+                    try:
+                        if snap_root in p.parents: continue
+                    except Exception:
+                        pass
+                    yield root, p
 
         # A quick first pass just to get a real denominator for progress
         # (no stat()/DB work, just directory listing) — doubles the
@@ -1046,7 +1286,7 @@ class Storage:
             new_rows.clear()
 
         found = 0; added = 0
-        for p in _files():
+        for root, p in _files():
             found += 1
             abs_p = str(p.resolve())
             if abs_p not in existing:

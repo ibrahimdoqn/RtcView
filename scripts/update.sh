@@ -102,17 +102,25 @@ with open(cfg_path) as f: d = json.load(f)
 d.setdefault("go2rtc", {}).setdefault("rtsp_port", 8554)
 rec = d.setdefault("recording", {})
 rec.setdefault("enabled", True)
-# Single-disk schema: an older version supported multiple storage roots
-# via recording.storage_paths (a list of {"path", "max_gb"}) — collapse
-# that down to the one path a pre-existing config.json might still carry.
-legacy_paths = rec.pop("storage_paths", None)
-if legacy_paths and not rec.get("storage_path"):
-    first = legacy_paths[0] if legacy_paths else None
-    if isinstance(first, dict) and first.get("path"):
-        rec["storage_path"] = str(first["path"])
-    elif isinstance(first, str) and first:
-        rec["storage_path"] = first
-rec.setdefault("storage_path", os.path.join(install_dir, "recordings"))
+# Multi-disk schema: recording.storage_paths (a list of paths, tried in
+# sequential-fill order — see app/storage.py). A pre-existing config.json
+# from before this may still carry the older singular storage_path; that
+# always wins over whatever's already in storage_paths here, since an old
+# single-disk config never had storage_paths at all. Never discard an
+# EXISTING storage_paths list (a user may have added a second/third disk
+# via Ayarlar since this script last ran) -- only fall back to it, or to
+# the install default, when there's no legacy key to migrate from.
+legacy_single = rec.pop("storage_path", None)
+if legacy_single:
+    rec["storage_paths"] = [str(legacy_single)]
+else:
+    normalized = []
+    for p in (rec.get("storage_paths") or []):
+        if isinstance(p, dict):
+            p = p.get("path")
+        if p:
+            normalized.append(str(p))
+    rec["storage_paths"] = normalized or [os.path.join(install_dir, "recordings")]
 rec.setdefault("segment_seconds", 300)
 rec.setdefault("retention_days", 14)
 rec.setdefault("max_gb", 0)
@@ -124,9 +132,10 @@ for cam in d.get("cameras", []):
     cam.setdefault("record_audio", False)
     cam.setdefault("retention_days_override", 0)
 d.pop("disks", None)
-os.makedirs(rec["storage_path"], exist_ok=True)
+for p in rec["storage_paths"]:
+    os.makedirs(p, exist_ok=True)
 with open(cfg_path, "w") as f: json.dump(d, f, indent=2)
-print("recording.storage_path =", rec["storage_path"])
+print("recording.storage_paths =", rec["storage_paths"])
 PY
 fi
 
@@ -138,11 +147,22 @@ if getent group systemd-journal >/dev/null 2>&1 && id -u "$SERVICE_USER" >/dev/n
   fi
 fi
 
-# ------------- permissions (recording folder too) -------------
-REC_PATH=$("$INSTALL_DIR/venv/bin/python" -c "import json; print(json.load(open('$CONFIG_FILE'))['recording']['storage_path'])" 2>/dev/null || echo "$INSTALL_DIR/recordings")
-mkdir -p "$REC_PATH"
+# ------------- permissions (recording folders too) -------------
+# REC_PATH stays the PRIMARY (first) path for everything below that only
+# ever meant "the one recording path" (ReadWritePaths drop-in, summary
+# output) — see storage.py's module docstring for why the systemd sandbox
+# doesn't need every individual path enumerated (broad external-mount
+# roots already cover the common case). Ownership, though, is fixed on
+# EVERY configured path, not just the primary — a second/third disk added
+# via Ayarlar since this script last ran should still get its permissions
+# repaired on update, not just the first one.
+REC_PATH=$("$INSTALL_DIR/venv/bin/python" -c "import json; print(json.load(open('$CONFIG_FILE'))['recording']['storage_paths'][0])" 2>/dev/null || echo "$INSTALL_DIR/recordings")
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
-chown -R "$SERVICE_USER":"$SERVICE_USER" "$REC_PATH" || warn "Kayıt klasörü sahipliği güncellenemedi: $REC_PATH"
+"$INSTALL_DIR/venv/bin/python" -c "import json; print('\n'.join(json.load(open('$CONFIG_FILE'))['recording']['storage_paths']))" 2>/dev/null | while IFS= read -r p; do
+  [ -z "$p" ] && continue
+  mkdir -p "$p"
+  chown -R "$SERVICE_USER":"$SERVICE_USER" "$p" || warn "Kayıt klasörü sahipliği güncellenemedi: $p"
+done
 
 # ------------- self-update capability (path-triggered root service) -------------
 # The main service has NoNewPrivileges=yes — a deliberate hardening
@@ -191,10 +211,12 @@ systemctl enable --now "${SERVICE_NAME}-updater.path"
 # rtcview-diskmgr-boot.service, installed by an older version of this
 # script) is torn down here so an existing install ends up clean instead
 # of carrying orphaned root-owned units that nothing submits jobs to
-# anymore. Recording now always points at a single path the admin mounts
-# and manages themselves (see README's Kurulum) — existing config.json
-# storage_paths entries are migrated to storage_path automatically by
-# app/config.py on next start, using the first configured path.
+# anymore. That auto-mount/format machinery stays gone for good (see
+# app/storage.py's module docstring for why) — but recording.storage_paths
+# itself is back as an admin-managed list of ALREADY-mounted paths (see
+# Ayarlar → Kayıt & Depolama and README's Kurulum): sequential fill across
+# however many disks the admin has mounted, with none of the automated
+# per-disk mount/format logic that caused the original incident.
 if [ -f "/etc/systemd/system/${SERVICE_NAME}-diskmgr.path" ] || \
    [ -f "/etc/systemd/system/${SERVICE_NAME}-diskmgr.service" ] || \
    [ -f "/etc/systemd/system/${SERVICE_NAME}-diskmgr-boot.service" ] || \

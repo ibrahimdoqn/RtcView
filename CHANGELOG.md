@@ -5,6 +5,14 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.4.0] - 2026-08-20
+
+### Eklendi
+- **Çoklu disk desteği yeniden eklendi — bu kez otomatik disk yönetimi olmadan.** Ayarlar → Kayıt & Depolama'da artık tek bir "Kayıt klasörü" yerine, birden fazla klasör ekleyip çıkarabileceğiniz bir liste var. Birden fazla klasör eklerseniz kayıt **sırayla doldurulur**: ilk klasör dolana kadar (güvenlik payı altına düşene kadar) ona yazılır, dolunca listedeki bir sonraki klasör devreye girer.
+  - **Bu, daha önce bu uygulamadan tamamen kaldırılmış bir özelliğin geri getirilmesi — geçmişteki hatayı tekrarlamadan.** Önceki çoklu-disk sürümü RtcView'ın kendisine disk biçimlendirme/bağlama/ayırma yetkisi veriyordu; harici bir USB diskin donanımsal arızaya girmesi, uygulamanın buna otomatik tepki veren temizlik mantığıyla birleşince ciddi bir üretim olayına yol açmış ve bu yüzden özellik tamamen kaldırılıp tek-disk mimarisine geçilmişti. Bu sürüm o dersi koruyor: **RtcView hâlâ hiçbir diski kendisi biçimlendirmez/bağlamaz/ayırmaz** — her klasörü siz (fstab ile) mount etmiş olmalısınız, RtcView sadece zaten bağlı yollara sırayla yazar. Kota (varsayılan sınırsız) tüm disklerin toplamı üzerinden global olarak değerlendirilir, disk başına ayrı kota yok (basitlik için bilinçli bir tercih).
+  - **Asıl güvenlik düzeltmesi — disk başına izole temizlik.** Bir diskin dolmaya yaklaşması, o diskin kendi eski kayıtlarını silme mantığını (rolling-buffer reclaim) tetikler; bu tamamen **o diske özel ve izole** çalışır. Bir diskteki silme işlemi başarısız olursa (ör. donanımsal arıza, aralıklı I/O hatası) — orijinal olaya yol açan tam senaryo — o diskin temizlik fazı **anında durur**, ne o diskin tüm indeksini boşaltmaya devam eder ne de başka bir diskin durumunu etkiler. Diğer disklerin kendi temizlik/kurtarma döngüsü tamamen bağımsız işler. Her disk için ayrı sağlık durumu (`health()`) raporlanır — bir disk bozuk/dolu olsa bile diğerleri çalışmaya devam ettiği sürece kayıt "bozuk" olarak görünmez.
+  - Kapsamlı bir test paketiyle doğrulandı: sırayla doldurma, tüm disklerin aynı anda dolması (acil durum temizliği), bir diskin yazılamaz hale gelmesi (izin hatası/bağlantı kopması) ve toparlanması, **bir diskin silme hatalarının diğer diskleri hiç etkilememesi** (orijinal olayın tam senaryosu — 46 kontrolün tamamı geçti), `rescan()`'ın tüm diskleri gezmesi, ve eski tek-disk `storage_path` ayarının yeni listeye sorunsuz göçürülmesi (kurulum betikleri dahil — `install.sh`/`update.sh` artık mevcut bir çoklu-disk yapılandırmasını asla geri tek diske indirgemiyor).
+
 ## [4.3.6] - 2026-08-20
 
 ### Düzeltildi

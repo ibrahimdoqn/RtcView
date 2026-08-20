@@ -203,7 +203,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
   "go2rtc": { "host": "${G2_HOST}", "api_port": ${G2_PORT}, "rtsp_port": ${G2_RTSP} },
   "recording": {
     "enabled": true,
-    "storage_path": "${REC_PATH}",
+    "storage_paths": ["${REC_PATH}"],
     "segment_seconds": 300,
     "retention_days": 14,
     "max_gb": 0,
@@ -223,8 +223,19 @@ d.setdefault("app", {})["port"] = port
 d.setdefault("go2rtc", {}).update({"host": host, "api_port": gport, "rtsp_port": grtsp})
 rec = d.setdefault("recording", {})
 rec.setdefault("enabled", True)
-rec["storage_path"] = recpath
-rec.pop("storage_paths", None)
+# Only seed storage_paths if this config doesn't already have one -- an
+# existing install may have added a second/third disk via Ayarlar since
+# it was first set up, and re-running this installer (e.g. after a
+# manual re-invoke) must never silently collapse that back down to just
+# REC_PATH. A pre-multi-disk config only ever has the old singular
+# storage_path key; migrate that into a one-element list here so it's
+# never left for app/config.py's own migration to race against this
+# script's next run.
+if "storage_paths" not in rec:
+    legacy = rec.pop("storage_path", None)
+    rec["storage_paths"] = [legacy] if legacy else [recpath]
+else:
+    rec.pop("storage_path", None)
 rec.setdefault("segment_seconds", 300)
 rec.setdefault("retention_days", 14)
 rec.setdefault("max_gb", 0)

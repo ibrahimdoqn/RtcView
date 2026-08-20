@@ -1935,12 +1935,50 @@
     } catch (e) { toast("Başarısız: " + e.message, "err"); }
   });
 
+  function _renderRecPaths(paths){
+    const list = $("#s-rec-paths-list");
+    const arr = paths || [];
+    if (!arr.length){
+      list.innerHTML = '<div class="rec-path-empty">Kayıt klasörü yok</div>';
+      return;
+    }
+    list.innerHTML = arr.map((p, i) => `
+      <div class="rec-path-row" data-path="${escapeHtml(p)}">
+        <span class="rec-path-order" title="Doldurma sırası">${i + 1}</span>
+        <span class="rec-path-text" title="${escapeHtml(p)}">${escapeHtml(p)}</span>
+        <button type="button" class="btn ghost small rec-path-remove">Kaldır</button>
+      </div>`).join("");
+    $$(".rec-path-remove", list).forEach(btn => {
+      btn.addEventListener("click", () => _saveRecPaths(
+        arr.filter(p => p !== btn.closest(".rec-path-row").dataset.path)
+      ));
+    });
+  }
+  async function _saveRecPaths(paths){
+    try {
+      const r = await api.post("/api/recording/storage/paths", { paths });
+      state.recording = r;
+      _renderRecPaths(r.storage_paths);
+      toast("Kayıt klasörleri güncellendi", "ok");
+      refreshUsageBar();
+    } catch (e) { toast("Kaydedilemedi: " + e.message, "err"); }
+  }
+  $("#s-rec-path-add").addEventListener("click", () => {
+    const input = $("#s-rec-path-new");
+    const p = input.value.trim();
+    if (!p) return;
+    const current = (state.recording && state.recording.storage_paths) || [];
+    if (current.includes(p)){ toast("Bu klasör zaten listede", "err"); return; }
+    _saveRecPaths([...current, p]);
+    input.value = "";
+  });
+
   async function loadKayitTab(){
     try {
       const r = await api.get("/api/recording/settings");
       state.recording = r;
       $("#s-rec-enabled").checked = r.enabled !== false;
-      $("#s-rec-path").value = r.storage_path || "";
+      _renderRecPaths(r.storage_paths);
       $("#s-rec-segment").value = r.segment_seconds || 300;
       $("#s-rec-retention").value = r.retention_days || 14;
       $("#s-rec-quota").value = parseInt(r.max_gb || 0) || 0;
@@ -1970,11 +2008,8 @@
   }
   $("#s-rec-tmpfs").addEventListener("change", _updateTmpfsLimitsVisibility);
   $("#s-save-kayit").addEventListener("click", async () => {
-    const path = $("#s-rec-path").value.trim();
-    if (!path){ toast("Kayıt klasörü boş olamaz", "err"); return; }
     const recBody = {
       enabled: $("#s-rec-enabled").checked,
-      storage_path: path,
       segment_seconds: parseInt($("#s-rec-segment").value || 300),
       retention_days: parseInt($("#s-rec-retention").value || 14),
       max_gb: Math.max(0, parseInt($("#s-rec-quota").value || 0) || 0),
@@ -2140,7 +2175,12 @@
           (s.ffmpeg_available ? "" : " · ⚠ ffmpeg bulunamadı");
       }
       const list = $("#s-rec-disk-bars");
-      if (list) list.innerHTML = st.root ? _diskBarHtml(st) : '<div class="disk-bar-empty">Kayıt klasörü yok</div>';
+      if (list) {
+        const roots = st.roots || [];
+        list.innerHTML = roots.length
+          ? roots.map(_rootBarHtml).join("") + _quotaBarHtml(st)
+          : '<div class="disk-bar-empty">Kayıt klasörü yok</div>';
+      }
       _renderStorageHealth(s.health);
       const tmpfsList = $("#s-rec-tmpfs-bars");
       if (tmpfsList) tmpfsList.innerHTML = _tmpfsBarHtml(s.tmpfs);
@@ -2176,40 +2216,22 @@
   }
   // Renders the storage root's fill bar: disk-total bar with recording
   // usage overlaid, plus a smaller quota indicator. Handles unlimited quota.
-  function _diskBarHtml(r){
-    const disk = r.disk || {};
+  // One bar per configured storage root (sequential-fill list — see
+  // storage.py) — each disk's own total/used, with an overlay showing
+  // how much of that specific disk's usage is RtcView recordings.
+  function _rootBarHtml(root){
+    const disk = root.disk || {};
     const total = disk.total || 0;
     const dUsed = disk.used || 0;
-    const recUsed = r.bytes_used || 0;
-    const maxBytes = r.max_bytes || 0;
+    const recUsed = root.bytes_used || 0;
     const diskPct = total ? Math.max(0, Math.min(100, (dUsed / total) * 100)) : 0;
     const recDiskPct = total ? Math.max(0, Math.min(100, (recUsed / total) * 100)) : 0;
     let diskCls = "";
     if (diskPct >= 90) diskCls = "crit"; else if (diskPct >= 75) diskCls = "warn";
-    // Quota row: only shown when a quota is set.
-    let quotaHtml = "";
-    if (maxBytes > 0) {
-      const qPct = Math.max(0, Math.min(100, (recUsed / maxBytes) * 100));
-      let qCls = "";
-      if (qPct >= 100) qCls = "crit"; else if (qPct >= 85) qCls = "warn";
-      quotaHtml = `
-        <div class="disk-bar-line">
-          <span class="disk-bar-label">Kota</span>
-          <div class="disk-bar-track"><div class="disk-bar-fill quota ${qCls}" style="width:${qPct.toFixed(1)}%"></div></div>
-          <span class="disk-bar-num">${fmtBytes(recUsed)} / ${r.max_gb} GB (%${qPct.toFixed(0)})</span>
-        </div>`;
-    } else {
-      quotaHtml = `
-        <div class="disk-bar-line">
-          <span class="disk-bar-label">Kota</span>
-          <div class="disk-bar-track"><div class="disk-bar-fill quota" style="width:0%"></div></div>
-          <span class="disk-bar-num muted">kotasız · ${fmtBytes(recUsed)} kayıt</span>
-        </div>`;
-    }
     return `
       <div class="disk-bar">
         <div class="disk-bar-head">
-          <span class="disk-bar-path" title="${escapeHtml(r.root)}">${escapeHtml(r.root)}</span>
+          <span class="disk-bar-path" title="${escapeHtml(root.path)}">${escapeHtml(root.path)}</span>
         </div>
         <div class="disk-bar-line">
           <span class="disk-bar-label">Disk</span>
@@ -2219,8 +2241,34 @@
           </div>
           <span class="disk-bar-num">${fmtBytes(dUsed)} / ${fmtBytes(total)} (%${diskPct.toFixed(0)})</span>
         </div>
-        ${quotaHtml}
       </div>`;
+  }
+  // Quota is global across every configured root (no per-disk quota —
+  // see storage.py's module docstring), so it's a single aggregate bar
+  // rendered once below the per-root list, not part of _rootBarHtml.
+  function _quotaBarHtml(st){
+    const recUsed = st.bytes_used || 0;
+    const maxBytes = st.max_bytes || 0;
+    let inner;
+    if (maxBytes > 0) {
+      const qPct = Math.max(0, Math.min(100, (recUsed / maxBytes) * 100));
+      let qCls = "";
+      if (qPct >= 100) qCls = "crit"; else if (qPct >= 85) qCls = "warn";
+      inner = `
+        <div class="disk-bar-line">
+          <span class="disk-bar-label">Kota</span>
+          <div class="disk-bar-track"><div class="disk-bar-fill quota ${qCls}" style="width:${qPct.toFixed(1)}%"></div></div>
+          <span class="disk-bar-num">${fmtBytes(recUsed)} / ${st.max_gb} GB (%${qPct.toFixed(0)})</span>
+        </div>`;
+    } else {
+      inner = `
+        <div class="disk-bar-line">
+          <span class="disk-bar-label">Kota</span>
+          <div class="disk-bar-track"><div class="disk-bar-fill quota" style="width:0%"></div></div>
+          <span class="disk-bar-num muted">kotasız · ${fmtBytes(recUsed)} kayıt (toplam)</span>
+        </div>`;
+    }
+    return `<div class="disk-bar">${inner}</div>`;
   }
   function _renderStorageHealth(h){
     const box = $("#s-rec-health");

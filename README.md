@@ -96,7 +96,7 @@ Kurulum sırasında sırayla sorulur:
 
 - **RtcView portu** (varsayılan `5000`)
 - **go2rtc API portu** (varsayılan `1984`) ve **RTSP portu** (varsayılan `8554`) — RtcView'ın kendi kuracağı go2rtc için
-- **Kayıt klasörü** (varsayılan `/opt/rtcview/recordings`) — istediğiniz mutlak yol; harici bir diske kaydetmek isterseniz o diski bu adıma gelmeden önce siz mount etmiş olmalısınız (RtcView disk biçimlendirme/bağlama yapmaz, bkz. altta "Mount önerileri")
+- **Kayıt klasörü** (varsayılan `/opt/rtcview/recordings`) — istediğiniz mutlak yol; harici bir diske kaydetmek isterseniz o diski bu adıma gelmeden önce siz mount etmiş olmalısınız (RtcView disk biçimlendirme/bağlama yapmaz, bkz. altta "Mount önerileri"). Kurulumdan sonra Ayarlar'dan ikinci, üçüncü bir disk daha ekleyebilirsiniz — bkz. "Birden fazla disk"
 
 İzole `python3 -m venv` oluşturur, `ffmpeg` paketini kurar, `rtcview` sistem kullanıcısı yaratır, RtcView'ın kendi (hata düzeltmeli) go2rtc derlemesini kurup `go2rtc.service` olarak başlatır, RtcView'ı systemd birimi ile açılışta başlatır. Ayrıca otomatik güncelleme ve yeniden başlatma/kapatma için gereken root-yetkili yardımcı systemd birimlerini de kurar.
 
@@ -108,20 +108,22 @@ Servisin systemd sandbox'ı **/opt/rtcview**, seçtiğiniz kayıt yolu, ve `/mnt
 sudo rtcview-set-recording-path /istediginiz/mutlak/yol
 ```
 
-## Kayıt yolu değiştirme
+## Kayıt yolu değiştirme / birden fazla disk
 
-Harici bir diske geçmek istediğinizde: diski önce siz `/etc/fstab` ile (kalıcı, önerilen) veya elle mount edin, sonra RtcView'a o yolu gösterin.
+Harici bir diske geçmek (veya ikinci bir disk eklemek) istediğinizde: diski önce siz `/etc/fstab` ile (kalıcı, önerilen) veya elle mount edin, sonra RtcView'a o yolu gösterin.
 
-**UI'dan:** Ayarlar → "Kayıt & Depolama" → yolu değiştirip (yazılabilir mi kontrol edilir) → Kaydet.
+**UI'dan:** Ayarlar → "Kayıt & Depolama" → "Kayıt klasörleri" listesine yeni bir klasör ekleyin (yazılabilir mi kontrol edilir) veya mevcut birini kaldırın.
+
+**Birden fazla disk — sıralı doldurma:** Listeye birden fazla klasör eklerseniz kayıt sırayla doldurulur: ilk klasör dolana kadar (güvenlik payı düşene kadar) her segment ona yazılır; dolunca listedeki bir sonraki klasör devreye girer, üçüncü bir disk varsa aynı şekilde devam eder. RtcView disklerin hiçbirini kendisi biçimlendirmez/bağlamaz/ayırmaz — her klasörü siz mount etmiş ve elle yönetiyor olmalısınız. Bu bilinçli bir sınır: RtcView'ın kendi kendine disk yönetimi yaptığı bir önceki sürümde, harici bir USB diskin donanımsal arızaya girmesi ve uygulamanın buna otomatik tepki veren temizlik mantığı birleşince ciddi bir olay yaşanmıştı. Mevcut tasarımda her disk bağımsız değerlendirilir — biri arızalanır/dolarsa yalnızca o diskin kendi temizlik/kurtarma mantığı devreye girer, diğer disklerin durumu hiç etkilenmez.
 
 **Komut satırından (sandbox dışında bir yol için):**
 
 ```bash
 sudo rtcview-set-recording-path /mnt/harici-disk/rtcview
-# Ardından UI'dan da bu yolu ayarlar bölümüne girin.
+# Ardından UI'dan da bu yolu "Kayıt klasörleri" listesine ekleyin.
 ```
 
-**Mount önerileri:** `/etc/fstab`'a `uid=rtcview,gid=rtcview` veya `umask=002` seçenekleriyle ekleyin ki servis kullanıcısı yazabilsin, ve makine her açıldığında disk otomatik bağlansın. RtcView diski kendisi bağlamaz/biçimlendirmez — bu bilinçli bir tercih: tek bir diski elle yönetmek, uygulamanın kendi kendine format/mount yapmasından çok daha öngörülebilir ve güvenlidir.
+**Mount önerileri:** `/etc/fstab`'a `uid=rtcview,gid=rtcview` veya `umask=002` seçenekleriyle ekleyin ki servis kullanıcısı yazabilsin, ve makine her açıldığında disk otomatik bağlansın. RtcView diski kendisi bağlamaz/biçimlendirmez — bu bilinçli bir tercih: her diski elle yönetmek, uygulamanın kendi kendine format/mount yapmasından çok daha öngörülebilir ve güvenlidir.
 
 ## Güncelleme
 
@@ -187,7 +189,7 @@ Playback:
 ├── app/            # Flask kaynak
 │   ├── main.py         # route'lar, uygulama fabrikası
 │   ├── recorder.py     # ffmpeg segment kaydı
-│   ├── storage.py      # tek diskli depolama: sağlık, retention/kota/dolma-önleyici purge, playback index
+│   ├── storage.py      # çoklu-disk depolama (sıralı doldurma): sağlık, retention/kota/dolma-önleyici purge, playback index
 │   ├── netmon.py        # ağ arayüzü izleme (netlink olayları + bant genişliği)
 │   ├── homeassistant.py # Home Assistant WebSocket bağlantısı: hareket/insan/araç algılama + grup bildirim anahtarları
 │   ├── ptz.py           # ONVIF PTZ
