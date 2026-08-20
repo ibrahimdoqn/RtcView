@@ -5,6 +5,15 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.3.2] - 2026-08-20
+
+### Düzeltildi
+- **`systemctl stop`/`restart rtcview` artık kayıt oturumlarını düzgün kapatıyor.** `atexit` ile kayıtlı kapanış kancası (`recorder.stop()` — her kameranın açık segmentini diske yazıp kapatır) ham bir `SIGTERM` sinyalinde (systemd'nin varsayılan durdurma sinyali) hiç çalışmıyordu — Python yalnızca `SIGINT`'i otomatik olarak `KeyboardInterrupt`'a çeviriyor, işlenmemiş bir `SIGTERM` süreci `atexit` çalışmadan doğrudan sonlandırıyordu. Bu, 4.3.1'deki tmpfs staging özelliğiyle birlikte gerçek bir veri kaybı riskine dönüşüyordu: `rtcview.service`'in `PrivateTmp=yes` ayarı, servis her durduğunda özel `/tmp`'ini siliyor — yani henüz diske taşınmamış bir segment "oynatılamaz" durumda kalmakla kalmıyor, tamamen kayboluyordu. Artık `SIGTERM`/`SIGINT` yakalanıp normal bir kapanışa (`SystemExit`) çevriliyor, böylece mevcut `atexit` kancası her zamanki gibi çalışıp her kameranın son segmentini (tmpfs'te bekliyorsa dahil) diske aktarıyor. Gerçek bir alt süreç üzerinden `SIGTERM` gönderilerek doğrulandı: kapanış kancası artık güvenilir şekilde çalışıyor.
+  - Bu, 4.3.1'in CHANGELOG kaydındaki "servis yeniden başladığında dosyalar otomatik kurtarılıyor" ifadesini netleştiriyor: aynı süreç içi kamera yeniden başlatmaları (ayar değişikliği, bellek sınırı, gün dönümü) için bu zaten doğruydu (`/tmp` o sırada silinmiyor) — eksik olan, `systemctl restart`/`stop` gibi servisin tamamen durduğu durumlarda temiz bir kapanışın hiç tetiklenmemesiydi; bu sürüm o boşluğu kapatıyor.
+
+### Eklendi
+- **tmpfs staging'in RAM sınırları artık ayarlanabilir.** Önceki sabit 256MB (gerekli boş RAM) / 512MB (kamera başına RAM sınırı) değerleri artık Ayarlar → Kayıt & Depolama'da, ilgili onay kutusu işaretlendiğinde görünen iki alan üzerinden değiştirilebiliyor (`tmpfs_safety_margin_mb`, `tmpfs_hard_cap_mb`). Uzun segment süresi veya yüksek bitrate'li kameralar için varsayılanlar yetersiz kalabileceğinden (ya da tam tersi, daha sıkı bir sınır isteniyorsa) artık kod değişikliği gerekmiyor.
+
 ## [4.3.1] - 2026-08-20
 
 ### Eklendi

@@ -96,14 +96,16 @@ STALE_CEIL_SEC = 600
 # rather than a real disk, and unlike the storage root there's no large
 # pool to fall back on. Two backstops keep this from being able to OOM
 # the box: a recorder simply won't start staging if the tmpfs doesn't
-# have TMPFS_STAGE_SAFETY_MARGIN_BYTES free (falls back to writing
-# directly to storage_path, silently, same as tmpfs_staging=False), and
-# CameraRecorder._check_stage_overflow() forces a restart into
-# non-staged mode — for the rest of that CameraRecorder's life — the
-# moment one camera's own unmoved backlog exceeds
-# TMPFS_STAGE_HARD_CAP_BYTES, which only happens if the real storage
-# disk can't keep up with the copies (normal steady-state usage is at
-# most ~one in-flight segment).
+# have enough free space (self.tmpfs_safety_margin_bytes — falls back to
+# writing directly to storage_path, silently, same as
+# tmpfs_staging=False), and CameraRecorder._check_stage_overflow() forces
+# a restart into non-staged mode — for the rest of that CameraRecorder's
+# life — the moment one camera's own unmoved backlog exceeds
+# self.tmpfs_hard_cap_bytes, which only happens if the real storage disk
+# can't keep up with the copies (normal steady-state usage is at most
+# ~one in-flight segment). Both are per-instance, configurable via
+# recording.tmpfs_safety_margin_mb / tmpfs_hard_cap_mb — these two
+# constants are only the fallback defaults (see CameraRecorder.__init__).
 TMPFS_STAGE_ROOT = Path("/tmp/rtcview-stage")
 TMPFS_STAGE_SAFETY_MARGIN_BYTES = 256 * 1024**2   # 256 MB
 TMPFS_STAGE_HARD_CAP_BYTES = 512 * 1024**2        # 512 MB, per camera
@@ -255,7 +257,9 @@ class CameraRecorder:
     def __init__(self, cam: dict, ffmpeg_path: str, segment_seconds: int,
                  rtsp_url: str, storage,
                  mem_ceiling_mb: int = MEM_RSS_CEILING_MB,
-                 tmpfs_staging: bool = False):
+                 tmpfs_staging: bool = False,
+                 tmpfs_safety_margin_mb: int = TMPFS_STAGE_SAFETY_MARGIN_BYTES // (1024*1024),
+                 tmpfs_hard_cap_mb: int = TMPFS_STAGE_HARD_CAP_BYTES // (1024*1024)):
         self.cam = cam
         self.cam_id = cam["id"]
         self.ffmpeg_path = ffmpeg_path
@@ -277,11 +281,19 @@ class CameraRecorder:
         # does, which can silently fall back to direct-to-disk (see
         # start()) if the tmpfs doesn't have room right now.
         self.tmpfs_staging = bool(tmpfs_staging)
+        # Configurable via recording.tmpfs_safety_margin_mb / tmpfs_hard_
+        # cap_mb (Ayarlar > Kayıt & Depolama, shown once tmpfs_staging is
+        # checked) — the right values depend on segment_seconds and the
+        # cameras' bitrates (a long segment_seconds or a high-bitrate
+        # stream needs more RAM headroom than the 256/512 MB defaults
+        # assume), not something one hardcoded pair fits universally.
+        self.tmpfs_safety_margin_bytes = max(1, int(tmpfs_safety_margin_mb)) * 1024**2
+        self.tmpfs_hard_cap_bytes = max(1, int(tmpfs_hard_cap_mb)) * 1024**2
         self.stage_dir: Optional[Path] = None
         self.write_dir: Optional[Path] = None  # wherever ffmpeg is actually told to write — stage_dir or day_dir
         self._staging_active: bool = False
         # Set by _check_stage_overflow() the first time this camera's
-        # staged backlog exceeds TMPFS_STAGE_HARD_CAP_BYTES — once set,
+        # staged backlog exceeds self.tmpfs_hard_cap_bytes — once set,
         # start() never re-enables staging for this CameraRecorder
         # instance again (avoids restart-thrash if the destination disk
         # stays slow/full).
@@ -350,7 +362,7 @@ class CameraRecorder:
                     free = 0
                     log.warning("[%s] tmpfs stage unavailable (%s) — "
                                 "recording directly to storage_path", self.cam_id, e)
-                if free >= TMPFS_STAGE_SAFETY_MARGIN_BYTES:
+                if free >= self.tmpfs_safety_margin_bytes:
                     self.stage_dir = candidate_stage_dir
                     self._staging_active = True
                     log.info("[%s] tmpfs stage active at %s (tmpfs=%s, %.0f MB free)",
@@ -359,7 +371,7 @@ class CameraRecorder:
                 else:
                     log.warning("[%s] tmpfs stage has < %dMB free — recording directly to "
                                 "storage_path this session", self.cam_id,
-                                TMPFS_STAGE_SAFETY_MARGIN_BYTES // (1024*1024))
+                                self.tmpfs_safety_margin_bytes // (1024*1024))
 
             self.write_dir = self.stage_dir if self._staging_active else self.day_dir
             # Filename encodes each segment's own wall-clock start time via
@@ -654,7 +666,7 @@ class CameraRecorder:
 
     def _check_stage_overflow(self) -> bool:
         """True if this camera's tmpfs stage directory has accumulated
-        more unmoved data than TMPFS_STAGE_HARD_CAP_BYTES. A closed
+        more unmoved data than self.tmpfs_hard_cap_bytes. A closed
         segment normally moves out within one watcher tick of closing, so
         steady-state usage is at most ~one in-flight segment; sustained
         growth past the cap means the destination disk can't keep up
@@ -670,11 +682,11 @@ class CameraRecorder:
             total = sum(p.stat().st_size for p in self.stage_dir.glob(f"{self.cam_id}_*.{self.ext}"))
         except Exception:
             return False
-        if total < TMPFS_STAGE_HARD_CAP_BYTES:
+        if total < self.tmpfs_hard_cap_bytes:
             return False
         log.error("[%s] tmpfs stage has %.0f MB unmoved (cap %d MB) — storage disk isn't "
                   "keeping up; restarting to record directly to storage_path", self.cam_id,
-                  total / (1024*1024), TMPFS_STAGE_HARD_CAP_BYTES // (1024*1024))
+                  total / (1024*1024), self.tmpfs_hard_cap_bytes // (1024*1024))
         self._stage_overflow_at = time.time()
         return True
 
@@ -929,6 +941,10 @@ class RecordingManager:
             rtsp_url=self._rtsp_url(cam), storage=self.storage,
             mem_ceiling_mb=int(rc.get("mem_rss_ceiling_mb", MEM_RSS_CEILING_MB)),
             tmpfs_staging=bool(rc.get("tmpfs_staging", False)),
+            tmpfs_safety_margin_mb=int(rc.get("tmpfs_safety_margin_mb",
+                                               TMPFS_STAGE_SAFETY_MARGIN_BYTES // (1024*1024))),
+            tmpfs_hard_cap_mb=int(rc.get("tmpfs_hard_cap_mb",
+                                          TMPFS_STAGE_HARD_CAP_BYTES // (1024*1024))),
         )
 
     def _wants_run(self, cam: dict, now: float) -> tuple[bool, str]:

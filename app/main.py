@@ -4,9 +4,11 @@ import logging
 import mimetypes
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -205,6 +207,28 @@ def create_app(config_path: str) -> Flask:
         try: storage.stop()
         except Exception: pass
     atexit.register(_shutdown)
+
+    # atexit alone does NOT run on a raw SIGTERM (systemd's default stop
+    # signal, sent on every `systemctl stop/restart rtcview`) -- Python
+    # only auto-converts SIGINT into KeyboardInterrupt; an unhandled
+    # SIGTERM just terminates the process immediately, skipping atexit
+    # entirely, so _shutdown() (and therefore recorder.stop()'s flush of
+    # every in-flight segment to the real disk) never ran on an ordinary
+    # restart. That already risked an unfinished (moov-less, unplayable
+    # but at least present) segment; with recording.tmpfs_staging on it's
+    # worse — the systemd unit's PrivateTmp=yes directory is torn down
+    # when the unit stops, so a segment still sitting in tmpfs at that
+    # moment isn't just unplayable, it's gone. Converting the signal into
+    # a normal SystemExit makes it unwind through here exactly like a
+    # clean exit, so the already-registered atexit hook actually runs
+    # first. Only from the main thread — signal.signal() requires it, and
+    # create_app() only ever needs this in main()'s normal run path (not
+    # e.g. a test harness importing it on some other thread).
+    if threading.current_thread() is threading.main_thread():
+        def _handle_term(signum, frame):
+            raise SystemExit(0)
+        signal.signal(signal.SIGTERM, _handle_term)
+        signal.signal(signal.SIGINT, _handle_term)
 
     # ---------- Pages ----------
     _asset_ver_cache = [0.0, "0"]      # [computed_at, value]
@@ -654,7 +678,8 @@ def create_app(config_path: str) -> Flask:
         body = request.get_json(force=True) or {}
         allowed = {"enabled", "storage_path", "segment_seconds",
                    "retention_days", "max_gb", "purge_interval_seconds", "ffmpeg_path",
-                   "mem_rss_ceiling_mb", "tmpfs_staging"}
+                   "mem_rss_ceiling_mb", "tmpfs_staging",
+                   "tmpfs_safety_margin_mb", "tmpfs_hard_cap_mb"}
         clean = {k: v for k, v in body.items() if k in allowed}
         new_path = clean.pop("storage_path", None)
         # Validate simple integer / bool fields BEFORE mutating anything.
@@ -674,6 +699,18 @@ def create_app(config_path: str) -> Flask:
                 if m < 32 or m > 4096: return jsonify({"error": "mem_rss_ceiling_mb 32-4096"}), 400
                 clean["mem_rss_ceiling_mb"] = m
             except Exception: return jsonify({"error": "invalid mem_rss_ceiling_mb"}), 400
+        if "tmpfs_safety_margin_mb" in clean:
+            try:
+                m = int(clean["tmpfs_safety_margin_mb"])
+                if m < 32 or m > 8192: return jsonify({"error": "tmpfs_safety_margin_mb 32-8192"}), 400
+                clean["tmpfs_safety_margin_mb"] = m
+            except Exception: return jsonify({"error": "invalid tmpfs_safety_margin_mb"}), 400
+        if "tmpfs_hard_cap_mb" in clean:
+            try:
+                m = int(clean["tmpfs_hard_cap_mb"])
+                if m < 32 or m > 16384: return jsonify({"error": "tmpfs_hard_cap_mb 32-16384"}), 400
+                clean["tmpfs_hard_cap_mb"] = m
+            except Exception: return jsonify({"error": "invalid tmpfs_hard_cap_mb"}), 400
         if "purge_interval_seconds" in clean:
             # The purge loop does self._stop.wait(purge_interval_seconds)
             # between full-table retention/quota scans; 0 (or negative)

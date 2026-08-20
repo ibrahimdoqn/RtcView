@@ -322,10 +322,15 @@
             taşınır — hem disk yükünü/yıpranmasını azaltır hem de yavaş bir diskin kayıt sırasında
             takılmasına karşı daha dayanıklıdır. Yalnızca <code>/tmp</code> gerçekten bir tmpfs (RAM disk)
             olarak bağlıysa fayda sağlar — normal bir dizinse (aynı diskin parçasıysa) hiçbir şey
-            değişmez. RAM'i korumak için: tmpfs'te yeterli boş alan yoksa bu özellik o oturum için
-            sessizce devre dışı kalır (doğrudan diske yazılır), ve bir kameranın biriktirdiği
-            taşınmamış veri belirli bir sınırı aşarsa (kayıt diski yetişemiyor demektir) o kamera
-            otomatik olarak doğrudan-diske-yazma moduna geri döner.</small>
+            değişmez.</small>
+          <div id="s-rec-tmpfs-limits" class="grid2 hidden">
+            <label>Gerekli boş RAM (MB) <input id="s-rec-tmpfs-margin" type="number" min="32" max="8192" /></label>
+            <label>Kamera başına RAM sınırı (MB) <input id="s-rec-tmpfs-cap" type="number" min="32" max="16384" /></label>
+          </div>
+          <small id="s-rec-tmpfs-limits-help" class="hidden">tmpfs'te bu kadar boş alan yoksa bir kameranın
+            oturumu bu özelliği hiç etkinleştirmiyor (sessizce doğrudan diske yazıyor). Bir kameranın
+            RAM'de biriken taşınmamış verisi bu sınırı aşarsa (kayıt diski yetişemiyor demektir) o kamera
+            otomatik olarak kalıcı şekilde doğrudan-diske-yazma moduna dönüyor.</small>
           <div id="s-rec-usage-summary" class="usage-text">—</div>
           <div id="s-rec-disk-bars" class="disk-bars"></div>
           <div id="s-rec-health" class="rec-health rec-health-ok">

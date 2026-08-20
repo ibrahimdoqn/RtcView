@@ -73,10 +73,21 @@ DEFAULT_CONFIG = {
         # writing directly to storage_path the whole time — trades SD
         # card/eMMC write load for RAM. Off by default: only useful if
         # /tmp is actually a tmpfs mount (not guaranteed on every board),
-        # and does carry a real — if bounded, see recorder.py's
-        # TMPFS_STAGE_* constants — RAM-usage tradeoff. See Ayarlar >
-        # Kayıt & Depolama.
+        # and does carry a real — if bounded by the two settings below —
+        # RAM-usage tradeoff. See Ayarlar > Kayıt & Depolama.
         "tmpfs_staging": False,
+        # Free tmpfs space required for a camera to start staging at all;
+        # below this it silently records straight to storage_path instead
+        # (see recorder.py's CameraRecorder.start()). Only relevant when
+        # tmpfs_staging is on.
+        "tmpfs_safety_margin_mb": 256,
+        # Per-camera ceiling on unmoved (staged-but-not-yet-on-disk) data;
+        # past this the destination disk clearly can't keep up, and that
+        # camera permanently falls back to writing directly to
+        # storage_path for the rest of its session (see recorder.py's
+        # CameraRecorder._check_stage_overflow()). Only relevant when
+        # tmpfs_staging is on.
+        "tmpfs_hard_cap_mb": 512,
     },
     "cameras": [],
     "groups": [],  # [{"id": "grp_xxxxxxxx", "name": "İç Mekan"}]

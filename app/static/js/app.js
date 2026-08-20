@@ -1925,9 +1925,18 @@
       $("#s-rec-retention").value = r.retention_days || 14;
       $("#s-rec-quota").value = parseInt(r.max_gb || 0) || 0;
       $("#s-rec-tmpfs").checked = !!r.tmpfs_staging;
+      $("#s-rec-tmpfs-margin").value = parseInt(r.tmpfs_safety_margin_mb || 256) || 256;
+      $("#s-rec-tmpfs-cap").value = parseInt(r.tmpfs_hard_cap_mb || 512) || 512;
+      _updateTmpfsLimitsVisibility();
     } catch {}
     refreshUsageBar();
   }
+  function _updateTmpfsLimitsVisibility(){
+    const on = $("#s-rec-tmpfs").checked;
+    $("#s-rec-tmpfs-limits").classList.toggle("hidden", !on);
+    $("#s-rec-tmpfs-limits-help").classList.toggle("hidden", !on);
+  }
+  $("#s-rec-tmpfs").addEventListener("change", _updateTmpfsLimitsVisibility);
   $("#s-save-kayit").addEventListener("click", async () => {
     const path = $("#s-rec-path").value.trim();
     if (!path){ toast("Kayıt klasörü boş olamaz", "err"); return; }
@@ -1938,6 +1947,8 @@
       retention_days: parseInt($("#s-rec-retention").value || 14),
       max_gb: Math.max(0, parseInt($("#s-rec-quota").value || 0) || 0),
       tmpfs_staging: $("#s-rec-tmpfs").checked,
+      tmpfs_safety_margin_mb: Math.max(32, parseInt($("#s-rec-tmpfs-margin").value || 256) || 256),
+      tmpfs_hard_cap_mb: Math.max(32, parseInt($("#s-rec-tmpfs-cap").value || 512) || 512),
     };
     try {
       state.recording = await api.post("/api/recording/settings", recBody);
