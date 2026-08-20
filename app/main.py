@@ -25,7 +25,7 @@ from app import go2rtc_config
 from app.go2rtc_client import Go2RtcClient
 from app.netmon import NetworkMonitor
 from app.ptz import ptz_controller, ONVIF_AVAILABLE
-from app.recorder import RecordingManager, MANUAL_DEFAULT_SECONDS
+from app.recorder import RecordingManager, MANUAL_DEFAULT_SECONDS, tmpfs_stage_status
 from app.storage import Storage
 
 logging.basicConfig(
@@ -774,6 +774,10 @@ def create_app(config_path: str) -> Flask:
             "storage": storage.stats(),
             "health": health,
             "ffmpeg_available": bool(_which(store.get_recording().get("ffmpeg_path") or "ffmpeg")),
+            # Independent of whether tmpfs_staging is on — lets the UI
+            # show whether /tmp actually qualifies as RAM before the user
+            # even enables the checkbox.
+            "tmpfs": tmpfs_stage_status(),
         })
 
     @app.post("/api/recording/rescan")

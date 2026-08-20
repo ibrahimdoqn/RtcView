@@ -5,6 +5,13 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.3.3] - 2026-08-20
+
+### Değişti
+- **tmpfs staging artık `/tmp`'in gerçekten RAM (tmpfs) olduğunu kendisi doğruluyor, varsayımda bulunmuyor.** Önceden bu kontrol yalnızca bilgi amaçlı loglanıyordu — `/tmp` normal bir dizinse (aynı kayıt diskinin parçasıysa) özellik yine de "açık" görünüyor ama hiçbir fayda sağlamıyordu, sessizce. Artık bir kameranın oturumu, `/tmp` gerçekten tmpfs olarak doğrulanamadıkça staging'i hiç etkinleştirmiyor — doğrulanamazsa o oturum boyunca doğrudan kayıt diskine yazmaya devam ediyor (aynı, zaten var olan sessiz geri düşüş yolu).
+- **Ayarlar → Kayıt & Depolama'da tmpfs alanının anlık durumu artık görünüyor** — kayıt diski için gösterilen kullanım çubuğuyla birebir aynı görsel (`✓ RAM (tmpfs) olarak doğrulandı` / `✕ RAM değil`, doluluk yüzdesi ile bir kullanım çubuğu). Bu, onay kutusu kapalıyken bile her zaman gösteriliyor — açmadan önce `/tmp`'in gerçekten uygun olup olmadığını kontrol edebilirsiniz.
+- Fonksiyonel testlerle doğrulandı: bol boş alan olsa bile doğrulanamayan tmpfs'te staging'in etkinleşmediği, doğrulanan tmpfs'te normal çalıştığı, ve `/api/recording/status`'un yeni `tmpfs` alanını doğru döndürdüğü.
+
 ## [4.3.2] - 2026-08-20
 
 ### Düzeltildi

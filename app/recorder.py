@@ -112,13 +112,18 @@ TMPFS_STAGE_HARD_CAP_BYTES = 512 * 1024**2        # 512 MB, per camera
 
 
 def _is_tmpfs(path: Path) -> bool:
-    """Best-effort check that `path` is actually backed by tmpfs (RAM) and
-    not a regular disk-backed mount — staging only reduces storage-disk
-    I/O if this is true (on some boards /tmp is just part of the root
-    filesystem, on the same disk as storage_path — the feature still
-    "works" then, it just doesn't help). Purely informational, logged
-    once when staging activates; never blocks the feature since a
-    misdetection here should never be able to disable it."""
+    """Whether `path` is actually backed by tmpfs (RAM) and not a regular
+    disk-backed mount — on some boards /tmp is just part of the root
+    filesystem, on the SAME disk as storage_path, in which case staging
+    would still "work" mechanically (files move successfully) but
+    provide none of the point of the feature (still real disk I/O, just
+    via an extra copy). Gates whether CameraRecorder.start() will
+    activate staging at all — see its call site — rather than being
+    purely informational, per an explicit request to have the app
+    confirm this instead of silently doing nothing useful. /proc/mounts
+    is reliably present on any Linux system this app targets, so a
+    failure to read it is treated as "not confirmed" (False) rather
+    than "assume yes"."""
     try:
         best = None
         with open("/proc/mounts") as f:
@@ -131,7 +136,27 @@ def _is_tmpfs(path: Path) -> bool:
                     best = (mnt, fstype)
         return best is not None and best[1] == "tmpfs"
     except Exception:
-        return True  # can't tell — don't nag on an unusual system
+        return False
+
+
+def tmpfs_stage_status() -> dict:
+    """Live info for the UI (Ayarlar > Kayıt & Depolama): whether the
+    tmpfs staging path is confirmed to be real RAM, and its current
+    usage — same shape/purpose as storage.stats()'s "disk" block, so the
+    frontend can render an identical usage bar. Independent of whether
+    recording.tmpfs_staging is actually on, so a user can check this
+    BEFORE deciding to enable the checkbox. Checks TMPFS_STAGE_ROOT's
+    parent (/tmp) rather than TMPFS_STAGE_ROOT itself since the latter is
+    only created lazily once some camera actually activates staging —
+    both share the same mount either way."""
+    mount_path = TMPFS_STAGE_ROOT.parent
+    is_tmpfs = _is_tmpfs(mount_path)
+    try:
+        du = shutil.disk_usage(str(mount_path))
+        disk = {"total": du.total, "used": du.used, "free": du.free}
+    except Exception:
+        disk = {"total": 0, "used": 0, "free": 0}
+    return {"path": str(TMPFS_STAGE_ROOT), "is_tmpfs": is_tmpfs, "disk": disk}
 
 
 def _proc_rss_mb(pid: int) -> Optional[float]:
@@ -355,23 +380,34 @@ class CameraRecorder:
             self.stage_dir = None
             self._staging_active = False
             if self.tmpfs_staging and self._stage_overflow_at is None:
-                try:
-                    candidate_stage_dir.mkdir(parents=True, exist_ok=True)
-                    free = shutil.disk_usage(str(TMPFS_STAGE_ROOT)).free
-                except Exception as e:
-                    free = 0
-                    log.warning("[%s] tmpfs stage unavailable (%s) — "
-                                "recording directly to storage_path", self.cam_id, e)
-                if free >= self.tmpfs_safety_margin_bytes:
-                    self.stage_dir = candidate_stage_dir
-                    self._staging_active = True
-                    log.info("[%s] tmpfs stage active at %s (tmpfs=%s, %.0f MB free)",
-                              self.cam_id, candidate_stage_dir, _is_tmpfs(TMPFS_STAGE_ROOT),
-                              free / (1024*1024))
+                confirmed_tmpfs = _is_tmpfs(TMPFS_STAGE_ROOT)
+                if not confirmed_tmpfs:
+                    # The whole point is trading disk I/O for RAM I/O — if
+                    # TMPFS_STAGE_ROOT isn't actually tmpfs (e.g. /tmp is
+                    # just part of the root filesystem on this board),
+                    # "activating" would still work mechanically but give
+                    # none of the benefit, silently. Confirm first rather
+                    # than assume.
+                    log.warning("[%s] tmpfs stage path %s is not confirmed to be tmpfs (RAM) — "
+                                "recording directly to storage_path this session", self.cam_id,
+                                TMPFS_STAGE_ROOT)
                 else:
-                    log.warning("[%s] tmpfs stage has < %dMB free — recording directly to "
-                                "storage_path this session", self.cam_id,
-                                self.tmpfs_safety_margin_bytes // (1024*1024))
+                    try:
+                        candidate_stage_dir.mkdir(parents=True, exist_ok=True)
+                        free = shutil.disk_usage(str(TMPFS_STAGE_ROOT)).free
+                    except Exception as e:
+                        free = 0
+                        log.warning("[%s] tmpfs stage unavailable (%s) — "
+                                    "recording directly to storage_path", self.cam_id, e)
+                    if free >= self.tmpfs_safety_margin_bytes:
+                        self.stage_dir = candidate_stage_dir
+                        self._staging_active = True
+                        log.info("[%s] tmpfs stage active at %s (confirmed RAM, %.0f MB free)",
+                                  self.cam_id, candidate_stage_dir, free / (1024*1024))
+                    else:
+                        log.warning("[%s] tmpfs stage has < %dMB free — recording directly to "
+                                    "storage_path this session", self.cam_id,
+                                    self.tmpfs_safety_margin_bytes // (1024*1024))
 
             self.write_dir = self.stage_dir if self._staging_active else self.day_dir
             # Filename encodes each segment's own wall-clock start time via

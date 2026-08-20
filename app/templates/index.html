@@ -320,9 +320,10 @@
           <small>SD kart/eMMC gibi yavaş/sınırlı ömürlü depolamalarda kaydın tamamı boyunca sürekli küçük
             yazma yapmak yerine, ffmpeg segmenti önce RAM'de yazar; segment kapanınca tek seferde diske
             taşınır — hem disk yükünü/yıpranmasını azaltır hem de yavaş bir diskin kayıt sırasında
-            takılmasına karşı daha dayanıklıdır. Yalnızca <code>/tmp</code> gerçekten bir tmpfs (RAM disk)
-            olarak bağlıysa fayda sağlar — normal bir dizinse (aynı diskin parçasıysa) hiçbir şey
-            değişmez.</small>
+            takılmasına karşı daha dayanıklıdır. RtcView, <code>/tmp</code>'nin gerçekten bir tmpfs (RAM disk)
+            olarak bağlı olduğunu kendisi doğrular; değilse (normal bir dizinse, aynı diskin parçasıysa)
+            bu özellik o oturum için sessizce etkinleşmez — aşağıdaki durumdan kontrol edebilirsiniz.</small>
+          <div id="s-rec-tmpfs-bars" class="disk-bars"></div>
           <div id="s-rec-tmpfs-limits" class="grid2 hidden">
             <label>Gerekli boş RAM (MB) <input id="s-rec-tmpfs-margin" type="number" min="32" max="8192" /></label>
             <label>Kamera başına RAM sınırı (MB) <input id="s-rec-tmpfs-cap" type="number" min="32" max="16384" /></label>

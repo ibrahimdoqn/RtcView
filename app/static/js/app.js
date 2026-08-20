@@ -2110,7 +2110,37 @@
       const list = $("#s-rec-disk-bars");
       if (list) list.innerHTML = st.root ? _diskBarHtml(st) : '<div class="disk-bar-empty">Kayıt klasörü yok</div>';
       _renderStorageHealth(s.health);
+      const tmpfsList = $("#s-rec-tmpfs-bars");
+      if (tmpfsList) tmpfsList.innerHTML = _tmpfsBarHtml(s.tmpfs);
     } catch {}
+  }
+  // Mirrors _diskBarHtml's shape/classes exactly (same .disk-bar-* CSS)
+  // but for the tmpfs staging area — always rendered regardless of
+  // whether the checkbox is on, so a user can check /tmp's RAM status
+  // before deciding to enable it.
+  function _tmpfsBarHtml(t){
+    if (!t) return '<div class="disk-bar-empty">tmpfs durumu bilinmiyor</div>';
+    const disk = t.disk || {};
+    const total = disk.total || 0;
+    const used = disk.used || 0;
+    const pct = total ? Math.max(0, Math.min(100, (used / total) * 100)) : 0;
+    let cls = "";
+    if (pct >= 90) cls = "crit"; else if (pct >= 75) cls = "warn";
+    const badge = t.is_tmpfs
+      ? "✓ RAM (tmpfs) olarak doğrulandı"
+      : "✕ RAM değil — normal bir dizin, bu özellik etkinleşmez";
+    return `
+      <div class="disk-bar">
+        <div class="disk-bar-head">
+          <span class="disk-bar-path" title="${escapeHtml(t.path || "")}">${escapeHtml(t.path || "")}</span>
+          · ${badge}
+        </div>
+        <div class="disk-bar-line">
+          <span class="disk-bar-label">RAM</span>
+          <div class="disk-bar-track"><div class="disk-bar-fill disk ${cls}" style="width:${pct.toFixed(1)}%"></div></div>
+          <span class="disk-bar-num">${fmtBytes(used)} / ${fmtBytes(total)} (%${pct.toFixed(0)})</span>
+        </div>
+      </div>`;
   }
   // Renders the storage root's fill bar: disk-total bar with recording
   // usage overlaid, plus a smaller quota indicator. Handles unlimited quota.
