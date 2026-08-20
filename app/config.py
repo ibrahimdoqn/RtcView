@@ -72,6 +72,16 @@ DEFAULT_CONFIG = {
         # near-full rolling purge in storage.py).
         "max_gb": 0,
         "purge_interval_seconds": 60,
+        # Free-space floor (per root) below which a disk is treated as
+        # "no room" — by both the write picker (which root gets new
+        # segments) and the reclaim/emergency purge in storage.py. What
+        # counts as "a sensible safety margin" isn't the same number on a
+        # 128 GB SD card as it is on an 8 TB array, so this is a setting,
+        # not a fixed constant. ffmpeg still needs SOME slack to flush a
+        # segment without hitting ENOSPC mid-write — see storage.py's
+        # _margin_bytes() for the floor that keeps a misconfigured 0/tiny
+        # value from disabling that protection outright.
+        "low_space_margin_mb": 1024,
         "ffmpeg_path": "ffmpeg",
         # A healthy stream-copy ffmpeg process (this app never re-encodes
         # video) sits at 50-90 MB RSS indefinitely in normal operation.

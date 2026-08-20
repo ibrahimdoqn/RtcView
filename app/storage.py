@@ -33,10 +33,11 @@ from typing import Optional
 
 log = logging.getLogger("storage")
 
-# Physical free space below which a root is considered "no room". Both
-# the write picker and the fullness purge respect this — ffmpeg needs
-# some slack to flush its buffer without hitting ENOSPC mid-segment.
-SAFETY_MARGIN_BYTES = 1 * 1024**3  # 1 GB
+# Fallback free-space floor (MB) when recording.low_space_margin_mb is
+# missing/invalid — see Storage._margin_bytes(). The setting itself lives
+# in config.py (recording.low_space_margin_mb) since 1 GB isn't the right
+# number on every disk size; this is only the safe default.
+DEFAULT_MARGIN_MB = 1024
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS segments (
@@ -191,6 +192,23 @@ class Storage:
             gb = 0
         return max(0, gb) * (1024**3)
 
+    def _margin_bytes(self) -> int:
+        """Free-space floor below which a root is "no room" — read fresh
+        from config on every call (not cached: it's a rare, tiny read,
+        and the write picker / purge loop must see a change immediately,
+        not after some cache window). A non-positive or unparsable value
+        falls back to DEFAULT_MARGIN_MB rather than disabling the floor —
+        ffmpeg still needs some slack to flush a segment without hitting
+        ENOSPC mid-write, so "no margin at all" is never a valid choice
+        even if someone types 0 into the setting."""
+        try:
+            mb = int(self._rec_cfg().get("low_space_margin_mb", DEFAULT_MARGIN_MB) or DEFAULT_MARGIN_MB)
+        except (TypeError, ValueError):
+            mb = DEFAULT_MARGIN_MB
+        if mb <= 0:
+            mb = DEFAULT_MARGIN_MB
+        return mb * 1024 * 1024
+
     def snapshots_root(self) -> Path:
         return self.primary_root() / "_snapshots"
 
@@ -240,8 +258,9 @@ class Storage:
 
     def pick_write_root(self) -> Path:
         """Sequential fill: try each configured root in order, return the
-        FIRST one that's writable and has at least SAFETY_MARGIN_BYTES
-        free right now. This is the "önce A dolsun, sonra B" model — as
+        FIRST one that's writable and has at least the configured low-
+        space margin (see _margin_bytes()) free right now. This is the
+        "önce A dolsun, sonra B" model — as
         long as A has room, every new segment goes to A; once A can't fit
         another safety-buffered write, B takes over automatically.
 
@@ -253,6 +272,7 @@ class Storage:
         anyway (matches the single-root behavior this always had:
         ffmpeg's own write failure is what actually surfaces the
         problem, not a pre-emptive None here)."""
+        margin = self._margin_bytes()
         fallback: Optional[Path] = None
         for r in self.roots():
             try:
@@ -263,7 +283,7 @@ class Storage:
             except Exception:
                 continue
             fallback = r
-            if du.free < SAFETY_MARGIN_BYTES:
+            if du.free < margin:
                 continue
             return r
         return fallback or self.primary_root()
@@ -510,8 +530,23 @@ class Storage:
         return None
 
     def delete_segment(self, seg_id: int, force: bool = False) -> bool:
+        return self._delete_segment_impl(seg_id, force)[0]
+
+    def _delete_segment_impl(self, seg_id: int, force: bool = False) -> tuple[bool, bool]:
+        """Does the actual work behind delete_segment(); returns (deleted,
+        unlink_ok) instead of just deleted. The purge loop's
+        _delete_and_keep_going needs to know whether THIS SPECIFIC call's
+        unlink succeeded — self._orphan_suspected is instance-wide and
+        sticky for the rest of the current purge_once() tick (by design,
+        so the NEXT tick's auto-rescan can recover from it — see its own
+        docstring), so checking that shared flag here would make every
+        delete AFTER the first failure in a tick look like a failure too,
+        even a perfectly successful one on a completely different, healthy
+        root. That defeats the whole point of the per-root isolation the
+        purge loop relies on: one root's trouble must never make a
+        different root's own successful deletes get treated as failures."""
         seg = self.get_segment(seg_id)
-        if not seg: return False
+        if not seg: return False, True
         # The locked check and the delete are one atomic statement (both
         # under self._lock) rather than "read locked, decide, then
         # delete" — the latter left a window where a concurrent
@@ -526,18 +561,20 @@ class Storage:
                 cur = self._db.execute("DELETE FROM segments WHERE id = ? AND locked = 0", (seg_id,))
             deleted = cur.rowcount > 0
         if not deleted:
-            return False
+            return False, True
         # Unlink AFTER the row is confirmed gone (and confirmed not
         # locked, atomically, per above). If the OS refuses the unlink
         # (permission, ENOENT, a disk so full even deleting fails), the
         # index row is already dropped — self._orphan_suspected flags it
         # so the next purge tick rescans and re-registers the file (still
         # physically on disk) so it isn't silently forgotten.
+        unlink_ok = True
         try:
             Path(seg["path"]).unlink(missing_ok=True)
         except Exception as e:
             log.warning("delete_segment: unlink failed %s: %s", seg["path"], e)
             self._orphan_suspected = True
+            unlink_ok = False
         # Invalidate everything: the reclaim/write-picker logic relies on
         # fresh bytes_used AND disk_usage numbers.
         self._invalidate_caches()
@@ -550,7 +587,7 @@ class Storage:
                 _try_prune_empty(parent, seg_root)
             except Exception:
                 pass
-        return True
+        return True, unlink_ok
 
     def set_locked(self, seg_id: int, locked: bool) -> bool:
         with self._lock:
@@ -680,6 +717,7 @@ class Storage:
         warnings: list[str] = []
         per_root: list[dict] = []
         overall = "ok"
+        margin = self._margin_bytes()
         for r in self.roots():
             r_errs: list[str] = []; r_warns: list[str] = []
             exists = r.exists()
@@ -702,7 +740,7 @@ class Storage:
                     free_pct = (du.free / du.total) * 100 if du.total else 0
                 except Exception as e:
                     r_errs.append(f"Disk okunamadı: {e}")
-                near_full = du is not None and du.free < 1 * 1024**3
+                near_full = du is not None and du.free < margin
                 # Unique per call (pid+thread), not a fixed name: health()
                 # is cached for 15s but that cache check-then-set isn't
                 # atomic, so a burst of concurrent callers (several
@@ -748,8 +786,8 @@ class Storage:
                     # steady state for an unlimited-quota (max_gb=0)
                     # setup once footage volume outgrows it — purge_once()
                     # keeps deleting THIS root's oldest segments to hold
-                    # it just above SAFETY_MARGIN_BYTES, forever, by
-                    # design. Not worth flagging while that's still
+                    # it just above the configured low-space margin,
+                    # forever, by design. Not worth flagging while that's still
                     # working — only a genuine dead end, nothing left to
                     # purge anywhere, is actionable.
                     r_errs.append(
@@ -950,11 +988,19 @@ class Storage:
 
             freed_ok is True only when the file was genuinely deleted, so
             callers doing their own byte accounting (the quota loop's
-            running `over`) don't have to re-derive success."""
+            running `over`) don't have to re-derive success.
+
+            Checks THIS call's own unlink result (_delete_segment_impl's
+            second return value), not self._orphan_suspected — that flag
+            is deliberately sticky for the rest of the tick (see its own
+            docstring), so reading it here would make every delete AFTER
+            the first failure anywhere look like a failure too, including
+            a perfectly successful one on a different, healthy root."""
             nonlocal removed, freed
-            if not self.delete_segment(sid):
+            deleted, unlink_ok = self._delete_segment_impl(sid)
+            if not deleted:
                 return False, True   # already gone/locked — not a failure, keep going
-            if self._orphan_suspected:
+            if not unlink_ok:
                 return False, False  # row dropped, file NOT freed — stop this phase
             removed += 1; freed += int(b or 0)
             return True, True
@@ -1112,19 +1158,32 @@ class Storage:
         # full" — but a low disk_usage() free reading means the same
         # thing regardless of which errno the filesystem happened to
         # surface.
+        #
+        # Deletes exactly one segment at a time, rechecking ONLY the
+        # affected root's free space after each one and dropping that
+        # root out of contention the moment it clears the margin — never
+        # a fixed batch. A fixed batch (this used to pull and delete 20
+        # candidates per round before rechecking anything) always deletes
+        # AT LEAST that many even when freeing 4 segments' worth of space
+        # would already have been enough — that's real footage destroyed
+        # for no reason. One delete only ever changes the free space on
+        # the ONE root that segment came from, so only that root needs
+        # re-measuring; the other still-low roots' state hasn't changed
+        # and re-querying them here would just be wasted syscalls.
+        margin = self._margin_bytes()
         still_low: set = set()
         for r in self.roots():
             try:
                 free = shutil.disk_usage(str(r)).free
             except Exception:
                 continue  # root unreadable (unmounted, unplugged) — not a purge-fixable problem
-            if free < SAFETY_MARGIN_BYTES:
+            if free < margin:
                 still_low.add(r)
-                log.warning("reclaim: %s below safety margin (%d MB free)", r, free // (1024*1024))
+                log.warning("reclaim: %s below safety margin (%d MB free, margin %d MB)",
+                            r, free // (1024*1024), margin // (1024*1024))
 
         if still_low:
             broken_roots: set = set()
-            BATCH = 20
             while not self._stop.is_set() and still_low:
                 # Candidate set is scoped to whichever roots are STILL
                 # low (minus any already given up on this tick) — never
@@ -1141,42 +1200,31 @@ class Storage:
                 with self._lock:
                     where = " OR ".join(["path LIKE ? ESCAPE '\\'"] * len(candidates))
                     patterns = [self._like_escape(str(r) + os.sep) + "%" for r in candidates]
-                    batch = self._db.execute(
+                    row = self._db.execute(
                         f"SELECT id, bytes, path FROM segments"
                         f" WHERE locked = 0 AND ({where})"
-                        f" ORDER BY started_at ASC LIMIT ?",
-                        (*patterns, BATCH)
-                    ).fetchall()
-                if not batch:
+                        f" ORDER BY started_at ASC LIMIT 1",
+                        (*patterns,)
+                    ).fetchone()
+                if not row:
                     log.error("reclaim: nothing left to delete, still low: %s", [str(r) for r in candidates])
                     break
-                any_deleted = False
-                for sid, b, path in batch:
-                    # A single batch can hold several rows from the SAME
-                    # root (e.g. one root's segments cluster at the
-                    # oldest end) — without this check, a root's first
-                    # failure this tick wouldn't stop later rows from
-                    # that same root, in the same batch, being tried too.
-                    if self._root_for_path(path) in broken_roots:
-                        continue
-                    _, keep_going = _delete_and_keep_going(sid, b)
-                    if keep_going:
-                        any_deleted = True
-                    else:
-                        seg_root = self._root_for_path(path)
-                        if seg_root is not None:
-                            broken_roots.add(seg_root)
-                            still_low.discard(seg_root)
-                            log.warning("reclaim: %s — a delete failed, giving up on this root for the rest of "
-                                        "this tick (next tick, or the emergency purge below, retries it)", seg_root)
-                if not any_deleted:
-                    break
-                for r in list(still_low):
+                sid, b, path = row
+                seg_root = self._root_for_path(path)
+                _, keep_going = _delete_and_keep_going(sid, b)
+                if not keep_going:
+                    if seg_root is not None:
+                        broken_roots.add(seg_root)
+                        still_low.discard(seg_root)
+                        log.warning("reclaim: %s — a delete failed, giving up on this root for the rest of "
+                                    "this tick (next tick, or the emergency purge below, retries it)", seg_root)
+                    continue
+                if seg_root is not None and seg_root in still_low:
                     try:
-                        if shutil.disk_usage(str(r)).free >= SAFETY_MARGIN_BYTES:
-                            still_low.discard(r)
+                        if shutil.disk_usage(str(seg_root)).free >= margin:
+                            still_low.discard(seg_root)
                     except Exception:
-                        still_low.discard(r)  # unreadable — not purge-fixable, stop trying for it
+                        still_low.discard(seg_root)  # unreadable — not purge-fixable, stop trying for it
 
         # Emergency global purge: when NO root has room, delete
         # globally-oldest UNLOCKED segments (regardless of which disk
@@ -1195,30 +1243,29 @@ class Storage:
                     du = shutil.disk_usage(str(r))
                 except Exception:
                     continue
-                if du.free >= SAFETY_MARGIN_BYTES:
+                if du.free >= margin:
                     return True
             return False
 
         if not _any_has_room():
-            BATCH = 5
             log.warning("emergency purge: no root has room")
+            # Same one-at-a-time, recheck-and-stop-as-soon-as-enough shape
+            # as the reclaim loop above, for the same reason: a fixed
+            # batch always over-deletes whenever fewer segments than the
+            # batch size would already have freed enough room on some
+            # root.
             while not self._stop.is_set():
                 with self._lock:
-                    batch = self._db.execute(
+                    row = self._db.execute(
                         "SELECT id, bytes FROM segments"
-                        " WHERE locked = 0 ORDER BY started_at ASC LIMIT ?",
-                        (BATCH,)
-                    ).fetchall()
-                if not batch:
+                        " WHERE locked = 0 ORDER BY started_at ASC LIMIT 1"
+                    ).fetchone()
+                if not row:
                     log.error("emergency purge: nothing left to delete — all segments locked")
                     break
-                stop_phase = False
-                for sid, b in batch:
-                    _, keep_going = _delete_and_keep_going(sid, b)
-                    if not keep_going:
-                        stop_phase = True
-                        break
-                if stop_phase:
+                sid, b = row
+                _, keep_going = _delete_and_keep_going(sid, b)
+                if not keep_going:
                     log.warning("emergency purge: a delete stopped freeing real space — pausing this tick")
                     break
                 if _any_has_room():

@@ -5,6 +5,18 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.5.0] - 2026-08-20
+
+### Eklendi
+- **Düşük disk marjı artık ayarlanabilir** (Ayarlar → Kayıt & Depolama → "Düşük disk marjı (MB)", varsayılan 1024 MB). Daha önce sabit 1 GB'lık bir sabitti — 128 GB'lık bir SD kartla 8 TB'lık bir dizi için aynı sayının anlamı aynı değil. `recording.low_space_margin_mb` config alanı; geçersiz/0/negatif bir değer sessizce varsayılana düşer (marjı tamamen kapatmak güvenli değil — ffmpeg'in bir segmenti diske ENOSPC'ye çarpmadan yazabilmesi için hâlâ biraz boşluğa ihtiyacı var).
+
+### Değiştirildi
+- **Yer açma (reclaim) ve acil durum temizliği artık gerçekten ihtiyaç kadar siliyor, sabit bir grup halinde değil.** Önceki tasarım her turda 20 (reclaim) veya 5 (acil temizlik) segmenti toptan silip sonra kontrol ediyordu — margin'i temizlemek için 1-2 segment yeterliyken bile 20'sinin tamamı gidiyordu, gereksiz yere görüntü kaybına yol açıyordu. Artık tek seferde **bir** segment siliniyor, hemen ardından o diskin boş alanı yeniden ölçülüyor, marjı temizlediği an o disk için durulup diğer düşük diske geçiliyor — silinen segment sayısı her zaman gerçekte gereken minimum sayı kadar.
+
+### Düzeltildi
+- **Çoklu disk reclaim'inde diskler-arası izolasyonu bozan gizli bir hata bulundu ve giderildi.** `_orphan_suspected` bayrağı örnek (instance) düzeyinde ve o turun sonuna kadar "yapışkan" tutulacak şekilde tasarlanmıştı (bir sonraki turun otomatik yeniden-taramasını tetiklemek için — bu kısım doğru). Ama reclaim döngüsü bu PAYLAŞILAN bayrağı "bu silme başarısız oldu mu" sinyali olarak okuyordu — yani A diskinde BİR silme başarısız olduğunda, aynı turda B diskinde (tamamen sağlıklı, gerçekten başarılı) yapılan silmeler de yanlışlıkla "başarısız" sayılıp B diski de gereksiz yere karantinaya alınıyordu. Bu, tam olarak 4.4.1'in koruduğunu iddia ettiği "bir diskin arızası diğerini asla etkilemez" garantisinin ihlaliydi. Artık her silme çağrısı kendi başarı/başarısızlık durumunu döndürüyor (`_delete_segment_impl`), paylaşılan bayrağa bakmıyor — bir diskin arızası artık gerçekten sadece o diski etkiliyor.
+  - Yeni testlerle doğrulandı: tek düşük disk senaryosunda tam ihtiyaç kadar (1) segment silindiği, iki düşük diskte her birinin kendi minimum ihtiyacı kadar (1 ve 2) silindiği ve global en-eski-önce sıralamasının korunduğu, bir diskin silme hatasının diğer diskin kendi minimal temizliğini hiç etkilemediği, ve acil durum temizliğinin de tek tek işlediği.
+
 ## [4.4.1] - 2026-08-20
 
 ### Düzeltildi

@@ -684,7 +684,7 @@ def create_app(config_path: str) -> Flask:
         allowed = {"enabled", "segment_seconds",
                    "retention_days", "max_gb", "purge_interval_seconds", "ffmpeg_path",
                    "mem_rss_ceiling_mb", "tmpfs_staging",
-                   "tmpfs_safety_margin_mb", "tmpfs_hard_cap_mb"}
+                   "tmpfs_safety_margin_mb", "tmpfs_hard_cap_mb", "low_space_margin_mb"}
         clean = {k: v for k, v in body.items() if k in allowed}
         # Validate simple integer / bool fields BEFORE mutating anything.
         if "segment_seconds" in clean:
@@ -715,6 +715,18 @@ def create_app(config_path: str) -> Flask:
                 if m < 32 or m > 16384: return jsonify({"error": "tmpfs_hard_cap_mb 32-16384"}), 400
                 clean["tmpfs_hard_cap_mb"] = m
             except Exception: return jsonify({"error": "invalid tmpfs_hard_cap_mb"}), 400
+        if "low_space_margin_mb" in clean:
+            try:
+                m = int(clean["low_space_margin_mb"])
+                # Floor above 0: ffmpeg still needs SOME slack to flush a
+                # segment without hitting ENOSPC mid-write (see
+                # storage.py's _margin_bytes()). Ceiling is generous
+                # (100 GB) for large arrays with big segments/high
+                # bitrate cameras; storage.py itself falls back to the
+                # 1024 MB default for anything <= 0 that slips through.
+                if m < 64 or m > 102400: return jsonify({"error": "low_space_margin_mb 64-102400"}), 400
+                clean["low_space_margin_mb"] = m
+            except Exception: return jsonify({"error": "invalid low_space_margin_mb"}), 400
         if "purge_interval_seconds" in clean:
             # The purge loop does self._stop.wait(purge_interval_seconds)
             # between full-table retention/quota scans; 0 (or negative)

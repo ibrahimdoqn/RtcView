@@ -1982,6 +1982,7 @@
       $("#s-rec-segment").value = r.segment_seconds || 300;
       $("#s-rec-retention").value = r.retention_days || 14;
       $("#s-rec-quota").value = parseInt(r.max_gb || 0) || 0;
+      $("#s-rec-margin").value = parseInt(r.low_space_margin_mb || 1024) || 1024;
       $("#s-rec-tmpfs").checked = !!r.tmpfs_staging;
       $("#s-rec-tmpfs-margin").value = parseInt(r.tmpfs_safety_margin_mb || 256) || 256;
       $("#s-rec-tmpfs-cap").value = parseInt(r.tmpfs_hard_cap_mb || 512) || 512;
@@ -2013,6 +2014,7 @@
       segment_seconds: parseInt($("#s-rec-segment").value || 300),
       retention_days: parseInt($("#s-rec-retention").value || 14),
       max_gb: Math.max(0, parseInt($("#s-rec-quota").value || 0) || 0),
+      low_space_margin_mb: Math.min(102400, Math.max(64, parseInt($("#s-rec-margin").value || 1024) || 1024)),
       tmpfs_staging: $("#s-rec-tmpfs").checked,
       tmpfs_safety_margin_mb: Math.max(32, parseInt($("#s-rec-tmpfs-margin").value || 256) || 256),
       tmpfs_hard_cap_mb: Math.max(32, parseInt($("#s-rec-tmpfs-cap").value || 512) || 512),

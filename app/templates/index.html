@@ -315,7 +315,13 @@
             <label>Segment (sn) <input id="s-rec-segment" type="number" min="30" max="3600" /></label>
             <label>Retention (gün) <input id="s-rec-retention" type="number" min="0" /></label>
           </div>
-          <label>Kota (GB, 0 = sınırsız) <input id="s-rec-quota" type="number" min="0" /></label>
+          <div class="grid2">
+            <label>Kota (GB, 0 = sınırsız) <input id="s-rec-quota" type="number" min="0" /></label>
+            <label>Düşük disk marjı (MB) <input id="s-rec-margin" type="number" min="64" max="102400" /></label>
+          </div>
+          <small>Bir disk bu marjın altına düşünce "dolu" sayılır: o diske yazım durur (sıradaki
+            diske geçilir), ve en eski kayıtlar silinerek yer açılmaya çalışılır. Küçük disklerde
+            (SD kart) düşürebilir, büyük dizilerde artırabilirsiniz.</small>
           <label class="row"><input id="s-rec-tmpfs" type="checkbox" /> Segmentleri önce /tmp'de (RAM) oluştur, kapanınca kayıt diskine taşı</label>
           <small>ffmpeg segmenti önce RAM'de yazar, kapanınca tek seferde diske taşır — SD kart
             yükünü azaltır. RtcView <code>/tmp</code>'nin gerçekten tmpfs (RAM) olduğunu kendisi
