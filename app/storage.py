@@ -1060,69 +1060,123 @@ class Storage:
                     if not keep_going:
                         break
 
-        # Per-root rolling-buffer reclaim: each configured root is a
-        # physically finite disk in its own right. Waiting for
-        # retention_days to age footage out, or for EVERY root to run out
-        # simultaneously (the emergency purge below), would leave a
-        # single full root stuck indefinitely as long as some OTHER root
-        # still had room — recording would just silently stop using it
-        # instead of reclaiming its own old footage. This mirrors what a
-        # global quota already gives the whole setup, driven by each
-        # root's own physical free space instead: once THIS root
-        # specifically drops under the safety margin, age its own oldest
-        # unlocked segments out until it has room again, independent of
-        # every other root's state.
+        # Rolling-buffer reclaim: once a root's free space drops under the
+        # safety margin, age out unlocked segments until it has room
+        # again — the backstop that keeps a quota-less setup (or one
+        # whose footage volume outgrows retention_days) from running a
+        # disk into the ground.
         #
-        # This loop, and specifically its use of _delete_and_keep_going's
-        # stop-on-failure signal PER ROOT (never accumulating across
-        # roots, never retried more aggressively because a previous root
-        # had trouble), is the direct fix for the production incident
-        # that originally motivated removing multi-disk support entirely
-        # — a flaky disk's delete failures must stay contained to that
-        # one disk's reclaim phase, not cascade or drain another root's
-        # index.
+        # Deletion order is oldest-first ACROSS every root that is
+        # currently low, not each low root deleting only its own oldest
+        # segments in isolation. In a sequential-fill setup the disk that
+        # filled up first (and holds the oldest footage) is often no
+        # longer the one being written to — once writes move on to a
+        # later disk, that later disk is the one that eventually runs
+        # low too, but its own segments are NEWER than whatever's still
+        # sitting on the earlier, already-full disk. If both are low
+        # simultaneously (the common way this triggers — sequential fill
+        # already means the earlier disk had no room left when the later
+        # one took over), the earlier disk's genuinely older footage
+        # should go first, system-wide — not each disk blindly aging out
+        # its own newest-of-its-old segments independently.
         #
-        # Ground truth is shutil.disk_usage(), not the write-test's errno:
-        # some filesystems (f2fs once it runs out of free segments for a
-        # checkpoint, in particular) return EIO instead of ENOSPC for what
-        # is still fundamentally "disk is full" — but a low disk_usage()
-        # free reading means the same thing regardless of which errno the
-        # filesystem happened to surface.
+        # This is deliberately NOT "delete the single globally-oldest
+        # segment on ANY root" — a root that ISN'T low is never touched,
+        # even if it happens to hold older footage than a root that is:
+        # deleting a file on a healthy root frees not one byte on a
+        # DIFFERENT, actually-short-on-space root (they're separate
+        # physical disks), so that would just destroy footage on a disk
+        # that never needed the space, for zero benefit to the one that
+        # does. See "candidates" below.
+        #
+        # Multi-root ordering alone would reintroduce the exact class of
+        # incident that originally motivated removing multi-disk support:
+        # if the oldest eligible segment happens to sit on a flaky disk,
+        # a plain "stop the whole reclaim on any failure" rule would let
+        # that ONE bad disk block every other (healthy, still-low) disk
+        # from ever freeing space, since its old segments are always
+        # tried first. broken_roots is the fix — the moment a delete
+        # fails, that segment's root is quarantined for the REST OF THIS
+        # TICK ONLY (a fresh set every purge_once() call, so a disk that
+        # recovers gets retried on the very next tick, same self-healing
+        # story _orphan_suspected already relies on elsewhere in this
+        # method): its remaining segments are skipped rather than
+        # retried, so reclaim keeps making progress for every other low
+        # root using healthy disks' segments, and the flaky disk never
+        # gets hammered in a tight retry loop.
+        #
+        # Ground truth for "low" is shutil.disk_usage(), not the
+        # write-test's errno: some filesystems (f2fs once it runs out of
+        # free segments for a checkpoint, in particular) return EIO
+        # instead of ENOSPC for what is still fundamentally "disk is
+        # full" — but a low disk_usage() free reading means the same
+        # thing regardless of which errno the filesystem happened to
+        # surface.
+        still_low: set = set()
         for r in self.roots():
             try:
                 free = shutil.disk_usage(str(r)).free
             except Exception:
                 continue  # root unreadable (unmounted, unplugged) — not a purge-fixable problem
-            if free >= SAFETY_MARGIN_BYTES:
-                continue
-            log.warning("reclaim: %s below safety margin (%d MB free)", r, free // (1024*1024))
-            pattern = self._like_escape(str(r) + os.sep) + "%"
-            BATCH = 5
-            while not self._stop.is_set():
+            if free < SAFETY_MARGIN_BYTES:
+                still_low.add(r)
+                log.warning("reclaim: %s below safety margin (%d MB free)", r, free // (1024*1024))
+
+        if still_low:
+            broken_roots: set = set()
+            BATCH = 20
+            while not self._stop.is_set() and still_low:
+                # Candidate set is scoped to whichever roots are STILL
+                # low (minus any already given up on this tick) — never
+                # the globally-oldest segment full stop. Deleting a file
+                # on a healthy root that was never short on space frees
+                # not one byte on the root that actually needs it (they're
+                # separate physical disks); the "global-oldest" property
+                # this whole reclaim is trying to honor only makes sense
+                # evaluated AMONG the roots that genuinely need the
+                # space, oldest of those goes first.
+                candidates = [r for r in still_low if r not in broken_roots]
+                if not candidates:
+                    break  # every root that's still low is already known-broken this tick
                 with self._lock:
+                    where = " OR ".join(["path LIKE ? ESCAPE '\\'"] * len(candidates))
+                    patterns = [self._like_escape(str(r) + os.sep) + "%" for r in candidates]
                     batch = self._db.execute(
-                        "SELECT id, bytes FROM segments"
-                        " WHERE locked = 0 AND path LIKE ? ESCAPE '\\'"
-                        " ORDER BY started_at ASC LIMIT ?",
-                        (pattern, BATCH)
+                        f"SELECT id, bytes, path FROM segments"
+                        f" WHERE locked = 0 AND ({where})"
+                        f" ORDER BY started_at ASC LIMIT ?",
+                        (*patterns, BATCH)
                     ).fetchall()
                 if not batch:
-                    log.error("reclaim: %s — nothing tracked left to delete on this root", r)
+                    log.error("reclaim: nothing left to delete, still low: %s", [str(r) for r in candidates])
                     break
-                stop_phase = False
-                for sid, b in batch:
+                any_deleted = False
+                for sid, b, path in batch:
+                    # A single batch can hold several rows from the SAME
+                    # root (e.g. one root's segments cluster at the
+                    # oldest end) — without this check, a root's first
+                    # failure this tick wouldn't stop later rows from
+                    # that same root, in the same batch, being tried too.
+                    if self._root_for_path(path) in broken_roots:
+                        continue
                     _, keep_going = _delete_and_keep_going(sid, b)
-                    if not keep_going:
-                        stop_phase = True
-                        break
-                if stop_phase:
-                    log.warning("reclaim: %s — a delete stopped freeing real space, pausing this root's reclaim this tick", r)
+                    if keep_going:
+                        any_deleted = True
+                    else:
+                        seg_root = self._root_for_path(path)
+                        if seg_root is not None:
+                            broken_roots.add(seg_root)
+                            still_low.discard(seg_root)
+                            log.warning("reclaim: %s — a delete failed, giving up on this root for the rest of "
+                                        "this tick (next tick, or the emergency purge below, retries it)", seg_root)
+                if not any_deleted:
                     break
-                try:
-                    if shutil.disk_usage(str(r)).free >= SAFETY_MARGIN_BYTES:
-                        break
-                except Exception:
-                    break
+                for r in list(still_low):
+                    try:
+                        if shutil.disk_usage(str(r)).free >= SAFETY_MARGIN_BYTES:
+                            still_low.discard(r)
+                    except Exception:
+                        still_low.discard(r)  # unreadable — not purge-fixable, stop trying for it
 
         # Emergency global purge: when NO root has room, delete
         # globally-oldest UNLOCKED segments (regardless of which disk

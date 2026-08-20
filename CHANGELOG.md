@@ -5,6 +5,13 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.4.1] - 2026-08-20
+
+### Düzeltildi
+- **Çoklu disk reclaim'i artık gerçekten en eski kaydı siliyor, her diskin kendi en eskisini değil.** 4.4.0'daki ilk sürüm, iki disk dolduğunda her diski bağımsız değerlendirip **o diskin kendi** en eski kayıtlarını siliyordu — sıralı doldurma modelinde ilk dolan disk (A) en eski görüntüleri tutarken, sonradan devreye giren disk (B) daha yeni görüntüler biriktirir; B dolduğunda B'nin kendi (nispeten yeni) kayıtları siliniyor, A'daki çok daha eski kayıtlar hiç dokunulmadan duruyordu — bir "rolling buffer"ın vermesi gereken "önce en eski gitsin" garantisinin tam tersi. Artık aynı anda dolu olan diskler arasında **gerçekten en eski segment önce siliniyor** — hangi diskte olursa olsun. Dolu olmayan (sağlıklı) bir disk hiçbir zaman dokunulmuyor, sadece gerçekten yer sıkıntısı çeken diskler arasında en eski öncelik kazanıyor (bir diskteki dosyayı silmek başka bir diskte yer açmıyor çünkü fiziksel olarak ayrı disklerdir).
+  - Bu değişiklik yapılırken orijinal olayın (bkz. 4.4.0) düzeltmesi olan **disk başına izolasyon** korundu: bir diskin silme hatası (arıza, aralıklı I/O hatası) o diski o tur için karantinaya alıyor — o diskin segmentleri atlanıyor, tekrar denenmiyor — ama diğer dolu disklerin kendi temizliği hiç etkilenmiyor.
+  - Kapsamlı testlerle doğrulandı: iki disk de doluyken gerçekten en eski segmentin önce silindiği, sağlıklı bir diskin (daha eski kayıt tutsa bile) hiç dokunulmadığı, ve bir diskin arızasının diğer dolu diski engellemediği.
+
 ## [4.4.0] - 2026-08-20
 
 ### Eklendi
