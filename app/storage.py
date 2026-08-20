@@ -383,46 +383,85 @@ class Storage:
         block cleanup on every OTHER root forever, since its segments
         would always sort first — a milder reappearance of the exact
         cross-root cascade this module's whole design exists to avoid.
-        The candidate list is fetched a bit larger than N precisely so
-        skipping a broken root's rows still leaves enough healthy
-        candidates to reach N. The file that failed to unlink is still an
-        orphan on disk — the next purge_once() tick's auto-rescan
-        recovers it (self._orphan_suspected)."""
-        margin = self._margin_bytes()
-        if self._any_root_has_room(margin):
-            return {"removed": 0, "freed_bytes": 0}
-        n = max(1, sum(1 for c in self.config_store.get_cameras()
-                       if c.get("record_mode", "off") != "off"))
-        fetch = min(max(n * 4, 20), 200)
-        log.warning("free_up_for_new_segment: no root has room — deleting up to %d globally-oldest segment(s)", n)
+Once a root has refused a delete, it's excluded from the SQL query
+        itself (a NOT LIKE clause) for the rest of this call, not merely
+        skipped while iterating a fixed batch — a broken root can hold
+        arbitrarily many segments older than anything on a healthy root
+        (that's the normal, expected shape in a sequential-fill setup:
+        whichever root filled up first has the oldest footage), so a
+        fixed-size batch pulled once up front can end up entirely
+        consumed by a broken root's (skipped) rows before a healthy
+        root's candidates ever appear in it. Querying one row at a time
+        and excluding known-broken roots as they're discovered can never
+        get stuck that way, however lopsided the age distribution is.
+        The file that failed to unlink is still an orphan on disk — the
+        next purge_once() tick's auto-rescan recovers it
+        (self._orphan_suspected).
+
+        The whole check-then-delete sequence runs under self._lock (an
+        RLock, so nested calls into _delete_segment_impl()'s own locking
+        are fine) — every camera's segment rollover can call this at
+        roughly the same moment (several cameras sharing the same
+        segment_seconds tend to roll over in the same few seconds), plus
+        purge_once()'s own backstop call, plus the snapshot route. Without
+        serializing the full "is there room? no -> delete N" decision,
+        several concurrent callers could each independently observe "no
+        room" and each go on to delete their own N segments, deleting
+        N*(number of concurrent callers) instead of N — real, avoidable
+        data loss, not just a cosmetic race. A caller that has to wait
+        for the lock re-checks room fresh once it gets it, so if an
+        earlier caller already fixed things, the rest are cheap no-ops."""
         with self._lock:
-            rows = self._db.execute(
-                "SELECT id, bytes, path FROM segments WHERE locked = 0 ORDER BY started_at ASC LIMIT ?",
-                (fetch,)
-            ).fetchall()
-        removed = 0; freed = 0
-        broken_roots: set = set()
-        for sid, b, path in rows:
-            if removed >= n:
-                break
-            seg_root = self._root_for_path(path)
-            if seg_root is not None and seg_root in broken_roots:
-                continue  # already refused a delete this pass -- don't hammer it again
-            deleted, unlink_ok = self._delete_segment_impl(sid)
-            if not deleted:
-                continue  # already gone/locked — not a failure, try the next one
-            if not unlink_ok:
-                if seg_root is not None:
-                    broken_roots.add(seg_root)
-                    log.warning("free_up_for_new_segment: %s — a delete failed, skipping its "
-                                "segments for the rest of this pass (other roots continue)", seg_root)
-                continue
-            removed += 1
-            freed += int(b or 0)
-        if not rows:
-            log.error("free_up_for_new_segment: no room anywhere and nothing left to delete "
-                       "(everything locked?) — the new segment may fail to write")
-        return {"removed": removed, "freed_bytes": freed}
+            margin = self._margin_bytes()
+            if self._any_root_has_room(margin):
+                return {"removed": 0, "freed_bytes": 0}
+            n = max(1, sum(1 for c in self.config_store.get_cameras()
+                           if c.get("record_mode", "off") != "off"))
+            log.warning("free_up_for_new_segment: no root has room — deleting up to %d globally-oldest segment(s)", n)
+            removed = 0; freed = 0
+            broken_roots: set = set()
+            attempted_any = False
+            while removed < n:
+                if broken_roots:
+                    where = " AND ".join(["path NOT LIKE ? ESCAPE '\\'"] * len(broken_roots))
+                    patterns = [self._like_escape(str(r) + os.sep) + "%" for r in broken_roots]
+                    row = self._db.execute(
+                        f"SELECT id, bytes, path FROM segments WHERE locked = 0 AND ({where})"
+                        f" ORDER BY started_at ASC LIMIT 1",
+                        (*patterns,)
+                    ).fetchone()
+                else:
+                    row = self._db.execute(
+                        "SELECT id, bytes, path FROM segments WHERE locked = 0"
+                        " ORDER BY started_at ASC LIMIT 1"
+                    ).fetchone()
+                if not row:
+                    break  # nothing left anywhere (outside already-broken roots)
+                attempted_any = True
+                sid, b, path = row
+                deleted, unlink_ok = self._delete_segment_impl(sid)
+                if not deleted:
+                    continue  # already gone/locked — not a failure, try the next one
+                if not unlink_ok:
+                    # The row is already gone from the index regardless
+                    # (_delete_segment_impl drops it before attempting the
+                    # unlink), so the next query naturally won't return
+                    # this same row again even if its root can't be
+                    # identified (an orphaned reference to a since-removed
+                    # storage path, say) -- nothing to exclude in that
+                    # case, just move on.
+                    seg_root = self._root_for_path(path)
+                    if seg_root is not None:
+                        broken_roots.add(seg_root)
+                        log.warning("free_up_for_new_segment: %s — a delete failed, excluding it "
+                                    "for the rest of this pass (other roots continue)", seg_root)
+                    continue
+                removed += 1
+                freed += int(b or 0)
+            if not attempted_any:
+                log.error("free_up_for_new_segment: no room anywhere and nothing left to delete "
+                           "(everything locked?) — the new segment may fail to write")
+            return {"removed": removed, "freed_bytes": freed}
 
     def _ensure_roots(self):
         try:

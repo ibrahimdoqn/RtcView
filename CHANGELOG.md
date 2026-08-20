@@ -5,6 +5,13 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.7.1] - 2026-08-20
+
+### Düzeltildi
+- **Eşzamanlı çağrılarda gereğinden fazla silme riski giderildi.** `free_up_for_new_segment()`'in "yer var mı kontrol et, yoksa N sil" akışı hiçbir kilit altında değildi — birden fazla kamera segmenti neredeyse aynı anda kapanıp bu fonksiyonu tetiklediğinde (veya `purge_once()`'un periyodik çağrısıyla çakıştığında), her çağrı bağımsız olarak "yer yok" görüp kendi N'ini silebiliyordu; N yerine N×(eşzamanlı çağrı sayısı) kadar segment gidebiliyordu. Artık tüm "kontrol et → sil" akışı tek bir kilit altında — bir çağrı beklerken diğeri işini bitirirse, bekleyen çağrı yeri zaten müsait bulup hiçbir şey silmeden döner.
+- **Arızalı bir disk, çok sayıda eski kayıt tutuyorsa sağlıklı diskin temizliğini yine tıkayabiliyordu.** Aday listesini tek seferde (N'in birkaç katı, üst sınır 200) çekme yöntemi, arızalı diskin kendi eski kayıtları bu pencereyi tamamen doldurursa (ki sıralı doldurma modelinde önce dolan disk genelde çok daha fazla eski kayıt tutar), sağlıklı diskin adaylarına o pencerede hiç sıra gelmemesine yol açabiliyordu. Artık adaylar tek tek, arızalı disk keşfedildikçe sorgudan tamamen dışlanarak (`NOT LIKE`) çekiliyor — arızalı diskteki eski kayıt sayısı ne kadar fazla olursa olsun, sağlıklı diskin adayları asla erişilemez hale gelmiyor.
+- Kapsamlı bir senaryo testiyle (21 kontrol) doğrulandı: eşzamanlı çağrılarda tam olarak ihtiyaç kadar silindiği, kilitli kayıtların hiçbir zaman dokunulmadığı, tamamen çıkmaz sokakta (silinecek kilitsiz kayıt yok) çökmeden düzgün durduğu, ve arızalı diskin — kaç eski kaydı olursa olsun — sağlıklı diskin temizliğini artık hiç engellemediği.
+
 ## [4.7.0] - 2026-08-20
 
 ### Düzeltildi
