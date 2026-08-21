@@ -5,6 +5,13 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.8.1] - 2026-08-20
+
+### Düzeltildi
+- **Disk ekleme kutusu artık koyu/açık tema ile uyumlu.** Girdi kutusu bir `<label>` içinde olmadığı için hiç tema stilini almıyordu, tarayıcı varsayılanı beyaz arka planla görünüyordu. Artık üstteki "1 /mnt/rec Kaldır" kartıyla aynı görsel dil: tek, yuvarlak köşeli, tema renklerini kullanan bir kutu; "+ Ekle" butonu ayrı bir kontrol olarak yanda değil, aynı kutunun içinde sağda duruyor.
+- **tmpfs (RAM'de segment oluşturma) ile çoklu disk arasındaki gerçek bir etkileşim boşluğu kapatıldı.** RAM'den diske taşıma işlemi de bir disk yazımıdır ve dolu diskte aynı şekilde başarısız olabilir — ama bu taşıma denemesinden ÖNCE değil, sadece SONRA yer açma kontrolü çalışıyordu, yani taşıma anında disk zaten doluysa hiç şans verilmeden başarısız oluyordu. Ayrıca (daha derin bir sorun): tmpfs açıkken canlı ffmpeg yazımı RAM'e gittiği için disk dolması ffmpeg'i hiç çökertmiyor — bu da normalde "3 saniyede bir yeniden başlat, doğru diski yeniden seç" kurtarma yolunu (disk dolu → ffmpeg çöker → supervisor yeniden başlatır) tamamen devre dışı bırakıyordu; tek kurtuluş RAM'deki birikinti `tmpfs_hard_cap_mb`'ı aşana kadar (varsayılan 512 MB) beklemekti. Artık: (1) taşıma denemesinden önce de yer açma kontrolü çalışıyor, (2) bir dosya RAM'de sıkışıp kaldığında ve BAŞKA bir disk müsaitse, kamera bu diski kullanmak üzere hemen (RAM üst sınırını beklemeden) yeniden başlatılıyor.
+- 15 kontrollü bir testle doğrulandı: taşıma öncesi yer açma kontrolünün gerçekten çalıştığı, sıkışma durumunun doğru işaretlenip temizlendiği, ve yeniden başlatma sinyalinin yalnızca gerçekten farklı ve müsait bir disk varken tetiklendiği.
+
 ## [4.8.0] - 2026-08-20
 
 ### Kaldırıldı

@@ -971,8 +971,20 @@ kbd{
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .rec-path-empty{color:var(--muted);font-size:.75rem;font-style:italic;padding:.3rem;}
-.rec-path-add{display:flex;flex-wrap:wrap;gap:.4rem;}
-.rec-path-add input{flex:1 1 180px;min-width:0;}
+/* One unified rounded/dark card, matching .rec-path-row's look — the
+   input has no border/background of its own (blends into the card) and
+   the "+ Ekle" button sits flush at the right edge, inside the same
+   box, instead of as a separate control floating next to it. */
+.rec-path-add{
+  display:flex;align-items:center;gap:.4rem;min-width:0;
+  background:var(--panel-2);border:1px solid var(--border-solid);
+  border-radius:9px;padding:.3rem .3rem .3rem .6rem;
+}
+.rec-path-add input{
+  flex:1;min-width:0;background:transparent;border:none;outline:none;
+  color:var(--text);font-size:.85rem;padding:.4rem 0;
+}
+.rec-path-add input::placeholder{color:var(--muted);}
 .rec-path-add .btn{flex:none;}
 
 /* "Diski yeniden tara" progress (Kayıt & Depolama) */

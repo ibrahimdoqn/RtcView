@@ -313,13 +313,23 @@ class CameraRecorder:
         # instance again (avoids restart-thrash if the destination disk
         # stays slow/full).
         self._stage_overflow_at: Optional[float] = None
+        # True from the moment a tmpfs->disk move fails (self.root's disk
+        # had no room) until the next move succeeds. Lets _check_stage_
+        # stuck() below skip its own pick_write_root() call entirely on
+        # every ordinary tick — that call does a real write-test/statfs
+        # per configured root, not free — and only pay for it once we
+        # already know there's a stranded file that would benefit.
+        self._move_stuck: bool = False
         # Fixed, not user-configurable — every recorder always writes MP4.
         # Kept as an attribute (rather than a "mp4" literal repeated at
         # each of its three call sites) purely so those stay in sync if
         # this ever needs to change.
         self.ext: str = "mp4"
         # Chosen fresh at each start() call from storage.pick_write_root()
-        # (single storage root — see storage.py's module docstring).
+        # and fixed for the rest of this session — a later restart (day
+        # rollover, watchdogs, _check_stage_stuck() below) is what lets a
+        # camera whose original root has since filled up move to a
+        # different one; nothing re-evaluates this mid-session on its own.
         self.root: Optional[Path] = None
         self.manual_until: float = 0.0  # unix ts; > now means manual override on
         self.trigger: str = "schedule"
@@ -652,12 +662,25 @@ class CameraRecorder:
         if not playable:
             log.warning("[%s] segment closed without a valid trailer (unplayable): %s", self.cam_id, f)
         if final_path != f:
+            # Moving OFF tmpfs onto the real disk is itself a disk write
+            # that can fail with ENOSPC exactly like a live ffmpeg write
+            # would — make sure some root has room FIRST, not just after
+            # (see the free_up_for_new_segment() call below, which only
+            # covers the NEXT segment once this one has already landed).
+            # Without this, a segment stuck in RAM because the disk was
+            # full when it first tried to move would only get a retry
+            # opportunity from something else's luck (another camera's
+            # own successful finish, or purge_once()'s periodic backstop)
+            # instead of proactively here.
+            self.storage.free_up_for_new_segment()
             try:
                 shutil.move(str(f), str(final_path))
             except Exception as e:
                 log.warning("[%s] tmpfs stage: failed to move %s -> %s (%s); will retry",
                             self.cam_id, f, final_path, e)
+                self._move_stuck = True
                 return False
+            self._move_stuck = False
         self.storage.register_segment(self.cam_id, final_path_str, started, ended,
                                        trigger=self.trigger, playable=playable)
         # This segment just closed — ffmpeg is already writing the next
@@ -723,6 +746,37 @@ class CameraRecorder:
                   "keeping up; restarting to record directly to storage_path", self.cam_id,
                   total / (1024*1024), self.tmpfs_hard_cap_bytes // (1024*1024))
         self._stage_overflow_at = time.time()
+        return True
+
+    def _check_stage_stuck(self) -> bool:
+        """True if this camera's tmpfs stage has a file that failed to
+        move onto self.root's disk (_move_stuck, set in _finish_segment)
+        AND a DIFFERENT configured root now has room. Exists because
+        self.root is fixed for this whole session (see its comment in
+        __init__) — a live ffmpeg write going to tmpfs never fails just
+        because the DESTINATION disk is full, so nothing here would
+        otherwise notice that a different, roomier root is sitting right
+        there until: (a) the stuck backlog eventually crosses
+        tmpfs_hard_cap_bytes (_check_stage_overflow, above — could take a
+        while depending on bitrate/segment length), or (b) some unrelated
+        trigger (day rollover, a memory/staleness restart) happens to
+        come along. Both are far slower than the ~3s a NON-staged
+        recorder recovers in (ffmpeg itself hits ENOSPC, crashes, and the
+        supervisor restarts it — ordinary already-working behavior this
+        mirrors for the staged case). pick_write_root() itself does a
+        real write-test/statfs per root, so it's only called once we
+        already know (via the cheap _move_stuck flag) that there's a
+        stranded file that could actually benefit."""
+        if not self._staging_active or not self._move_stuck:
+            return False
+        try:
+            better = self.storage.pick_write_root()
+        except Exception:
+            return False
+        if better.resolve() == self.root.resolve():
+            return False  # the root we're already using is still the best one -- nothing to gain from restarting
+        log.warning("[%s] a segment is stuck in tmpfs (couldn't move to %s) and %s now has room — "
+                    "restarting to switch to it", self.cam_id, self.root, better)
         return True
 
     def _check_memory(self) -> bool:
@@ -1085,7 +1139,7 @@ class RecordingManager:
                         r.start(trigger=trigger)  # fast (just Popen) -- fine under the lock
                     else:
                         r.trigger = trigger
-                        if r._check_memory() or r._is_stale() or r._check_day_rollover() or r._check_stage_overflow():
+                        if r._check_memory() or r._is_stale() or r._check_day_rollover() or r._check_stage_overflow() or r._check_stage_stuck():
                             if self._claim_busy(cam_id):
                                 do_restart = True
                 else:
