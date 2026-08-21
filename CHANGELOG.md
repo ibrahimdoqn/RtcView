@@ -5,6 +5,17 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-08-21
+
+### Kaldırıldı (Yıkıcı değişiklik)
+- **Doğrudan diske yazma yedek modu tamamen kaldırıldı.** Önceki sürümde `/tmp` tmpfs olarak doğrulanamazsa veya yeterli boş RAM yoksa, kayıt o oturum için sessizce doğrudan diske yazmaya dönüyordu. Artık bu yedek yol yok: tmpfs, sistemin tek ve zorunlu kayıt mimarisi. `/tmp` gerçek RAM (tmpfs) değilse veya "gerekli boş RAM" eşiğinin altındaysa, o kamera **hiç kayıt başlatmaz** — supervisor her birkaç saniyede bir otomatik olarak yeniden dener ve tmpfs kullanılabilir olur olmaz kayıt kendiliğinden başlar (müdahale gerekmez), ama bu arada o kamera için hiçbir segment yazılmaz.
+- **Etki alanı**: `/tmp`'si gerçek tmpfs olmayan (nadir; standart Linux dağıtımlarında `/tmp` neredeyse her zaman tmpfs'tir) kurulumlarda kayıt artık hiç çalışmaz — önceden (RAM avantajı olmadan da olsa) çalışıyordu. Bu, bilinçli bir tercih: tek, öngörülebilir davranış (her zaman tmpfs) — iki farklı yazma yolunu (RAM + disk) yapılandırıp akılda tutmaktan daha basit ve depolama yönetimini kolaylaştırıyor.
+- Bununla birlikte artık gereksiz kalan iç durum ve mantık temizlendi: `self.root`/`self.day_dir`/`self.write_dir`/`_staging_active` alanları ve gün-değişimi restart mantığı (`_check_day_rollover()`) tamamen kaldırıldı — bunların hepsi yalnızca yedek moda özeldi. `_finish_segment()`'in her segment kapanışında hedef diski taze hesaplaması (v4.9.0'da eklendi) zaten gün değişimini kendiliğinden çözüyordu, bu yüzden restart mekanizmasına hiç gerek kalmamıştı.
+- Bir kameranın tmpfs'e yazamadığı süre boyunca loglanan "kayıt başlatılamıyor" hatası, aynı kamera için en fazla 60 saniyede bir tekrarlanır (sürekli deneme her 3 sn'de bir olsa da, log akışını boğmaz).
+
+### Test
+- 38 kontrollü genişletilmiş test paketiyle doğrulandı: tmpfs doğrulanamadığında ffmpeg hiç başlatılmadığı, yetersiz boş RAM'de aynı şekilde başlamadığı, engelleme logunun hız sınırlandığı (rate-limited) ve pencere geçince tekrar loglandığı; dinamik disk hedefi seçimi, idempotent yeniden deneme, taşıma hatası davranışı ve RAM üst sınırında en-eski-silme davranışlarının hepsinin korunduğu; yedek moda özel hiçbir alan/metodun (root/day_dir/write_dir/_staging_active/_check_day_rollover) sınıfta kalmadığı.
+
 ## [4.9.0] - 2026-08-21
 
 ### Değiştirildi
