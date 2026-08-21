@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.0.1] - 2026-08-21
+
+### Düzeltildi
+- **Kayıt & Depolama sekmesindeki bir açıklama metni v5.0.0'dan sonra yanlış kalmıştı.** "RAM sınırının altındaysa o oturum için doğrudan diske yazılır" ifadesi, o davranış (doğrudan diske yazma yedek modu) v5.0.0'da tamamen kaldırıldığı halde metinde unutulmuştu. Artık doğru davranışı anlatıyor: RAM uygun olmadığında o kamera RAM tekrar uygun olana kadar kayıt yapmaz.
+
 ## [5.0.0] - 2026-08-21
 
 ### Kaldırıldı (Yıkıcı değişiklik)
