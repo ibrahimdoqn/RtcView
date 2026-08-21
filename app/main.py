@@ -215,11 +215,11 @@ def create_app(config_path: str) -> Flask:
     # entirely, so _shutdown() (and therefore recorder.stop()'s flush of
     # every in-flight segment to the real disk) never ran on an ordinary
     # restart. That already risked an unfinished (moov-less, unplayable
-    # but at least present) segment; with recording.tmpfs_staging on it's
-    # worse — the systemd unit's PrivateTmp=yes directory is torn down
-    # when the unit stops, so a segment still sitting in tmpfs at that
-    # moment isn't just unplayable, it's gone. Converting the signal into
-    # a normal SystemExit makes it unwind through here exactly like a
+    # but at least present) segment; since every recorder always stages
+    # in tmpfs it's worse — the systemd unit's PrivateTmp=yes directory
+    # is torn down when the unit stops, so a segment still sitting in
+    # tmpfs at that moment isn't just unplayable, it's gone. Converting
+    # the signal into a normal SystemExit makes it unwind through here exactly like a
     # clean exit, so the already-registered atexit hook actually runs
     # first. Only from the main thread — signal.signal() requires it, and
     # create_app() only ever needs this in main()'s normal run path (not
@@ -689,7 +689,7 @@ def create_app(config_path: str) -> Flask:
         # way keeps working; there's just no way to set a NEW value here.
         allowed = {"enabled", "segment_seconds",
                    "retention_days", "purge_interval_seconds", "ffmpeg_path",
-                   "mem_rss_ceiling_mb", "tmpfs_staging",
+                   "mem_rss_ceiling_mb",
                    "tmpfs_safety_margin_mb", "tmpfs_hard_cap_mb", "low_space_margin_mb"}
         clean = {k: v for k, v in body.items() if k in allowed}
         # Validate simple integer / bool fields BEFORE mutating anything.
@@ -739,7 +739,6 @@ def create_app(config_path: str) -> Flask:
             # makes it a busy loop pegging a core forever.
             clean["purge_interval_seconds"] = max(5, clean["purge_interval_seconds"])
         if "enabled" in clean: clean["enabled"] = bool(clean["enabled"])
-        if "tmpfs_staging" in clean: clean["tmpfs_staging"] = bool(clean["tmpfs_staging"])
         if clean: store.update_recording(clean)
         recorder.reload_all()
         return jsonify(store.get_recording())
@@ -792,9 +791,9 @@ def create_app(config_path: str) -> Flask:
             "storage": storage.stats(),
             "health": health,
             "ffmpeg_available": bool(_which(store.get_recording().get("ffmpeg_path") or "ffmpeg")),
-            # Independent of whether tmpfs_staging is on — lets the UI
-            # show whether /tmp actually qualifies as RAM before the user
-            # even enables the checkbox.
+            # Diagnostic only: staging is now mandatory, this just tells
+            # the UI whether /tmp genuinely qualifies as RAM (tmpfs) or
+            # the per-session direct-write fallback is in effect instead.
             "tmpfs": tmpfs_stage_status(),
         })
 

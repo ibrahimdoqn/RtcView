@@ -5,6 +5,19 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [4.9.0] - 2026-08-21
+
+### Değiştirildi
+- **RAM'de segment oluşturma (tmpfs staging) artık zorunlu mimari, isteğe bağlı bir ayar değil.** Ayarlar → Kayıt & Depolama'daki açma/kapama kutusu kaldırıldı; ffmpeg artık her zaman önce `/tmp` (tmpfs) üzerine yazar, segment kapanınca sıradaki uygun diske taşınır. `/tmp` gerçekten tmpfs değilse veya o an yeterli boş RAM yoksa (yapılandırılabilir eşikler aynen duruyor: gerekli boş RAM / kamera başına RAM sınırı), yalnızca **o oturum için** doğrudan diske yazmaya dönülür — bir sonraki başlangıçta RAM'e geçiş yeniden denenir, kalıcı bir düşüş değildir.
+- **Kapanan her segmentin hedef diski artık taşınma anında, her seferinde yeniden hesaplanıyor** (önceden kayıt başlarken bir kez seçilip sabitleniyordu). Bu, gün değişse veya en uygun disk segment kaydı sırasında değişse bile hiçbir yeniden başlatmaya gerek kalmadan doğru yere yazılmasını sağlıyor — canlı ffmpeg süreci yalnızca RAM'e bağımlı olduğundan, hangi fiziksel diskin şu an en uygun olduğu onu hiç etkilemiyor.
+- **Kayıt artık hiçbir depolama sebebiyle yeniden başlatılmıyor.** Önceden "RAM'deki birikinti üst sınırı aştı" ve "gün değişti" durumları kamerayı yeniden başlatıyordu (birkaç saniyelik kesinti); ikisi de artık restart gerektirmiyor: gün değişimi zaten yukarıdaki dinamik hedef hesaplamasıyla kendiliğinden çözülüyor, RAM üst sınırı aşıldığında ise (yalnızca tüm diskler gerçekten dolu/erişilemezse olur) RAM'deki en eski taşınmamış segment silinip kayıt kesintisiz sürdürülüyor (veri kaybı kabul edilir, açıkça loglanır). Bellek sızıntısı ve donmuş akış bekçileri (ilgisiz, süreç/akış sağlığını korumaya yönelik) değişmeden duruyor.
+
+### Kaldırıldı
+- `recording.tmpfs_staging` ayarı ve arayüzdeki açma/kapama kutusu — yukarıdaki değişiklik nedeniyle artık anlamsız. RAM eşik ayarları (gerekli boş RAM / kamera başına RAM sınırı) aynen kalıyor ve artık her zaman görünür/etkin.
+
+### Test
+- 28 kontrollü yeni bir test paketiyle doğrulandı: bir segmentin RAM'den önce disk A'ya, sonra (disk A "dolunca") disk B'ye — hiç yeniden başlatma olmadan — taşındığı; zaten kayıtlı bir segmentin tekrar işlenmesinin güvenle no-op olduğu; taşıma başarısız olduğunda dosyanın yerinde kalıp bir sonraki denemeye bırakıldığı; RAM üst sınırı aşıldığında en eskinin silinip en yeninin asla silinmediği; gün değişiminin RAM'de yazarken hiç tetiklenmediği ama yedek doğrudan-diske modunda hâlâ çalıştığı; izleyici döngüsünün sıkışan bir taşımayı normal bekleme süresini beklemeden her tikte yeniden denediği.
+
 ## [4.8.1] - 2026-08-20
 
 ### Düzeltildi

@@ -89,26 +89,26 @@ DEFAULT_CONFIG = {
         # concurrent camera recorders matters; tune up if you'd rather
         # tolerate bigger legitimate bumps before restarting.
         "mem_rss_ceiling_mb": 128,
-        # Optional: ffmpeg writes each segment into tmpfs (/tmp) first,
-        # then it's moved onto whichever storage_paths root is currently
-        # taking writes once closed, instead of writing directly to disk
-        # the whole time — trades SD card/eMMC write load for RAM. Off by
-        # default: only useful if /tmp is actually a tmpfs mount (not
-        # guaranteed on every board), and does carry a real — if bounded
-        # by the two settings below — RAM-usage tradeoff. See Ayarlar >
-        # Kayıt & Depolama.
-        "tmpfs_staging": False,
-        # Free tmpfs space required for a camera to start staging at all;
-        # below this it silently records straight to disk instead (see
-        # recorder.py's CameraRecorder.start()). Only relevant when
-        # tmpfs_staging is on.
+        # ffmpeg always writes each segment into tmpfs (/tmp) first, then
+        # it's moved onto whichever storage_paths root currently has room
+        # once closed — never straight to disk. This is mandatory, not a
+        # toggle: the live ffmpeg process only ever depends on tmpfs (RAM),
+        # which is unaffected by any physical disk being full/slow/gone,
+        # so the recorder itself never needs to stop for storage reasons —
+        # only the destination each closed segment moves to can change,
+        # picked fresh every time (see recorder.py's CameraRecorder.
+        # _finish_segment()). If /tmp genuinely isn't tmpfs on this board,
+        # a session falls back to writing directly to disk for that one
+        # session only (logged clearly) rather than refusing to record.
+        # Free tmpfs space required to activate staging at all; below this
+        # a session falls back to writing directly to disk instead (see
+        # recorder.py's CameraRecorder.start()).
         "tmpfs_safety_margin_mb": 256,
-        # Per-camera ceiling on unmoved (staged-but-not-yet-on-disk) data;
-        # past this the destination disk clearly can't keep up, and that
-        # camera permanently falls back to writing directly to disk for
-        # the rest of its session (see recorder.py's
-        # CameraRecorder._check_stage_overflow()). Only relevant when
-        # tmpfs_staging is on.
+        # Per-camera ceiling on unmoved (staged-but-not-yet-on-disk) data.
+        # Past this the destination disk(s) clearly can't keep up; rather
+        # than stopping the recorder, the OLDEST unmoved segment is
+        # dropped (data lost) to keep RAM bounded — see recorder.py's
+        # CameraRecorder._enforce_stage_cap().
         "tmpfs_hard_cap_mb": 512,
     },
     "cameras": [],

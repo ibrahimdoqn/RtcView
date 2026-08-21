@@ -316,16 +316,15 @@
           <label>Düşük disk marjı (MB) <input id="s-rec-margin" type="number" min="64" max="102400" /></label>
           <small>Disk bu marjın altına düşünce yazım sıradaki diske geçer, en eski kayıtlar
             silinerek yer açılır.</small>
-          <label class="row"><input id="s-rec-tmpfs" type="checkbox" /> Segmentleri önce /tmp'de (RAM) oluştur, kapanınca kayıt diskine taşı</label>
-          <small>SD kart yükünü azaltır. <code>/tmp</code> gerçekten RAM değilse sessizce
-            devre dışı kalır.</small>
+          <small>Segmentler önce /tmp'de (RAM) oluşturulur, kapanınca kayıt diskine taşınır —
+            SD kart yükünü azaltır ve kayıt hiçbir zaman durmaz.</small>
           <div id="s-rec-tmpfs-bars" class="disk-bars"></div>
-          <div id="s-rec-tmpfs-limits" class="grid2 hidden">
+          <div id="s-rec-tmpfs-limits" class="grid2">
             <label>Gerekli boş RAM (MB) <input id="s-rec-tmpfs-margin" type="number" min="32" max="8192" /></label>
             <label>Kamera başına RAM sınırı (MB) <input id="s-rec-tmpfs-cap" type="number" min="32" max="16384" /></label>
           </div>
-          <small id="s-rec-tmpfs-limits-help" class="hidden">Boş RAM bu sınırın altındaysa etkinleşmez;
-            kamera sınırı aşarsa otomatik diske döner.</small>
+          <small>RAM bu sınırın altındaysa (veya /tmp gerçek RAM değilse) o oturum için doğrudan
+            diske yazılır; kamera başına RAM sınırı aşılırsa en eski aktarılmamış segment silinir.</small>
           <div id="s-rec-usage-summary" class="usage-text">—</div>
           <div id="s-rec-disk-bars" class="disk-bars"></div>
           <div id="s-rec-health" class="rec-health rec-health-ok">

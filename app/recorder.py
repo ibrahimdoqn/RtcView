@@ -80,30 +80,34 @@ STALE_MULTIPLIER = 2
 STALE_FLOOR_SEC = 90
 STALE_CEIL_SEC = 600
 
-# Optional: stage each segment in tmpfs while ffmpeg writes it, then move
-# the finished file onto the real storage_path once closed, instead of
-# ffmpeg writing directly to it for the whole segment_seconds duration —
-# see recording.tmpfs_staging (Ayarlar > Kayıt & Depolama). Trades "the SD
-# card/eMMC sees a steady trickle of small buffered writes for the entire
-# recording" for "it sees one bulk sequential write per closed segment",
-# which is both easier on flash wear and — since ffmpeg is writing into
-# RAM instead of blocking on whatever the storage medium happens to be
-# doing — more resilient to a slow/stalling disk corrupting an
-# in-progress segment.
+# Every segment is staged in tmpfs (RAM) while ffmpeg writes it — this is
+# mandatory, not a toggle. The finished file is moved onto whichever
+# storage root currently has room once closed, picked FRESH at every
+# single move (see CameraRecorder._finish_segment()), never a value fixed
+# back when the recorder started. This is the architectural point: ffmpeg
+# itself only ever depends on tmpfs, which is unaffected by any physical
+# disk being full, slow, or gone, so the live recording process never
+# needs to stop or restart for a storage reason — only WHERE a closed
+# segment lands can change, transparently, segment to segment. Also
+# easier on flash wear (one bulk sequential write per closed segment
+# instead of a steady trickle of small buffered writes for the whole
+# segment_seconds duration) and more resilient to a slow/stalling disk
+# corrupting an in-progress segment, since ffmpeg is never blocked on
+# whatever the storage medium happens to be doing.
 #
 # The one genuine new risk this introduces is RAM: TMPFS_STAGE_ROOT is
 # typically backed by RAM on an SBC (this was built for the NanoPi R4S)
-# rather than a real disk, and unlike the storage root there's no large
-# pool to fall back on. Two backstops keep this from being able to OOM
-# the box: a recorder simply won't start staging if the tmpfs doesn't
-# have enough free space (self.tmpfs_safety_margin_bytes — falls back to
-# writing directly to storage_path, silently, same as
-# tmpfs_staging=False), and CameraRecorder._check_stage_overflow() forces
-# a restart into non-staged mode — for the rest of that CameraRecorder's
-# life — the moment one camera's own unmoved backlog exceeds
-# self.tmpfs_hard_cap_bytes, which only happens if the real storage disk
-# can't keep up with the copies (normal steady-state usage is at most
-# ~one in-flight segment). Both are per-instance, configurable via
+# rather than a real disk, and unlike a storage root there's no large
+# pool to fall back on. Two backstops bound that risk WITHOUT ever
+# stopping the recorder: a session simply writes directly to disk instead
+# (logged clearly, that one session only — re-attempts staging on its
+# next start) if tmpfs doesn't have self.tmpfs_safety_margin_bytes free
+# right now, and CameraRecorder._enforce_stage_cap() drops the OLDEST
+# not-yet-moved segment (accepting that one loss) the moment one camera's
+# own unmoved backlog exceeds self.tmpfs_hard_cap_bytes, which only
+# happens if every configured storage root is genuinely out of room or
+# unreachable (normal steady-state usage is at most ~one in-flight
+# segment). Both are per-instance, configurable via
 # recording.tmpfs_safety_margin_mb / tmpfs_hard_cap_mb — these two
 # constants are only the fallback defaults (see CameraRecorder.__init__).
 TMPFS_STAGE_ROOT = Path("/tmp/rtcview-stage")
@@ -143,12 +147,13 @@ def tmpfs_stage_status() -> dict:
     """Live info for the UI (Ayarlar > Kayıt & Depolama): whether the
     tmpfs staging path is confirmed to be real RAM, and its current
     usage — same shape/purpose as storage.stats()'s "disk" block, so the
-    frontend can render an identical usage bar. Independent of whether
-    recording.tmpfs_staging is actually on, so a user can check this
-    BEFORE deciding to enable the checkbox. Checks TMPFS_STAGE_ROOT's
-    parent (/tmp) rather than TMPFS_STAGE_ROOT itself since the latter is
-    only created lazily once some camera actually activates staging —
-    both share the same mount either way."""
+    frontend can render an identical usage bar. Staging is mandatory (see
+    TMPFS_STAGE_ROOT's comment), so this is purely diagnostic — it tells
+    the admin whether the board's /tmp is actually giving every recorder
+    the RAM staging it always attempts, not whether some toggle is on.
+    Checks TMPFS_STAGE_ROOT's parent (/tmp) rather than TMPFS_STAGE_ROOT
+    itself since the latter is only created lazily once some camera
+    actually activates staging — both share the same mount either way."""
     mount_path = TMPFS_STAGE_ROOT.parent
     is_tmpfs = _is_tmpfs(mount_path)
     try:
@@ -272,7 +277,6 @@ class CameraRecorder:
     def __init__(self, cam: dict, ffmpeg_path: str, segment_seconds: int,
                  rtsp_url: str, storage,
                  mem_ceiling_mb: int = MEM_RSS_CEILING_MB,
-                 tmpfs_staging: bool = False,
                  tmpfs_safety_margin_mb: int = TMPFS_STAGE_SAFETY_MARGIN_BYTES // (1024*1024),
                  tmpfs_hard_cap_mb: int = TMPFS_STAGE_HARD_CAP_BYTES // (1024*1024)):
         self.cam = cam
@@ -290,46 +294,39 @@ class CameraRecorder:
         self.started_at: Optional[float] = None
         self.day_dir: Optional[Path] = None
         self.pattern: Optional[str] = None
-        # tmpfs staging — see TMPFS_STAGE_ROOT's comment. tmpfs_staging is
-        # the user's *request* (recording.tmpfs_staging); stage_dir/
-        # write_dir/_staging_active reflect what THIS session actually
-        # does, which can silently fall back to direct-to-disk (see
-        # start()) if the tmpfs doesn't have room right now.
-        self.tmpfs_staging = bool(tmpfs_staging)
+        # Staging is always attempted (see TMPFS_STAGE_ROOT's comment) —
+        # stage_dir/write_dir/_staging_active reflect what THIS session
+        # actually managed (which can fall back to direct-to-disk for
+        # just this one session — see start() — if tmpfs genuinely isn't
+        # usable right now; re-attempted fresh on the next start()).
         # Configurable via recording.tmpfs_safety_margin_mb / tmpfs_hard_
-        # cap_mb (Ayarlar > Kayıt & Depolama, shown once tmpfs_staging is
-        # checked) — the right values depend on segment_seconds and the
-        # cameras' bitrates (a long segment_seconds or a high-bitrate
-        # stream needs more RAM headroom than the 256/512 MB defaults
-        # assume), not something one hardcoded pair fits universally.
+        # cap_mb (Ayarlar > Kayıt & Depolama) — the right values depend on
+        # segment_seconds and the cameras' bitrates (a long segment_
+        # seconds or a high-bitrate stream needs more RAM headroom than
+        # the 256/512 MB defaults assume), not something one hardcoded
+        # pair fits universally.
         self.tmpfs_safety_margin_bytes = max(1, int(tmpfs_safety_margin_mb)) * 1024**2
         self.tmpfs_hard_cap_bytes = max(1, int(tmpfs_hard_cap_mb)) * 1024**2
         self.stage_dir: Optional[Path] = None
-        self.write_dir: Optional[Path] = None  # wherever ffmpeg is actually told to write — stage_dir or day_dir
+        self.write_dir: Optional[Path] = None  # wherever ffmpeg is actually told to write — stage_dir, or day_dir in the rare direct-to-disk fallback
         self._staging_active: bool = False
-        # Set by _check_stage_overflow() the first time this camera's
-        # staged backlog exceeds self.tmpfs_hard_cap_bytes — once set,
-        # start() never re-enables staging for this CameraRecorder
-        # instance again (avoids restart-thrash if the destination disk
-        # stays slow/full).
-        self._stage_overflow_at: Optional[float] = None
-        # True from the moment a tmpfs->disk move fails (self.root's disk
-        # had no room) until the next move succeeds. Lets _check_stage_
-        # stuck() below skip its own pick_write_root() call entirely on
-        # every ordinary tick — that call does a real write-test/statfs
-        # per configured root, not free — and only pay for it once we
-        # already know there's a stranded file that would benefit.
+        # True from the moment a tmpfs->disk move fails until the next
+        # move succeeds. Lets the watcher retry every tick instead of
+        # waiting a full segment_seconds (see _watcher_loop), and lets
+        # _enforce_stage_cap()'s caller know there's genuine backlog
+        # growth rather than just the one normal in-flight segment.
         self._move_stuck: bool = False
         # Fixed, not user-configurable — every recorder always writes MP4.
         # Kept as an attribute (rather than a "mp4" literal repeated at
         # each of its three call sites) purely so those stay in sync if
         # this ever needs to change.
         self.ext: str = "mp4"
-        # Chosen fresh at each start() call from storage.pick_write_root()
-        # and fixed for the rest of this session — a later restart (day
-        # rollover, watchdogs, _check_stage_stuck() below) is what lets a
-        # camera whose original root has since filled up move to a
-        # different one; nothing re-evaluates this mid-session on its own.
+        # Chosen at start() — while staging is active this is NOT where
+        # closed segments actually end up (_finish_segment() picks that
+        # fresh, per segment, every time); it only matters as the initial
+        # pick and as the fixed target for the rare direct-to-disk
+        # fallback session (whose ffmpeg pattern, unlike tmpfs's, bakes a
+        # single directory in for its whole lifetime).
         self.root: Optional[Path] = None
         self.manual_until: float = 0.0  # unix ts; > now means manual override on
         self.trigger: str = "schedule"
@@ -364,55 +361,66 @@ class CameraRecorder:
             # storage.py's free_up_for_new_segment() docstring. A no-op
             # unless every configured root is currently below its margin.
             self.storage.free_up_for_new_segment()
-            # Pick the freshest, most-free storage root at spawn time.
-            # A previous session may have used a different root — we
-            # honour whatever has room now.
+            # Initial pick — see self.root's comment: while staging is
+            # active (the normal case) this is superseded per segment by
+            # _finish_segment()'s own fresh pick_write_root() call. It
+            # only truly matters as the fixed target for the rare direct-
+            # to-disk fallback session set up below.
             self.root = self.storage.pick_write_root()
             self.day_dir = _cam_dir(self.root, self.cam_id)
-            self.day_dir.mkdir(parents=True, exist_ok=True)
 
-            # tmpfs staging (see TMPFS_STAGE_ROOT). Reclaim any files
-            # stranded here from a previous session (crash, app/recorder
-            # restart, tmpfs_staging just having been toggled off, or a
-            # prior _check_stage_overflow fallback) BEFORE deciding
-            # whether to use staging again — otherwise they'd sit
-            # unregistered in RAM forever, since nothing else scans this
-            # directory. This runs regardless of self.tmpfs_staging.
+            # tmpfs staging is always attempted (see TMPFS_STAGE_ROOT's
+            # comment) — reclaim any files stranded here from a previous
+            # session (crash, app/recorder restart, a prior direct-to-disk
+            # fallback session) BEFORE deciding whether to activate
+            # staging this time — otherwise they'd sit unregistered in
+            # RAM forever, since nothing else scans this directory.
             candidate_stage_dir = TMPFS_STAGE_ROOT / self.cam_id
             if candidate_stage_dir.is_dir():
                 self._flush_stage_leftovers(candidate_stage_dir)
             self.stage_dir = None
             self._staging_active = False
-            if self.tmpfs_staging and self._stage_overflow_at is None:
-                confirmed_tmpfs = _is_tmpfs(TMPFS_STAGE_ROOT)
-                if not confirmed_tmpfs:
-                    # The whole point is trading disk I/O for RAM I/O — if
-                    # TMPFS_STAGE_ROOT isn't actually tmpfs (e.g. /tmp is
-                    # just part of the root filesystem on this board),
-                    # "activating" would still work mechanically but give
-                    # none of the benefit, silently. Confirm first rather
-                    # than assume.
-                    log.warning("[%s] tmpfs stage path %s is not confirmed to be tmpfs (RAM) — "
-                                "recording directly to storage_path this session", self.cam_id,
-                                TMPFS_STAGE_ROOT)
+            confirmed_tmpfs = _is_tmpfs(TMPFS_STAGE_ROOT)
+            if not confirmed_tmpfs:
+                # The whole point is trading disk I/O for RAM I/O — if
+                # TMPFS_STAGE_ROOT isn't actually tmpfs (e.g. /tmp is
+                # just part of the root filesystem on this board),
+                # "activating" would still work mechanically but give
+                # none of the benefit, silently. Confirm first rather
+                # than assume. This is a per-SESSION degradation, not a
+                # permanent one — the very next start() (day rollover,
+                # any watchdog restart) re-attempts staging fresh, so a
+                # transient issue (tmpfs briefly unmounted, e.g.) doesn't
+                # strand a camera in direct-write mode forever the way
+                # the old permanent stage-overflow lockout used to.
+                log.warning("[%s] tmpfs stage path %s is not confirmed to be tmpfs (RAM) — "
+                            "recording directly to storage this session (degraded — RAM "
+                            "staging is expected to always be available; check /tmp's mount)",
+                            self.cam_id, TMPFS_STAGE_ROOT)
+            else:
+                try:
+                    candidate_stage_dir.mkdir(parents=True, exist_ok=True)
+                    free = shutil.disk_usage(str(TMPFS_STAGE_ROOT)).free
+                except Exception as e:
+                    free = 0
+                    log.warning("[%s] tmpfs stage unavailable (%s) — "
+                                "recording directly to storage this session", self.cam_id, e)
+                if free >= self.tmpfs_safety_margin_bytes:
+                    self.stage_dir = candidate_stage_dir
+                    self._staging_active = True
+                    log.info("[%s] tmpfs stage active at %s (confirmed RAM, %.0f MB free)",
+                              self.cam_id, candidate_stage_dir, free / (1024*1024))
                 else:
-                    try:
-                        candidate_stage_dir.mkdir(parents=True, exist_ok=True)
-                        free = shutil.disk_usage(str(TMPFS_STAGE_ROOT)).free
-                    except Exception as e:
-                        free = 0
-                        log.warning("[%s] tmpfs stage unavailable (%s) — "
-                                    "recording directly to storage_path", self.cam_id, e)
-                    if free >= self.tmpfs_safety_margin_bytes:
-                        self.stage_dir = candidate_stage_dir
-                        self._staging_active = True
-                        log.info("[%s] tmpfs stage active at %s (confirmed RAM, %.0f MB free)",
-                                  self.cam_id, candidate_stage_dir, free / (1024*1024))
-                    else:
-                        log.warning("[%s] tmpfs stage has < %dMB free — recording directly to "
-                                    "storage_path this session", self.cam_id,
-                                    self.tmpfs_safety_margin_bytes // (1024*1024))
+                    log.warning("[%s] tmpfs stage has < %dMB free — recording directly to "
+                                "storage this session", self.cam_id,
+                                self.tmpfs_safety_margin_bytes // (1024*1024))
 
+            if not self._staging_active:
+                # Only needed as ffmpeg's own fixed write target in the
+                # fallback case — while staging, closed segments' actual
+                # destination folder is created on demand, fresh, by
+                # _finish_segment() (never this one, computed once here).
+                self.day_dir.mkdir(parents=True, exist_ok=True)
             self.write_dir = self.stage_dir if self._staging_active else self.day_dir
             # Filename encodes each segment's own wall-clock start time via
             # ffmpeg's -strftime 1. Second resolution is unique because
@@ -644,13 +652,40 @@ class CameraRecorder:
         """Common tail for a segment ffmpeg has finished writing, used by
         both the normal per-tick rollover path (_scan_and_register) and
         one-shot stranded-file recovery at start() (_flush_stage_
-        leftovers): verify playability, move it out of the tmpfs stage
-        into day_dir if that's where it currently sits, then register.
+        leftovers): verify playability, move it to its real home if it
+        isn't already there, then register.
+
+        The destination is resolved FRESH here, every single call — never
+        a value fixed back at start() — by asking storage for whichever
+        root currently has room and today's date-stamped folder under it.
+        This is what lets a camera's footage keep landing in the right
+        place after its original root fills up (or the day rolls over)
+        WITHOUT the recorder itself ever restarting: the live ffmpeg
+        process only ever depends on tmpfs (while staging is active,
+        the normal case), which is unaffected by which physical disk is
+        currently best, so there's nothing about a stale root/day_dir to
+        fix by restarting — this method just always asks fresh. Also
+        covers the rare direct-to-disk fallback session transparently: f
+        is then already sitting at (or near) its computed destination, so
+        the "already there" comparison below is simply a no-op most of
+        the time, and still lets a segment relocate to a better disk
+        after the fact on the rare case its original one has since
+        filled up (compared to needing a restart for even that, before).
 
         Returns False (leaving f exactly where it is, to retry later) only
         on a move failure — every other outcome either succeeds or is a
         permanent skip (already registered under its final name)."""
-        final_path = f if f.parent.resolve() == self.day_dir.resolve() else (self.day_dir / f.name)
+        # Moving onto the real disk is itself a disk write that can fail
+        # with ENOSPC exactly like a live ffmpeg write would — make sure
+        # some root has room FIRST, not just after (see the free_up_for_
+        # new_segment() call below, which only covers the NEXT segment
+        # once this one has already landed). Without this, a segment
+        # stuck because the disk was full when it first tried to move
+        # would only get a retry opportunity from something else's luck.
+        self.storage.free_up_for_new_segment()
+        target_root = self.storage.pick_write_root()
+        target_day_dir = _cam_dir(target_root, self.cam_id)
+        final_path = f if f.parent.resolve() == target_day_dir.resolve() else (target_day_dir / f.name)
         final_path_str = str(final_path.resolve())
         if self.storage.get_segment_by_path(final_path_str):
             return True  # already registered — a retry after an earlier partial failure
@@ -662,21 +697,11 @@ class CameraRecorder:
         if not playable:
             log.warning("[%s] segment closed without a valid trailer (unplayable): %s", self.cam_id, f)
         if final_path != f:
-            # Moving OFF tmpfs onto the real disk is itself a disk write
-            # that can fail with ENOSPC exactly like a live ffmpeg write
-            # would — make sure some root has room FIRST, not just after
-            # (see the free_up_for_new_segment() call below, which only
-            # covers the NEXT segment once this one has already landed).
-            # Without this, a segment stuck in RAM because the disk was
-            # full when it first tried to move would only get a retry
-            # opportunity from something else's luck (another camera's
-            # own successful finish, or purge_once()'s periodic backstop)
-            # instead of proactively here.
-            self.storage.free_up_for_new_segment()
             try:
+                target_day_dir.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(f), str(final_path))
             except Exception as e:
-                log.warning("[%s] tmpfs stage: failed to move %s -> %s (%s); will retry",
+                log.warning("[%s] failed to move %s -> %s (%s); will retry",
                             self.cam_id, f, final_path, e)
                 self._move_stuck = True
                 return False
@@ -685,23 +710,21 @@ class CameraRecorder:
                                        trigger=self.trigger, playable=playable)
         # This segment just closed — ffmpeg is already writing the next
         # one (or about to, for -f segment's continuous rotation). Make
-        # sure some root has room for it now, same check as start(); a
-        # no-op unless every root is currently below its margin.
+        # sure some root has room for it now; a no-op unless every root
+        # is currently below its margin.
         self.storage.free_up_for_new_segment()
         return True
 
     def _flush_stage_leftovers(self, stage_dir: Path):
         """Move+register any files left over in stage_dir from a previous
-        session (crash, app/recorder restart, tmpfs_staging having just
-        been toggled off, or a prior _check_stage_overflow fallback).
-        Called at the top of every start(), before deciding whether to
-        use staging again this session — unlike _scan_and_register's
-        normal path this doesn't filter by session_start (these all
-        predate self.started_at, which isn't even set yet at this point
-        in start()) and doesn't care whether staging is enabled going
-        forward. Without this, a file stranded here would never be
-        registered (nothing else scans this directory) and would sit
-        taking up RAM indefinitely."""
+        session (crash, app/recorder restart, or a prior direct-to-disk
+        fallback session). Called at the top of every start(), before
+        deciding whether to use staging again this session — unlike
+        _scan_and_register's normal path this doesn't filter by
+        session_start (these all predate self.started_at, which isn't
+        even set yet at this point in start()). Without this, a file
+        stranded here would never be registered (nothing else scans this
+        directory) and would sit taking up RAM indefinitely."""
         try:
             candidates = sorted(stage_dir.glob(f"{self.cam_id}_*.{self.ext}"))
         except Exception:
@@ -722,62 +745,54 @@ class CameraRecorder:
             ended = nxt if nxt is not None else st.st_mtime
             self._finish_segment(f, started, ended)
 
-    def _check_stage_overflow(self) -> bool:
-        """True if this camera's tmpfs stage directory has accumulated
-        more unmoved data than self.tmpfs_hard_cap_bytes. A closed
-        segment normally moves out within one watcher tick of closing, so
-        steady-state usage is at most ~one in-flight segment; sustained
-        growth past the cap means the destination disk can't keep up
-        (slow/full/unplugged) and continuing to buffer into RAM risks
-        OOMing the whole box, not just losing this camera's recording.
-        Checked every supervisor tick alongside _check_memory/_is_stale;
-        the caller restarts this recorder, and start() (see
-        _stage_overflow_at) will not re-enable staging for it again for
-        the rest of this CameraRecorder instance's life."""
-        if not self._staging_active or not self.stage_dir:
-            return False
-        try:
-            total = sum(p.stat().st_size for p in self.stage_dir.glob(f"{self.cam_id}_*.{self.ext}"))
-        except Exception:
-            return False
-        if total < self.tmpfs_hard_cap_bytes:
-            return False
-        log.error("[%s] tmpfs stage has %.0f MB unmoved (cap %d MB) — storage disk isn't "
-                  "keeping up; restarting to record directly to storage_path", self.cam_id,
-                  total / (1024*1024), self.tmpfs_hard_cap_bytes // (1024*1024))
-        self._stage_overflow_at = time.time()
-        return True
+    def _enforce_stage_cap(self):
+        """Drop the OLDEST not-yet-moved segment(s) in this camera's tmpfs
+        stage the moment total staged bytes exceed self.tmpfs_hard_cap_
+        bytes. Called every watcher tick for every staging-active camera
+        (see _watcher_loop) — never gated behind a restart, and never
+        stops the recorder: continuous recording matters more than any
+        single already-buffered-but-unmoved segment, so that segment is
+        sacrificed instead (data lost, logged clearly).
 
-    def _check_stage_stuck(self) -> bool:
-        """True if this camera's tmpfs stage has a file that failed to
-        move onto self.root's disk (_move_stuck, set in _finish_segment)
-        AND a DIFFERENT configured root now has room. Exists because
-        self.root is fixed for this whole session (see its comment in
-        __init__) — a live ffmpeg write going to tmpfs never fails just
-        because the DESTINATION disk is full, so nothing here would
-        otherwise notice that a different, roomier root is sitting right
-        there until: (a) the stuck backlog eventually crosses
-        tmpfs_hard_cap_bytes (_check_stage_overflow, above — could take a
-        while depending on bitrate/segment length), or (b) some unrelated
-        trigger (day rollover, a memory/staleness restart) happens to
-        come along. Both are far slower than the ~3s a NON-staged
-        recorder recovers in (ffmpeg itself hits ENOSPC, crashes, and the
-        supervisor restarts it — ordinary already-working behavior this
-        mirrors for the staged case). pick_write_root() itself does a
-        real write-test/statfs per root, so it's only called once we
-        already know (via the cheap _move_stuck flag) that there's a
-        stranded file that could actually benefit."""
-        if not self._staging_active or not self._move_stuck:
-            return False
+        A closed segment normally moves out within one watcher tick of
+        closing, so steady-state usage is at most ~one in-flight segment;
+        sustained growth past the cap means every configured storage root
+        is genuinely out of room or unreachable (free_up_for_new_segment()
+        and the per-tick move retries in _finish_segment() have already
+        been trying and failing) and continuing to buffer into RAM
+        unbounded would risk OOMing the whole box — which WOULD stop
+        every camera's recording, a far worse outcome than losing the
+        single oldest segment. The current (most recent) file is never a
+        candidate: ffmpeg may still have it open for writing."""
+        if not self._staging_active or not self.stage_dir:
+            return
         try:
-            better = self.storage.pick_write_root()
+            files = sorted(self.stage_dir.glob(f"{self.cam_id}_*.{self.ext}"),
+                           key=lambda p: _parse_fname_ts(p) or 0)
         except Exception:
-            return False
-        if better.resolve() == self.root.resolve():
-            return False  # the root we're already using is still the best one -- nothing to gain from restarting
-        log.warning("[%s] a segment is stuck in tmpfs (couldn't move to %s) and %s now has room — "
-                    "restarting to switch to it", self.cam_id, self.root, better)
-        return True
+            return
+        if len(files) <= 1:
+            return
+        try:
+            sizes = [(p, p.stat().st_size) for p in files]
+        except Exception:
+            return
+        total = sum(sz for _, sz in sizes)
+        if total <= self.tmpfs_hard_cap_bytes:
+            return
+        idx = 0
+        while total > self.tmpfs_hard_cap_bytes and idx < len(sizes) - 1:  # keep the latest, always
+            victim, sz = sizes[idx]
+            idx += 1
+            try:
+                victim.unlink(missing_ok=True)
+            except Exception as e:
+                log.warning("[%s] tmpfs stage cap: failed to drop %s (%s)", self.cam_id, victim, e)
+                continue
+            total -= sz
+            log.error("[%s] tmpfs stage over cap (%d MB) — dropped unmoved segment %s "
+                      "(%.0f MB, data lost — destination disk(s) can't keep up)",
+                      self.cam_id, self.tmpfs_hard_cap_bytes // (1024*1024), victim.name, sz / (1024*1024))
 
     def _check_memory(self) -> bool:
         """True if this recorder's ffmpeg has grown past self.mem_ceiling_mb
@@ -816,14 +831,19 @@ class CameraRecorder:
 
     def _check_day_rollover(self) -> bool:
         """True if the calendar day has changed since this recorder's
-        day_dir was computed in start(). ffmpeg's segment output pattern
-        has the DIRECTORY baked in as a fixed string at spawn time —
-        -strftime 1 only re-evaluates the filename's own %Y%m%d_%H%M%S,
-        not which folder it's writing into — so a long-running
-        (record_mode=always) session never notices midnight on its own:
-        segments keep landing in the day it started in, misdated relative
-        to their own filenames, until something restarts it."""
-        if not self.day_dir or not self.root:
+        day_dir was computed in start() — only ever relevant to the rare
+        direct-to-disk fallback session (self._staging_active False):
+        THAT ffmpeg process has its DIRECTORY baked into its own output
+        pattern as a fixed string at spawn time (-strftime 1 only
+        re-evaluates the filename's own %Y%m%d_%H%M%S, not which folder
+        it's writing into), so a long-running one never notices midnight
+        on its own without a restart. While staging (the normal case)
+        this is a non-issue and always returns False: ffmpeg only ever
+        writes into tmpfs's flat, date-less stage_dir, and each closed
+        segment's real destination folder is resolved fresh — using
+        whatever today's date actually is — by _finish_segment() itself,
+        every single time, so there is nothing here to go stale."""
+        if self._staging_active or not self.day_dir or not self.root:
             return False
         stale = _cam_dir(self.root, self.cam_id) != self.day_dir
         if stale:
@@ -1029,7 +1049,6 @@ class RecordingManager:
             segment_seconds=int(rc.get("segment_seconds", 300)),
             rtsp_url=self._rtsp_url(cam), storage=self.storage,
             mem_ceiling_mb=int(rc.get("mem_rss_ceiling_mb", MEM_RSS_CEILING_MB)),
-            tmpfs_staging=bool(rc.get("tmpfs_staging", False)),
             tmpfs_safety_margin_mb=int(rc.get("tmpfs_safety_margin_mb",
                                                TMPFS_STAGE_SAFETY_MARGIN_BYTES // (1024*1024))),
             tmpfs_hard_cap_mb=int(rc.get("tmpfs_hard_cap_mb",
@@ -1139,7 +1158,7 @@ class RecordingManager:
                         r.start(trigger=trigger)  # fast (just Popen) -- fine under the lock
                     else:
                         r.trigger = trigger
-                        if r._check_memory() or r._is_stale() or r._check_day_rollover() or r._check_stage_overflow() or r._check_stage_stuck():
+                        if r._check_memory() or r._is_stale() or r._check_day_rollover():
                             if self._claim_busy(cam_id):
                                 do_restart = True
                 else:
@@ -1167,8 +1186,19 @@ class RecordingManager:
                 try:
                     if not r.is_running():
                         continue
-                    if now < r._next_check_at:
-                        continue  # this recorder's segment can't have closed yet
+                    # RAM safety net runs every tick regardless of the due-
+                    # time gate below — never wait for a segment boundary
+                    # to notice the stage backlog needs trimming.
+                    r._enforce_stage_cap()
+                    # The due-time gate exists so an ordinary tick with
+                    # nothing new to find is a free in-memory check, no
+                    # I/O at all (see module docstring) -- but a segment
+                    # that failed to move (_move_stuck) costs nothing to
+                    # retry and never needs a restart to recover, so it's
+                    # worth retrying every tick (2s) rather than waiting a
+                    # full segment_seconds for the next due check.
+                    if now < r._next_check_at and not r._move_stuck:
+                        continue
                     rolled = r._scan_and_register(final=False)
                     if rolled:
                         r._stale_since = None
