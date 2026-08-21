@@ -334,6 +334,15 @@ class CameraRecorder:
         # SUPERVISOR_INTERVAL (3s), so without this a persistently
         # unavailable tmpfs would flood the log forever. See start().
         self._last_stage_block_log: float = 0.0
+        # Human-readable reason THIS camera isn't recording right now
+        # (tmpfs unavailable, RAM below margin), or None while running
+        # normally. Unlike the rate-limited log above, this always
+        # reflects the CURRENT truth immediately — status() surfaces it so
+        # the UI/API can show WHY a camera says "not recording" instead of
+        # last_error sitting on a stale (or empty) ffmpeg stderr line from
+        # a previous session, since ffmpeg never even got spawned this
+        # time. Cleared the moment start() gets far enough to spawn ffmpeg.
+        self._blocked_reason: Optional[str] = None
         # True from the moment a tmpfs->disk move fails until the next
         # move succeeds. Lets the watcher retry every tick instead of
         # waiting a full segment_seconds (see _watcher_loop), and lets
@@ -372,16 +381,20 @@ class CameraRecorder:
         return self.proc is not None and self.proc.poll() is None
 
     def _log_stage_blocked(self, msg: str, *args):
-        """Log why start() refused to run, rate-limited to once per
-        STAGE_BLOCK_LOG_INTERVAL_SEC — without this, a persistently
-        unavailable tmpfs would log this every SUPERVISOR_INTERVAL (3s)
-        forever, since start() gets called again on every tick as long as
-        is_running() stays False."""
+        """Record why start() refused to run. self._blocked_reason always
+        updates immediately (status() needs the current truth, not a
+        rate-limited one), but the actual journalctl log line is
+        rate-limited to once per STAGE_BLOCK_LOG_INTERVAL_SEC — without
+        that cap, a persistently unavailable tmpfs would log this every
+        SUPERVISOR_INTERVAL (3s) forever, since start() gets called again
+        on every tick as long as is_running() stays False."""
+        formatted = msg % args if args else msg
+        self._blocked_reason = formatted
         now = time.time()
         if now - self._last_stage_block_log < STAGE_BLOCK_LOG_INTERVAL_SEC:
             return
         self._last_stage_block_log = now
-        log.error("[%s] " + msg, self.cam_id, *args)
+        log.error("[%s] %s", self.cam_id, formatted)
 
     def start(self, trigger: str):
         with self._lock:
@@ -422,6 +435,7 @@ class CameraRecorder:
                     self.tmpfs_safety_margin_bytes // (1024*1024))
                 return
             self.stage_dir = candidate_stage_dir
+            self._blocked_reason = None
             log.info("[%s] tmpfs stage active at %s (confirmed RAM, %.0f MB free)",
                       self.cam_id, candidate_stage_dir, free / (1024*1024))
 
@@ -592,6 +606,13 @@ class CameraRecorder:
             # (terminate/wait above), so the file's final flush is on disk.
             self._scan_and_register(final=True)
             self.started_at = None
+            # self.stage_dir is deliberately NOT cleared here (start()
+            # resets it fresh on the next call) — the watcher loop keys
+            # its stopped-recorder RAM-cap/stray-file-retry pass on it
+            # still being set post-stop, so a segment that couldn't be
+            # moved above (storage still full at the exact moment this
+            # camera stopped) keeps getting cleaned up / retried even
+            # while this recorder isn't running.
 
     def _scan_and_register(self, final: bool = False) -> bool:
         """Register newly-closed segments.
@@ -833,6 +854,12 @@ class CameraRecorder:
             "manual_until": self.manual_until,
             "last_error": (self._stderr_tail[-1] if self._stderr_tail else ""),
             "rss_mb": (round(_proc_rss_mb(self.proc.pid), 1) if self.proc else None),
+            # Why THIS camera isn't recording right now (tmpfs unavailable
+            # / below RAM margin), or None while running normally — see
+            # _log_stage_blocked(). Distinct from last_error: that field
+            # is ffmpeg's own stderr, which is stale or empty whenever
+            # ffmpeg never even got spawned this session.
+            "blocked_reason": self._blocked_reason,
         }
 
 
@@ -991,7 +1018,8 @@ class RecordingManager:
         for c in self.cfg.get_cameras():
             if not any(x["cam_id"] == c["id"] for x in out):
                 out.append({"cam_id": c["id"], "running": False, "started_at": None,
-                            "trigger": None, "manual_until": 0, "last_error": ""})
+                            "trigger": None, "manual_until": 0, "last_error": "",
+                            "rss_mb": None, "blocked_reason": None})
         return out
 
     # ---------- internals ----------
@@ -1156,13 +1184,42 @@ class RecordingManager:
             with self._lock:
                 recs = list(self._recs.values())
             for r in recs:
+                # Non-blocking: start()/stop() holds r._lock for as long
+                # as its own work takes (stop()'s signal escalation can
+                # run up to ~7s) — since this loop processes every
+                # recorder sequentially in one shared thread, BLOCKING
+                # here on one camera's lock would stall every other
+                # camera's watcher tick behind it for that whole window,
+                # exactly the kind of manager-wide stall the _busy/
+                # claim_busy pattern elsewhere in this file exists to
+                # avoid. Skipping this recorder for one tick (2s) when
+                # its lock is already held is cheap and safe — start()/
+                # stop() already fully re-derive whatever state they need.
+                if not r._lock.acquire(blocking=False):
+                    continue
                 try:
+                    # RAM safety net + stray-file retry run regardless of
+                    # is_running() — a camera that stopped (schedule
+                    # ended, manually stopped, record_mode flipped off)
+                    # while every storage root was completely full leaves
+                    # its not-yet-moved tmpfs segments stranded exactly
+                    # where they were: nothing else ever revisits
+                    # stage_dir for a recorder that isn't running, so
+                    # without this an unlucky stop timing left that RAM
+                    # held (uncapped) and that footage stuck (never
+                    # retried) until — if ever — this camera started
+                    # recording again.
+                    if r.stage_dir:
+                        r._enforce_stage_cap()
+                        if not r.is_running():
+                            try:
+                                stray = next(r.stage_dir.glob(f"{r.cam_id}_*.{r.ext}"), None)
+                            except Exception:
+                                stray = None
+                            if stray is not None:
+                                r._flush_stage_leftovers(r.stage_dir)
                     if not r.is_running():
                         continue
-                    # RAM safety net runs every tick regardless of the due-
-                    # time gate below — never wait for a segment boundary
-                    # to notice the stage backlog needs trimming.
-                    r._enforce_stage_cap()
                     # The due-time gate exists so an ordinary tick with
                     # nothing new to find is a free in-memory check, no
                     # I/O at all (see module docstring) -- but a segment
@@ -1191,3 +1248,5 @@ class RecordingManager:
                     r._next_check_at = (now + r.segment_seconds - TRACK_MARGIN_SEC) if rolled else (now + WATCHER_INTERVAL)
                 except Exception as e:
                     log.debug("watcher %s: %s", r.cam_id, e)
+                finally:
+                    r._lock.release()

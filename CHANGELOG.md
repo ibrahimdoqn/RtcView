@@ -5,6 +5,20 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.0.2] - 2026-08-21
+
+### Düzeltildi
+- **Bozuk/arızalı bir disk, başka bir diskte silinecek kayıt olduğu için "sağlıklı" görünebiliyordu.** `health()`, bir kökün kendi silinecek segmenti olup olmadığını kontrol etmesi gerekirken, sistemdeki HERHANGİ bir diskte silinecek kayıt var mı diye GLOBAL bakıyordu. Sonuç: A diski gerçekten bozuksa (yazma hatası) ve boş alanı da düşükse, ama B diskinde silinecek eski kayıt varsa — A diski hatasız/"ok" gösteriliyordu, gerçek sorun tamamen gizleniyordu. Artık bu kontrol her disk için kendi segmentlerine bakıyor; B diskindeki kayıtları silmek A diskinin sorununu çözmeyeceği için artık A diski doğru şekilde hata olarak işaretleniyor.
+- **Bir disk yazılamaz hale geldiğinde artık açıkça loglanıyor.** `pick_write_root()`/`has_usable_root()`/`_any_root_has_room()` bir kökün yazma testi başarısız olduğunda sessizce bir sonraki diski deniyordu (bu davranış zaten doğruydu — sıralı doldurma otomatik olarak B, C disklerine geçiyor) ama hiçbir yere loglamıyordu. Artık hangi disk sorunlu olduğu (ve neden) günlüğe (rate-limited, disk başına en fazla 60 sn'de bir) açıkça yazılıyor.
+- **Bir kamera, tmpfs'te taşınamamış bir segmentle birlikte durursa o veri RAM'de sınırsız birikebiliyordu.** Disk tamamen doluyken bir segment diske taşınamazsa, ve bu sırada kamera durursa (schedule bitti, elle durduruldu, `record_mode` kapatıldı) — izleyici döngüsü artık kamerayı çalışmıyor (`is_running()==False`) diye hiç kontrol etmiyordu: ne RAM üst sınırı uygulanıyordu ne taşıma tekrar deneniyordu. Kamera bir daha kayda başlayana kadar (hiç başlamayabilir de) bu segmentler RAM'de sınırsız birikip hiç indekslenmiyordu. Artık izleyici döngüsü, kamera çalışmasa bile RAM üst sınırını uygulamaya ve taşınamamış dosyaları periyodik olarak yeniden denemeye devam ediyor.
+- **İzleyici (watcher) iş parçacığı ile `stop()` arasında küçük bir yarış durumu vardı.** İzleyicinin segment tarama/RAM sınırı kontrolleri kaydedicinin kendi kilidini almıyordu; bir kamera durdurulurken (birkaç saniye sürebilen sinyal artışı sırasında) izleyici aynı dosyayı eşzamanlı taşımaya çalışabiliyordu — zararsız ama gereksiz log + nadiren gerçekten kurtarılabilecek bir segmentin kaybı riski. Artık izleyici, engelleyici olmayan bir kilit denemesiyle (`acquire(blocking=False)`) bu çakışmayı tamamen ortadan kaldırıyor — kilit meşgulse o kamerayı bu turda atlıyor, diğer kameraları asla bekletmiyor (paylaşılan izleyici iş parçacığının tek bir yavaş `stop()` yüzünden tıkanmaması `_busy`/`claim_busy` deseninde zaten uygulanan aynı ilke).
+
+### Eklendi
+- **`blocked_reason` alanı**: bir kamera tmpfs yüzünden kayıt yapamıyorsa (RAM uygun değil/yetersiz), `/api/recording/status`'ta bu her zaman güncel bir sebep metni olarak görünür — eskiden yalnızca (hız sınırlı) log'a yazılıyordu; ffmpeg'in kendi `last_error` alanı bu durumda hiç güncellenmediği için (ffmpeg hiç başlamadı) eski/yanıltıcı bir mesajda takılı kalabiliyordu.
+
+### Test
+- 29 kontrollü yeni bir test paketiyle doğrulandı: `_has_purgeable_segments`'in artık disk bazlı çalıştığı, bozuk bir diskin başka bir diskteki kayıtlar yüzünden artık maskelenmediği, disk hatası loglarının hız sınırlandığı, durdurulmuş bir kameranın RAM'deki artık dosyalarının hâlâ temizlendiği/tekrar denendiği, izleyicinin kilidinin gerçekten engellemediği (7 saniyelik `stop()` beklemesi yerine anında dönüyor), ve `blocked_reason`'ın log hız sınırından bağımsız her zaman güncel kaldığı.
+
 ## [5.0.1] - 2026-08-21
 
 ### Düzeltildi

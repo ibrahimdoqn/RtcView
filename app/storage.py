@@ -102,6 +102,14 @@ CREATE INDEX IF NOT EXISTS idx_notif_cam     ON notifications(cam_id, event_ts);
 NOTIF_RETENTION_DAYS = 30
 NOTIF_MAX_ROWS = 2000
 
+# How often the same root's write-test failure gets logged again — see
+# Storage._log_root_error(). pick_write_root() alone can be called several
+# times a second across multiple cameras, so logging every single failed
+# probe on a persistently broken/unplugged disk would flood the log; this
+# caps that while still surfacing the problem promptly the first time and
+# periodically thereafter (not just once and never again).
+ROOT_ERROR_LOG_COOLDOWN_SEC = 60
+
 
 class Storage:
     """
@@ -142,6 +150,8 @@ class Storage:
         # visible (and purgeable) again, instead of silently sitting there
         # forever until someone notices and clicks "Diski yeniden tara".
         self._orphan_suspected = False
+        # Per-root cooldown for _log_root_error() — see its docstring.
+        self._root_error_log_at: dict[str, float] = {}
         # "Diski yeniden tara" state, polled by the frontend instead of
         # blocking a single HTTP request for as long as the walk takes
         # (can be minutes on a large archive over slow SD-card/eMMC
@@ -269,17 +279,48 @@ class Storage:
             ).fetchone()
         return int(row[0] or 0)
 
-    def _has_purgeable_segments(self) -> bool:
-        """Whether ANY unlocked segment exists anywhere (checked
-        globally — the emergency purge deletes the globally-oldest
-        segment regardless of which root it's on). health() uses this to
-        tell "disk is at capacity, and is being actively kept there by
-        the rolling purge" (expected steady state for an unlimited-quota
-        root — not an error) apart from "disk is full AND there's
-        nothing left to delete" (an actual dead end)."""
+    def _has_purgeable_segments(self, root_path: Optional[str] = None) -> bool:
+        """Whether an unlocked segment exists — globally when root_path
+        is None (used by the emergency purge, which deletes the
+        globally-oldest segment regardless of which root it's on), or
+        scoped to segments actually living under root_path (used by
+        health()'s per-root check).
+
+        The scoped form matters: a root that's itself out of purgeable
+        segments is a dead end for THAT root specifically even if some
+        other, unrelated root still has plenty to reclaim from — deleting
+        root B's old footage frees no space and fixes nothing on root A.
+        Checking globally there would silently report a genuinely broken
+        or exhausted root A as "ok" purely because root B happens to have
+        something purgeable, masking a real per-root problem (see
+        health())."""
         with self._lock:
-            row = self._db.execute("SELECT 1 FROM segments WHERE locked = 0 LIMIT 1").fetchone()
+            if root_path is None:
+                row = self._db.execute("SELECT 1 FROM segments WHERE locked = 0 LIMIT 1").fetchone()
+            else:
+                pattern = self._like_escape(root_path + os.sep) + "%"
+                row = self._db.execute(
+                    "SELECT 1 FROM segments WHERE locked = 0 AND path LIKE ? ESCAPE '\\' LIMIT 1",
+                    (pattern,)
+                ).fetchone()
         return row is not None
+
+    def _log_root_error(self, root: Path, err: Exception):
+        """Log that `root` failed its write-test/usability probe,
+        rate-limited per root (see ROOT_ERROR_LOG_COOLDOWN_SEC) so a
+        persistently broken/unplugged/corrupted disk doesn't flood the
+        log — pick_write_root() alone can be called several times a
+        second across multiple cameras. The sequential-fill model already
+        tries the next configured root automatically on any failure here
+        (see pick_write_root()); this is purely so the admin can SEE
+        which specific root is the problem instead of only noticing
+        recording quietly favoring a different disk."""
+        key = str(root)
+        now = time.time()
+        if now - self._root_error_log_at.get(key, 0.0) < ROOT_ERROR_LOG_COOLDOWN_SEC:
+            return
+        self._root_error_log_at[key] = now
+        log.error("storage root unusable, trying the next configured root: %s (%s)", root, err)
 
     def pick_write_root(self) -> Path:
         """Sequential fill: try each configured root in order, return the
@@ -305,7 +346,8 @@ class Storage:
                 probe = r / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
                 probe.write_text("ok"); probe.unlink()
                 du = shutil.disk_usage(str(r))
-            except Exception:
+            except Exception as e:
+                self._log_root_error(r, e)
                 continue
             fallback = r
             if du.free < margin:
@@ -326,7 +368,8 @@ class Storage:
                 probe = r / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
                 probe.write_text("ok"); probe.unlink()
                 return True
-            except Exception:
+            except Exception as e:
+                self._log_root_error(r, e)
                 continue
         return False
 
@@ -341,7 +384,8 @@ class Storage:
                 probe = r / f".rtcview_write_test.{os.getpid()}.{threading.get_ident()}"
                 probe.write_text("ok"); probe.unlink()
                 du = shutil.disk_usage(str(r))
-            except Exception:
+            except Exception as e:
+                self._log_root_error(r, e)
                 continue
             if du.free >= margin:
                 return True
@@ -934,21 +978,31 @@ Once a root has refused a delete, it's excluded from the SQL query
                         # can ever fix (wrong permissions, read-only fs,
                         # hardware fault, unmounted), so that stays a hard
                         # error, unconditionally.
-                        if not self._has_purgeable_segments():
+                        #
+                        # Scoped to THIS root (str(r)), not checked
+                        # globally: a broken/corrupted root that happens
+                        # to report near-full free space would otherwise
+                        # get silently masked as "ok" purely because some
+                        # OTHER, unrelated root still has old footage to
+                        # purge — deleting root B's segments frees no
+                        # space and fixes nothing on a genuinely broken
+                        # root A.
+                        if not self._has_purgeable_segments(str(r)):
                             r_errs.append(
                                 "Yazılamıyor: disk dolu — silinecek kayıt kalmadı, kayıt durabilir"
                             )
                     else:
                         r_errs.append(f"Yazılamıyor: {write_err}")
-                elif near_full and not self._has_purgeable_segments():
+                elif near_full and not self._has_purgeable_segments(str(r)):
                     # A root sitting right at capacity is the EXPECTED
                     # steady state for an unlimited-quota (max_gb=0)
                     # setup once footage volume outgrows it — purge_once()
                     # keeps deleting THIS root's oldest segments to hold
                     # it just above the configured low-space margin,
                     # forever, by design. Not worth flagging while that's still
-                    # working — only a genuine dead end, nothing left to
-                    # purge anywhere, is actionable.
+                    # working — only a genuine dead end for THIS root
+                    # (nothing of its own left to purge — see the scoping
+                    # note above) is actionable.
                     r_errs.append(
                         f"Disk doldu: {du.free // (1024*1024)} MB boş — "
                         "silinecek kayıt kalmadı, kayıt durabilir"
