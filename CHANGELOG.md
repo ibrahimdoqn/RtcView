@@ -5,6 +5,19 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.0.3] - 2026-08-22
+
+### Düzeltildi
+- **README.md, koddan sapmış birkaç yanlış/eski iddiayı düzeltmek için baştan sona koda karşı doğrulandı:**
+  - Oynatma hızı "0.5×–32×" olarak yazıyordu; gerçek üst sınır 16× (tarayıcılar `playbackRate`'i bunun üzerinde reddediyor) — klavye kısayolları bölümü zaten doğruydu, sadece özellikler listesi eskiydi.
+  - "installer go2rtc'sini **indirir**" ifadesi yanlıştı — go2rtc ikili dosyası hiçbir yerden indirilmez, RtcView deposunun kendisinde mimariye göre (`amd64`/`arm64`) önceden derlenmiş halde `vendor/go2rtc/` altında bulunur, installer sadece kopyalar.
+  - "çevrimdışı kabuk" (offline shell) iddiası yanlıştı — service worker kasıtlı olarak yalnızca simgeleri önbelleğe alıyor, HTML/CSS/JS her zaman ağdan taze çekiliyor (bayatlamayı önlemek için); ağ olmadan uygulama gerçekte açılmıyor.
+  - "`-c copy`, transcode yok" ifadesi eksikti — bu yalnızca görüntü için doğru; ses kaydı açıksa ses AAC'ye transcode ediliyor (MP4 uyumluluğu için).
+  - Dosya düzeni diyagramındaki segment dosya adı örneği (`<cam>_<ts>_NNNNN.mp4`) yanlıştı — gerçek biçim `<cam>_YYYYMMDD_HHMMSS.mp4` (sayaç yok, saniye çözünürlüğü zaten tekil).
+  - API özetinde iki gerçek rota eksikti: `POST /api/recording/storage/paths` (kayıt klasörleri listesini değiştirme) ve `GET /api/recording/rescan/status` (arka plan taraması ilerlemesi).
+  - Bozuk bir kırık iç bağlantı (`#kayıt-yolu-değiştirme`) düzeltildi.
+  - Depolama bölümüne, bu oturumda düzeltilen gerçek bir hatayı yansıtan bir not eklendi: her diskin sağlık durumu artık kendi başına değerlendiriliyor, başka bir diskteki silinecek kayıtlar bir sorunu maskeleyemiyor.
+
 ## [5.0.2] - 2026-08-21
 
 ### Düzeltildi

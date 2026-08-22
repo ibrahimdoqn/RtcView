@@ -7,7 +7,10 @@ PWA uyumludur, Ubuntu Noble (rk3399, arm64) üzerinde izole Python venv içinde 
 ## Ön koşul
 
 Kayıt için sistemde **`ffmpeg`** yüklü olmalı (installer otomatik kurar). go2rtc'yi ayrıca kurmanıza gerek yok —
-installer kendi (hata düzeltmeli) go2rtc'sini indirip systemd servisi olarak kurar. Kameralar go2rtc'nin
+installer kendi (hata düzeltmeli) go2rtc'sini kurup systemd servisi olarak başlatır. Bu ikili dosya kurulum
+sırasında hiçbir yerden **indirilmez** — RtcView deposunun kendisinde, mimariye göre (`amd64`/`arm64`) önceden
+derlenmiş halde `vendor/go2rtc/` altında bulunur; installer sadece cihazınızın mimarisine uygun olanı kopyalar.
+Kameralar go2rtc'nin
 `streams:` bölümünde tanımlı olmalı — bunu Ayarlar → go2rtc sekmesindeki yapılandırma editöründen yapabilirsiniz.
 **`/tmp`'nin tmpfs (RAM) olması gerekir** — kayıt mimarisi RAM'e yazıp diske taşımak üzerine kurulu, yedek/geri
 düşme modu yok; bu neredeyse her standart Linux dağıtımında zaten varsayılan (`mount | grep tmpfs`ile kontrol
@@ -20,13 +23,13 @@ kendi entegrasyonu, vb. — kaynak fark etmez).
 
 ### Canlı izleme
 - **WebRTC (WHEP)** ile canlı, düşük gecikmeli görüntü (go2rtc üzerinden)
-- **PWA** — telefon/tabletten "Ana Ekrana Ekle", çevrimdışı kabuk
+- **PWA** — telefon/tabletten "Ana Ekrana Ekle" ile yüklenebilir uygulama gibi açılır (tam ekran, kendi simgesi)
 - **Grid** görünüm (1–8 sütun), çift tık ile solo, tekerlek/pinch ile zoom, sürükle ile pan
 - **PTZ** (ONVIF): 8 yön, zoom, presetler
 - Sürükle-bırak sıralama, arama, koyu/açık tema
 
 ### Kayıt
-- **Sunucu tarafında FFmpeg** ile 24/7 veya zamanlı segment kayıt (`-c copy`, transcode yok — CPU dostu)
+- **Sunucu tarafında FFmpeg** ile 24/7 veya zamanlı segment kayıt — görüntü her zaman `-c copy` (transcode yok, CPU dostu); ses kaydı açıksa yalnızca ses AAC'ye çevrilir (MP4 ile uyumlu olması için, kameraların gönderdiği ham formatlar genelde uyumsuz)
 - Kamera başına **mod seçimi**: kapalı / sürekli / haftalık zamanlı / sadece manuel
 - **Manuel kayıt butonu** her tile'da (varsayılan 10 dk pencere)
 - **Snapshot** butonu (JPEG, opsiyonel diske kayıt + indir)
@@ -39,7 +42,7 @@ kendi entegrasyonu, vb. — kaynak fark etmez).
 - Tam ekran "Kayıtlar" görünümü (sidebar ▷ butonu veya <kbd>V</kbd>)
 - **24 saatlik timeline şeridi** — segmentler renkli barlar (mavi = normal, sarı = kilitli, kırmızı = manuel, yeşil = oynatılan)
 - Fare tekerleği ile timeline zoom, sürükleyerek pan, tıkla → o zamana seek
-- Player: oynat/duraklat, ±10 sn, hız (0.5×–32×), kare-kare (<kbd>,</kbd>/<kbd>.</kbd>)
+- Player: oynat/duraklat, ±10 sn, hız (0.5×–16×; tarayıcılar `playbackRate`'i 16'nın üzerinde reddediyor), kare-kare (<kbd>,</kbd>/<kbd>.</kbd>)
 - **Ses aç/kapat** kontrolü — varsayılan kapalı (eski kayıtları izlerken beklenmedik ses olmasın diye), istenirse hoparlör düğmesiyle açılır; panel her açılışında yeniden kapalıya döner
 - **Segmentler otomatik sıralı oynanır** (kesintisiz)
 - Segment bazında: indir / sil / kilitle / karesini kaydet
@@ -51,6 +54,7 @@ kendi entegrasyonu, vb. — kaynak fark etmez).
 - Disk kullanım çubuğu, en eski kaydın tarih/saati, "diski yeniden tara" butonu
 - **Depolama sağlığı akıllıdır**: disk dolması normal, rolling-storage davranışıdır — silinecek eski segment olduğu sürece hata/uyarı göstermez. Her yeni segment/anlık görüntü başlamadan hemen önce, yapılandırılmış klasörlerin **hepsi** ayarlanabilir düşük disk marjının altındaysa (varsayılan 1 GB), retention süresi dolmasa bile en eski kayıtlar (o an aktif kamera sayısı kadar) otomatik silinip yer açılır — en az bir klasörde yer olduğu sürece hiçbir şey silinmez, sıralı doldurma zaten oraya geçer. `purge_once()` (yaş bazlı retention temizliği, varsayılan 60 sn'de bir) bu kontrolü de periyodik olarak tekrarlar — kayıt tamamen kapalıyken bile bir güvenlik ağı olarak. Yalnızca gerçekten çıkmaz sokaktaysa (silinecek hiçbir şey kalmadıysa veya izin/donanım sorunu varsa) kırmızı uyarı verir
 - Bir segment silinirken dosya diskten fiilen kaldırılamazsa (geçici I/O hatası), bir sonraki temizlik turunda otomatik olarak disk yeniden taranır — index'te görünmeyen ama fiilen diskte duran dosyalar kendiliğinden yeniden kayda alınır. Arızalı/erişilemez bir disk, sağlıklı diğer disklerin temizliğini asla engellemez
+- Her diskin sağlık durumu **kendi başına** değerlendirilir — bir disk yazılamıyor veya bozuksa, başka bir diskte silinecek eski kayıt olması bu durumu maskelemez; sorunlu disk açıkça hatalı işaretlenir ve hangi disk olduğu (rate-limited) günlüğe yazılır
 - **Segmentler her zaman önce RAM'de (`/tmp`, tmpfs) oluşturulur, kapanınca hangi disk o an sırada müsaitse oraya taşınır — bu, isteğe bağlı bir seçenek veya geçici bir yedek mod değil, tek ve zorunlu mimaridir.** ffmpeg hiçbir koşulda doğrudan fiziksel diske yazmaz; disk-yazma yedek modu tamamen kaldırıldı. Bunun asıl noktası: canlı ffmpeg süreci yalnızca RAM'e bağımlı olduğu için **hangi disk dolu/yavaş/erişilemez olursa olsun kayıt hiçbir zaman durmaz veya yeniden başlamaz** — her kapanan segmentin hedefi taşınma anında yeniden hesaplanır, gün değişse veya en uygun disk değişse bile. Sonuç: tek, öngörülebilir davranış — ayarlanacak/akılda tutulacak ikinci bir mod yok, depolama yönetimi daha basit
 - RtcView `/tmp`'nin gerçekten tmpfs (RAM) olduğunu kendisi doğrular; değilse (veya o an yeterli boş RAM yoksa, "Gerekli boş RAM" eşiği) **o kamera hiç kayıt başlatmaz** — sistem her birkaç saniyede bir otomatik olarak yeniden dener, tmpfs kullanılabilir hale gelir gelmez kayıt kendiliğinden başlar; müdahale gerekmez. Bir kameranın RAM'de biriken taşınmamış verisi "kamera başına RAM sınırı"nı aşarsa (tüm diskler gerçekten dolu/erişilemez durumdaysa olur), kayıt durdurulmaz — bunun yerine RAM'deki en eski taşınmamış segment silinir (veri kaybı kabul edilir, kayıt kesintisiz devam eder). Ayarlar → Kayıt & Depolama'daki tmpfs kullanım çubuğu, `/tmp`'nin RAM olarak doğrulanıp doğrulanmadığını her an gösterir — hiçbir kamera kayıt yapmıyorsa kontrol edilecek ilk yer burasıdır
 - SQLite index (`<yol>/index.sqlite`), MP4 dosyaları `<yol>/<cam>/YYYY/MM/DD/`
@@ -211,7 +215,7 @@ Playback:
 └── recordings/     # (varsayılan) — kayıt klasör(ler)i config'ten değiştirilebilir, birden fazla olabilir
     ├── index.sqlite       # segment index + detections + notifications tabloları (her zaman burada, hangi kayıt kökü seçilirse seçilsin)
     ├── _snapshots/<cam>/YYYY/MM/DD/*.jpg   # her kayıt kökünün altında kendi _snapshots'ı olabilir — sıralı doldurmayı segmentlerle birlikte takip eder
-    └── <cam>/YYYY/MM/DD/<cam>_<ts>_NNNNN.mp4
+    └── <cam>/YYYY/MM/DD/<cam>_YYYYMMDD_HHMMSS.mp4
 /opt/rtcview-src/   # otomatik güncelleme için tutulan ayrı git kopyası (yalnızca "Şimdi Güncelle" kullanıldıysa oluşur)
 ```
 > go2rtc neden RtcView'ın kendi derlemesi: upstream go2rtc'de gerçek, tekrarlanabilir bir çökme hatası var
@@ -219,7 +223,7 @@ Playback:
 > panic — go2rtc'nin process'inin TAMAMINI, tüm kameraların akışını birden düşürüyor). Düzeltme
 > `scripts/go2rtc-writebuffer-recover.patch`'te; `scripts/build_go2rtc.sh` bunu upstream go2rtc kaynağına
 > uygulayıp `vendor/go2rtc/`'ye derler. Kayıt yolu harici bir diske ayarlıysa (`/mnt/...` gibi) o disk
-> `/etc/fstab` ile sizin tarafınızdan bağlanmış olmalı — bkz. [Kayıt yolu değiştirme](#kayıt-yolu-değiştirme).
+> `/etc/fstab` ile sizin tarafınızdan bağlanmış olmalı — bkz. [Kayıt yolu değiştirme](#kayıt-yolu-değiştirme--birden-fazla-disk).
 
 Kök yardımcı script'ler `scripts/` altında: `install.sh`, `update.sh`, `uninstall.sh`, `self_update.sh`.
 
@@ -241,8 +245,9 @@ Home Assistant entegrasyonunun tamamı `app/homeassistant.py` içindedir (WebSoc
 
 **Kayıt / Playback**
 - `GET /api/recording/settings` · `POST /api/recording/settings`
-- `GET /api/recording/status` — kamera başına recorder + disk istatistikleri (en eski segment dahil)
-- `POST /api/recording/rescan`
+- `GET /api/recording/status` — kamera başına recorder + disk istatistikleri (en eski segment, tmpfs durumu dahil)
+- `POST /api/recording/storage/paths` — kayıt klasörleri listesini değiştirir (bkz. [Birden fazla disk](#kayıt-yolu-değiştirme--birden-fazla-disk))
+- `POST /api/recording/rescan` · `GET /api/recording/rescan/status` — arka planda çalışan disk taramasını başlatır / ilerlemesini sorgular
 - `POST /api/cameras/<id>/record/start` · `/stop` — manuel tetik
 - `GET /api/recordings?cam=<id>&from=<ts>&to=<ts>` — segment listesi (playback)
 - `GET /api/recordings/<id>/stream` — Range destekli MP4 (HTML5 seek)
