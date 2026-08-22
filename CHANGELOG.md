@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.0.5] - 2026-08-22
+
+### Düzeltildi
+- **`/api/recording/status` bir kamera hızlı çökme-yeniden başlama döngüsündeyken çöküyordu.** `CameraRecorder.status()`, `self.proc` doluysa (obje hâlâ mevcutsa) süreç RSS'ini `round()`'a veriyordu — ama süreç OBJESİ var olması sürecin hâlâ **canlı** olduğu anlamına gelmiyor: ffmpeg az önce çıkmış ama henüz bir sonraki `stop()`/`start()` döngüsü tarafından temizlenmemiş olabilir. Bu durumda `_proc_rss_mb()` `None` döner ve `round(None, 1)` çıplak bir `TypeError` fırlatıp **tüm** `/api/recording/status` yanıtını (yalnızca sorunlu kamerayı değil, o anki bütün kameraları) 500 hatasına düşürüyordu. Flaky bir RTSP kaynağı (kamera/ağ tarafı sorunu) yüzünden bir kamera saniyeler içinde tekrar tekrar başlayıp çökerken bu, Kayıt & Depolama panelinin ve kamera durumu göstergelerinin o pencerede tamamen güncellenmeyi bırakmasına yol açıyordu.
+
 ## [5.0.4] - 2026-08-22
 
 ### Eklendi

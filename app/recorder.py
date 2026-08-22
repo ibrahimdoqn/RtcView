@@ -846,6 +846,15 @@ class CameraRecorder:
         return True
 
     def status(self) -> dict:
+        # self.proc being truthy doesn't mean the process is still alive
+        # (it can have just exited, not yet reaped by the next stop()/
+        # start() cycle -- happens repeatedly while a camera is stuck in a
+        # fast crash-restart loop, e.g. a flaky RTSP source). In that
+        # window _proc_rss_mb() returns None (its own /proc/<pid> read
+        # fails), and round(None, 1) used to raise a bare TypeError that
+        # took down this whole endpoint -- not just for the one troubled
+        # camera, every camera's status in the same response.
+        rss = _proc_rss_mb(self.proc.pid) if self.proc else None
         return {
             "cam_id": self.cam_id,
             "running": self.is_running(),
@@ -853,7 +862,7 @@ class CameraRecorder:
             "trigger": self.trigger,
             "manual_until": self.manual_until,
             "last_error": (self._stderr_tail[-1] if self._stderr_tail else ""),
-            "rss_mb": (round(_proc_rss_mb(self.proc.pid), 1) if self.proc else None),
+            "rss_mb": (round(rss, 1) if rss is not None else None),
             # Why THIS camera isn't recording right now (tmpfs unavailable
             # / below RAM margin), or None while running normally — see
             # _log_stage_blocked(). Distinct from last_error: that field
