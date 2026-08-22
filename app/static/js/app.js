@@ -970,15 +970,20 @@
       // codec the camera already sends. Cameras sending raw PCM-family
       // audio only get audio at all via mp4=all/mp4=flac, which is exactly
       // what makes go2rtc wrap that PCM into FLAC via pkg/pcm.FLACEncoder
-      // for the fMP4 output — a path that has crashed go2rtc in production
-      // (nil pointer panic at pkg/pcm/flac.go:149). Tried dropping to
+      // for the fMP4 output — a path that used to crash the whole go2rtc
+      // process in production (nil pointer panic at pkg/pcm/flac.go:149,
+      // same underlying bug as AlexxIT/go2rtc#1261: a stale Sender
+      // goroutine writing to a torn-down WriteBuffer). Tried dropping to
       // mp4= (empty, AAC-only) to dodge that crash, but it silently killed
       // audio for these cameras entirely (no AAC source, no negotiation).
-      // Traded back: keep audio, accept that go2rtc may occasionally crash
-      // and self-restart (~2s, live-view only — recording is unaffected).
-      // A real fix would transcode camera audio to AAC upstream in
-      // go2rtc's own stream config (ffmpeg:rtsp://...#audio=aac), outside
-      // this repo.
+      // Traded back: keep audio -- and since then RtcView's own go2rtc
+      // build carries a recover() guard in pkg/core/writebuffer.go (see
+      // vendor/go2rtc/patched-source) that contains exactly this panic as
+      // a per-consumer error instead of crashing the whole process, so
+      // this path is no longer the process-wide crash risk described
+      // above. A real fix would still be to transcode camera audio to AAC
+      // upstream in go2rtc's own stream config (ffmpeg:rtsp://...#audio=aac),
+      // outside this repo.
       const url = `/go2rtc/api/stream.mp4?src=${encodeURIComponent(cam.stream || cam.id)}&mp4=all`;
       console.log(`[${cam.id}] MSE HTTP fMP4:`, url);
       video.src = url; video.load();

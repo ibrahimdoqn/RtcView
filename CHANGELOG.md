@@ -5,6 +5,14 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.0.7] - 2026-08-22
+
+### Düzeltildi
+- **go2rtc entegrasyonunda genel bir tarama yapıldı** (pinned `v1.9.14`/`b5948cf` kaynağı yeniden klonlanıp mevcut yamayla karşılaştırılarak, tüm go2rtc'ye özel backend/frontend/install kodu tek tek gözden geçirilerek): iki yanıltıcı/bayat doğruluk sorunu bulundu, ikisi de düzeltildi.
+  - `app.js`'deki MSE ses yorumu, PCM→FLAC ses yolunun go2rtc'yi *hâlâ* çökertebileceğini ("go2rtc may occasionally crash and self-restart") söylüyordu — ama bu tam olarak `pkg/core/writebuffer.go`'daki `recover()` yamasının (bkz. `vendor/go2rtc/patched-source`, `AlexxIT/go2rtc#1261`) kapsadığı çökme sınıfı. Yama artık bu paniği tüm süreci çökertmek yerine tek tüketicilik bir hataya indirgiyor; yorum bunu yansıtacak şekilde güncellendi.
+  - `config.py`'deki `go2rtc.managed` alanının yorumu, Ayarlar'daki config editörü/log görüntüleyici/stream-senkron arayüzünü bu bayrağa göre gösterip gizlediğini iddia ediyordu — ancak kod tabanında (backend veya frontend) bu alanı okuyan **hiçbir yer yok**, hep `True` ve hiçbir yerde `False` yapılmıyor; ayrıca bahsedilen "stream-sync UI" hiç inşa edilmedi (uygulama planında kapsam dışı bırakılmıştı — kameraların RTSP URL'leri hiç RtcView'da tutulmuyor). Yorum, alanın şu an hiçbir şeyi kapıllamadığını ve gelecekte "harici/yönetilmeyen go2rtc" modu için ayrılmış olduğunu doğru şekilde belirtecek şekilde düzeltildi.
+  - Doğrulama: pinned go2rtc etiketi taze klonlanıp yama tekrar uygulandı, Go fault-injection regresyon testi (`TestWriteBufferRecoversFromWriterPanic`) tekrar çalıştırıldı ve geçti; hem `vendor/go2rtc/go2rtc_linux_amd64` hem `go2rtc_linux_arm64` ikili dosyalarının gerçekten yamalı kaynaktan derlendiği (`writebuffer: recovered:` dizesi ikili içinde) doğrulandı — dağıtılan ikililerde sapma yok.
+
 ## [5.0.6] - 2026-08-22
 
 ### Düzeltildi
