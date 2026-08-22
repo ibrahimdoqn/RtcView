@@ -46,8 +46,18 @@ git clone --depth 1 --branch "${GO2RTC_VERSION}" "${REPO_URL}" "${WORK_DIR}/src"
 
 REVISION="$(git -C "${WORK_DIR}/src" rev-parse --short HEAD)"
 
+# Preserve the actual source (not just the diff) that this build applies
+# the patch against and compiles from — see vendor/go2rtc/patched-source/
+# README.md. A unified diff alone is only reproducible as long as
+# upstream's tag/commit stays reachable; keeping the real before/after
+# file survives upstream deleting the tag, force-pushing, or an outage.
+PATCHED_SRC_DIR="${OUT_DIR}/patched-source/pkg/core"
+mkdir -p "${PATCHED_SRC_DIR}"
+cp "${WORK_DIR}/src/pkg/core/writebuffer.go" "${PATCHED_SRC_DIR}/writebuffer.go.upstream"
+
 echo "Applying ${PATCH_FILE}..."
 git -C "${WORK_DIR}/src" apply "${PATCH_FILE}"
+cp "${WORK_DIR}/src/pkg/core/writebuffer.go" "${PATCHED_SRC_DIR}/writebuffer.go"
 
 echo "Running regression test for the patch..."
 cp "${TEST_FILE}" "${WORK_DIR}/src/pkg/core/go2rtc_rtcview_recover_test.go"

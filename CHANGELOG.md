@@ -5,6 +5,13 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.0.4] - 2026-08-22
+
+### Eklendi
+- **go2rtc yamasının gerçek kaynak kodu artık ayrıca saklanıyor**, sadece diff değil: `vendor/go2rtc/patched-source/pkg/core/writebuffer.go` (yamalı) ve `.upstream` (yamadan önce, v1.9.14/`b5948cf`). Amaç: `scripts/go2rtc-writebuffer-recover.patch`'in dayandığı upstream etiket/commit ileride kaldırılsa, force-push edilse veya erişilemez hale gelse bile tam olarak neyin değiştirildiği kalıcı olarak kod düzeyinde belli olsun.
+- `scripts/build_go2rtc.sh` artık bu iki dosyayı her çalıştığında otomatik tazeliyor — upstream'in yeni bir sürümüne geçildiğinde (bkz. README'deki "Upstream yeni bir go2rtc sürümü çıkardığında ne yapılır" notu) ayrı bir manuel adım gerekmiyor, script zaten hem ikilileri hem bu kaynak kopyasını birlikte günceller.
+- README'ye, gelecekte upstream bu hatayı düzeltmezse (veya düzeltip düzeltmediğini kontrol etmek için) izlenecek tam prosedür eklendi: yeni sürümü `build_go2rtc.sh`'a verip yeniden derlemek, commit'lemek yeterli — var olan her kurulum kendi bir sonraki güncellemesinde (`update.sh`/"Şimdi Güncelle") yeni patch'li go2rtc'yi zaten otomatik alıyor, ayrı bir dağıtım adımı gerekmiyor.
+
 ## [5.0.3] - 2026-08-22
 
 ### Düzeltildi

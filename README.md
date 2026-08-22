@@ -208,6 +208,7 @@ Playback:
 │   ├── VERSION          # uygulama sürümü için tek gerçek kaynak (bkz. CHANGELOG.md)
 │   └── wsdl/            # ONVIF WSDL/XSD şemaları (yalnızca ptz.py kullanır)
 ├── vendor/go2rtc/  # RtcView'ın hata düzeltmeli go2rtc derlemesi (mimariye göre ikili + VERSION)
+│   └── patched-source/pkg/core/writebuffer.go(.upstream)  # yamadan önce/sonra gerçek kaynak (bkz. altta)
 ├── go2rtc/         # kurulumda vendor'dan kopyalanan çalışan go2rtc ikili dosyası + go2rtc.yaml
 ├── venv/           # izole Python ortamı
 ├── config/config.json
@@ -220,9 +221,25 @@ Playback:
 ```
 > go2rtc neden RtcView'ın kendi derlemesi: upstream go2rtc'de gerçek, tekrarlanabilir bir çökme hatası var
 > (bir tüketicinin HTTP yanıtı, henüz gönderimde olan bir paketle aynı anda kapatıldığında oluşan nil-pointer
-> panic — go2rtc'nin process'inin TAMAMINI, tüm kameraların akışını birden düşürüyor). Düzeltme
-> `scripts/go2rtc-writebuffer-recover.patch`'te; `scripts/build_go2rtc.sh` bunu upstream go2rtc kaynağına
-> uygulayıp `vendor/go2rtc/`'ye derler. Kayıt yolu harici bir diske ayarlıysa (`/mnt/...` gibi) o disk
+> panic — go2rtc'nin process'inin TAMAMINI, tüm kameraların akışını birden düşürüyor; bkz. upstream issue
+> [AlexxIT/go2rtc#1261](https://github.com/AlexxIT/go2rtc/issues/1261)). Düzeltme, `pkg/core/writebuffer.go`'nun
+> `Write()` fonksiyonuna eklenen küçük bir `recover()` korumasıdır — diff `scripts/go2rtc-writebuffer-recover.patch`'te;
+> dosyanın hem yamadan önceki hem sonraki **gerçek kaynak kodu** `vendor/go2rtc/patched-source/` altında ayrıca
+> saklanır (yalnızca diff değil) — upstream deposu/etiketi ileride kaldırılsa/kaybolsa bile tam olarak neyin
+> değiştiğini görebilmek için. Şu an pinlenmiş taban sürüm **v1.9.14** (`vendor/go2rtc/VERSION`'da tam taban
+> commit'iyle birlikte kayıtlı).
+>
+> **Upstream yeni bir go2rtc sürümü çıkardığında ne yapılır:** önce o sürümde bu hata düzelmiş mi diye
+> [issue #1261](https://github.com/AlexxIT/go2rtc/issues/1261)'i kontrol edin. Düzelmemişse (ya da emin
+> değilseniz): `scripts/build_go2rtc.sh v1.X.Y` çalıştırın — bu, belirtilen upstream etiketini çeker, patch'i
+> uygular (yalnızca tek bir küçük, kararlı fonksiyona dokunuyor — bugüne kadar hiçbir sürümde uygulanamama
+> sorunu çıkmadı), gömülü bir regresyon testiyle düzeltmeyi doğrular, `amd64`/`arm64` için yeniden derler ve
+> `vendor/go2rtc/`'yi günceller. Yeni ikilileri commit'leyip push'layın. **Ayrıca bir şey yapmanıza gerek yok**
+> — `scripts/update.sh` (ve dolayısıyla Ayarlar → Sistem → "Şimdi Güncelle") zaten her çalıştığında go2rtc
+> ikilisini `vendor/go2rtc/`'den yeniden kopyalıyor, bu yüzden var olan her kurulum bir sonraki güncellemesinde
+> yeni patch'li sürümü otomatik alır — ayrı bir dağıtım adımı gerekmez.
+>
+> Kayıt yolu harici bir diske ayarlıysa (`/mnt/...` gibi) o disk
 > `/etc/fstab` ile sizin tarafınızdan bağlanmış olmalı — bkz. [Kayıt yolu değiştirme](#kayıt-yolu-değiştirme--birden-fazla-disk).
 
 Kök yardımcı script'ler `scripts/` altında: `install.sh`, `update.sh`, `uninstall.sh`, `self_update.sh`.
