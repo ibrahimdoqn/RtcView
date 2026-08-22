@@ -1117,6 +1117,14 @@ def create_app(config_path: str) -> Flask:
     # Live streaming endpoints stay open indefinitely; JSON API endpoints
     # should time out fast so a stalled go2rtc doesn't hang worker threads.
     _STREAMING_ENDPOINTS = ("stream.mp4", "stream.m3u8", "stream.mjpeg", "ws")
+    # A healthy stream produces a chunk far more often than this. Only a
+    # genuinely stalled upstream (go2rtc<->camera RTSP timing out) would
+    # ever go this long between chunks -- when it does, giving up here caps
+    # how long a client-disconnected-mid-stall consumer can linger on
+    # go2rtc's side (waitress can only detect a disconnect on a failed
+    # *write*; it has nothing to detect while we're blocked reading from
+    # upstream), instead of the previous unbounded wait.
+    _STREAM_READ_TIMEOUT_SEC = 60
 
     # requests.request(...) (the module-level convenience function) opens a
     # brand new Session -- and with it a brand new TCP connection to go2rtc
@@ -1136,7 +1144,7 @@ def create_app(config_path: str) -> Flask:
         gc = store.get_go2rtc()
         upstream = f"http://{gc['host']}:{gc['api_port']}/{subpath}"
         is_stream = any(subpath.endswith(e) or ("/" + e) in subpath for e in _STREAMING_ENDPOINTS)
-        timeout = (5, None) if is_stream else (5, 10)
+        timeout = (5, _STREAM_READ_TIMEOUT_SEC) if is_stream else (5, 10)
         try:
             r = _go2rtc_session.request(
                 request.method,
@@ -1159,6 +1167,12 @@ def create_app(config_path: str) -> Flask:
                 for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
                         yield chunk
+            except Exception as e:
+                # En sık: upstream _STREAM_READ_TIMEOUT_SEC boyunca veri
+                # üretmedi (kamera/RTSP takıldı) ya da istemci zaten
+                # bağlantıyı kesmiş. İkisi de beklenen durumlar -- gürültülü
+                # bir traceback yerine debug seviyesinde logla.
+                log.debug("go2rtc proxy stream %s: %s", subpath, e)
             finally:
                 try: r.close()
                 except Exception: pass

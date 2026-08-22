@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.0.6] - 2026-08-22
+
+### Düzeltildi
+- **go2rtc proxy'sindeki canlı yayın istekleri (MSE/HLS/WHEP) süresiz beklemeye açıktı.** `/go2rtc/<path>` yayın uçları (`stream.mp4`, `stream.m3u8`, `stream.mjpeg`, `ws`) `timeout=(5, None)` kullanıyordu — bağlantı 5 sn'de kurulmazsa hata veriyordu ama kurulduktan sonra upstream'den (go2rtc↔kamera) veri gelmesi süresiz bekleniyordu. Kamera RTSP tarafı takılırsa (bkz. AGR_IC2 arızası) go2rtc'nin kendisi de aynı şekilde takılı kalıyor; bu sırada istemci (telefon/tarayıcı) bağlantıyı keserse, waitress bunu ancak bir **yazma** denemesi başarısız olunca fark edebiliyor — okuma tarafında donmuş bir generator'ı tespit edecek bir mekanizma yok. Sonuç: go2rtc tarafında `[::1]`'den (localhost) bağlı, aynı istemciye ait, asla temizlenmeyen "hayalet" tüketiciler birikebiliyordu (gerçek bir kurulumda go2rtc'nin kendi `/api/streams` çıktısında aynı stream için 11 eşzamanlı `mp4`/`http` tüketicisi gözlemlendi). Artık yayın uçları için okuma zaman aşımı 60 sn'ye sabitlendi — sağlıklı bir yayın bundan çok daha sık veri ürettiği için hiçbir etkisi olmuyor, yalnızca gerçekten donmuş bir upstream'de RtcView'ın kendi bağlantısını kapatıp go2rtc tarafındaki hayalet tüketiciyi de serbest bırakmasını sağlıyor. Zaman aşımı istisnası artık gürültülü bir traceback yerine debug seviyesinde loglanıyor.
+
 ## [5.0.5] - 2026-08-22
 
 ### Düzeltildi
