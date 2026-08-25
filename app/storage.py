@@ -1218,6 +1218,24 @@ Once a root has refused a delete, it's excluded from the SQL query
             removed += 1; freed += int(b or 0)
             return True, True
 
+        # Segments that failed the moov/trailer integrity check on close
+        # (recorder.py, playable=0 -- see _mp4_has_moov()) are broken
+        # footage: unplayable, and never becoming playable later. Purge
+        # them unconditionally, ahead of and independent of retention/
+        # quota/age -- there's no reason to keep a corrupted file around
+        # just because it's young or the disk isn't full yet. Still
+        # respects locked (a user protecting a segment wins even if it's
+        # flagged broken) and stops the phase on the same "row dropped but
+        # unlink failed" signal every other purge phase here uses.
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, bytes FROM segments WHERE playable = 0 AND locked = 0"
+            ).fetchall()
+        for sid, b in rows:
+            _, keep_going = _delete_and_keep_going(sid, b)
+            if not keep_going:
+                break
+
         # Per-camera retention_days_override (0 = "use the global
         # default" — this was previously accepted/persisted by the
         # camera-add/update API and shown in the UI but never actually

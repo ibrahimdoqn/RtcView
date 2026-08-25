@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.0.9] - 2026-08-22
+
+### Eklendi
+- **Bozuk (oynatılamayan) kayıt segmentleri artık otomatik siliniyor.** Segment kapanırken moov/trailer bütünlük kontrolünden (bkz. `recorder.py`) geçemeyip `playable=0` işaretlenen dosyalar önceden sadece oynatma zaman çizelgesinde "⚠ bozuk kayıt" uyarısıyla gösteriliyor, elle silinmedikçe diskte sonsuza kadar kalıyordu. Artık periyodik temizlik turunda (`purge_once()`, varsayılan 60 sn'de bir) retention/kota süresinden bağımsız olarak, kilitli olmayan tüm bozuk segmentler otomatik siliniyor — kilitli (locked) bir segment "bozuk" işaretli olsa bile korunuyor.
+
 ## [5.0.8] - 2026-08-22
 
 ### Düzeltildi
