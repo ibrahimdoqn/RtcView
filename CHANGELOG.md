@@ -5,6 +5,12 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.1.1] - 2026-08-25
+
+### Düzeltildi
+- **ONVIF yeniden başlatma butonuna ulaşmak için önce "Düzenle"ye tıklamak gerekiyordu, keşfedilebilir değildi.** Ayarlar → Kameralar liste görünümüne, ONVIF yapılandırılmış her kamera satırına doğrudan bir "↻" (yeniden başlat) butonu eklendi — düzenleme formuna girmeden, tek tıkla o kamerayı yeniden başlatabiliyorsunuz. Form içindeki buton da yerinde duruyor.
+- Kameralar sekmesindeki araç çubuğuna (`Kameralar` başlığı + "Tüm ONVIF Kameraları Yeniden Başlat" butonu) satırlar arası boşluk ve dar ekranlarda satır sarma eklendi — buton artık kamera listesine daha yapışık durmuyor.
+
 ## [5.1.0] - 2026-08-25
 
 ### Eklendi

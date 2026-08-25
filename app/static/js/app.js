@@ -1375,10 +1375,15 @@
         const g = state.groups.find(x => x.id === gid);
         return g ? `<span class="group-chip-mini">${escapeHtml(g.name)}</span>` : "";
       }).join("");
+      const canReboot = !!(cam.ptz_enabled && cam.onvif_host);
       row.innerHTML = `<span class="name">${escapeHtml(cam.name)}</span>
         <span class="cam-tab-row-groups">${groupChips}</span>
-        <button type="button" class="btn ghost small">Düzenle</button>`;
-      row.querySelector("button").addEventListener("click", () => openEdit(cam));
+        ${canReboot ? `<button type="button" class="btn ghost small cam-tab-reboot" title="ONVIF ile kamerayı yeniden başlat">↻</button>` : ""}
+        <button type="button" class="btn ghost small cam-tab-edit">Düzenle</button>`;
+      if (canReboot){
+        row.querySelector(".cam-tab-reboot").addEventListener("click", (e) => rebootOnvifCamera(cam, e.currentTarget));
+      }
+      row.querySelector(".cam-tab-edit").addEventListener("click", () => openEdit(cam));
       wrap.appendChild(row);
     });
   }
@@ -1764,16 +1769,24 @@
     } catch (err) { toast("Silinemedi: " + err.message, "err"); }
   });
 
-  $("#btn-onvif-reboot").addEventListener("click", async (e) => {
-    const id = e.target.dataset.camId; if (!id) return;
-    const cam = state.cameras.find(c => c.id === id);
-    if (!confirm(`"${cam ? cam.name : id}" kamerası yeniden başlatılsın mı?`)) return;
-    e.target.disabled = true;
+  // Shared by both reboot entry points: the per-camera button inside the
+  // edit form and the per-row "↻" button in the camera list (added because
+  // requiring a "Düzenle" click first to find a reboot action wasn't
+  // discoverable).
+  async function rebootOnvifCamera(cam, btn){
+    if (!confirm(`"${cam.name}" kamerası yeniden başlatılsın mı?`)) return;
+    if (btn) btn.disabled = true;
     try {
-      const r = await api.post(`/api/ptz/${encodeURIComponent(id)}/reboot`, {});
+      const r = await api.post(`/api/ptz/${encodeURIComponent(cam.id)}/reboot`, {});
       toast(r.message ? `Yeniden başlatılıyor: ${r.message}` : "Kamera yeniden başlatılıyor", "ok");
     } catch (err) { toast("Yeniden başlatılamadı: " + err.message, "err"); }
-    finally { e.target.disabled = false; }
+    finally { if (btn) btn.disabled = false; }
+  }
+
+  $("#btn-onvif-reboot").addEventListener("click", (e) => {
+    const id = e.target.dataset.camId; if (!id) return;
+    const cam = state.cameras.find(c => c.id === id);
+    if (cam) rebootOnvifCamera(cam, e.target);
   });
 
   $("#btn-onvif-reboot-all").addEventListener("click", async (e) => {
