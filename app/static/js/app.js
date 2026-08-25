@@ -1695,8 +1695,15 @@
         motion: cam.ha_motion_entity, person: cam.ha_person_entity, vehicle: cam.ha_vehicle_entity,
       });
       startMotionPoll(cam.id);
+      // Reboot uses the SAVED camera's ONVIF credentials (looked up
+      // server-side by id), not whatever's currently typed in the form,
+      // so its visibility follows the loaded camera's persisted
+      // ptz_enabled -- unrelated to the checkbox being toggled live below.
+      $("#btn-onvif-reboot").classList.toggle("hidden", !cam.ptz_enabled);
+      $("#btn-onvif-reboot").dataset.camId = cam.id;
     } else {
       delBtn.classList.add("hidden");
+      $("#btn-onvif-reboot").classList.add("hidden");
       form.record_mode.value = "off";
       renderScheduleRows($("#rec-schedule-rows"), []);
       renderCamGroupChips([]);
@@ -1755,6 +1762,30 @@
       await reloadCameras();
       showCameraList();
     } catch (err) { toast("Silinemedi: " + err.message, "err"); }
+  });
+
+  $("#btn-onvif-reboot").addEventListener("click", async (e) => {
+    const id = e.target.dataset.camId; if (!id) return;
+    const cam = state.cameras.find(c => c.id === id);
+    if (!confirm(`"${cam ? cam.name : id}" kamerası yeniden başlatılsın mı?`)) return;
+    e.target.disabled = true;
+    try {
+      const r = await api.post(`/api/ptz/${encodeURIComponent(id)}/reboot`, {});
+      toast(r.message ? `Yeniden başlatılıyor: ${r.message}` : "Kamera yeniden başlatılıyor", "ok");
+    } catch (err) { toast("Yeniden başlatılamadı: " + err.message, "err"); }
+    finally { e.target.disabled = false; }
+  });
+
+  $("#btn-onvif-reboot-all").addEventListener("click", async (e) => {
+    if (!confirm("ONVIF yapılandırılmış TÜM kameralar yeniden başlatılacak. Devam edilsin mi?")) return;
+    e.target.disabled = true;
+    try {
+      const r = await api.post("/api/ptz/reboot-all", {});
+      const entries = Object.entries(r.results || {});
+      const okCount = entries.filter(([, v]) => v.ok).length;
+      toast(`${okCount}/${entries.length} kamera yeniden başlatılıyor`, okCount === entries.length ? "ok" : "err");
+    } catch (err) { toast("Yeniden başlatılamadı: " + err.message, "err"); }
+    finally { e.target.disabled = false; }
   });
 
   async function reloadCameras(){

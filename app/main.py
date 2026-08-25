@@ -668,6 +668,41 @@ def create_app(config_path: str) -> Flask:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    # ---------- ONVIF camera reboot ----------
+    # SystemReboot is an ONVIF Device Management operation, not PTZ, but
+    # reuses the same onvif_host/port/user/pass credentials as the PTZ
+    # fieldset (same "ptz_enabled" gate as api_ptz_move above) rather than
+    # inventing a separate ONVIF-enabled flag — every camera with those
+    # credentials already speaks ONVIF regardless of whether it also has a
+    # motorized head.
+    @app.post("/api/ptz/<camera_id>/reboot")
+    def api_ptz_reboot(camera_id):
+        cam = _find_camera(camera_id)
+        if not cam:
+            return jsonify({"error": "not found"}), 404
+        if not cam.get("ptz_enabled"):
+            return jsonify({"error": "ONVIF not configured for this camera"}), 400
+        try:
+            message = ptz_controller.reboot(cam)
+            return jsonify({"ok": True, "message": message})
+        except Exception as e:
+            log.warning("ONVIF reboot failed for %s: %s", camera_id, e)
+            return jsonify({"error": str(e)}), 500
+
+    @app.post("/api/ptz/reboot-all")
+    def api_ptz_reboot_all():
+        cams = [c for c in store.get_cameras() if c.get("ptz_enabled")]
+        if not cams:
+            return jsonify({"error": "no ONVIF-configured cameras"}), 400
+        results = {}
+        for cam in cams:
+            try:
+                results[cam["id"]] = {"ok": True, "message": ptz_controller.reboot(cam)}
+            except Exception as e:
+                log.warning("ONVIF reboot failed for %s: %s", cam["id"], e)
+                results[cam["id"]] = {"ok": False, "error": str(e)}
+        return jsonify({"ok": True, "results": results})
+
     # ---------- Recording: settings, status ----------
     @app.get("/api/recording/settings")
     def api_rec_settings_get():

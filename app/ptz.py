@@ -98,6 +98,20 @@ class PtzController:
         presets = entry["ptz"].GetPresets({"ProfileToken": entry["token"]})
         return [{"token": p.token, "name": getattr(p, "Name", "")} for p in presets or []]
 
+    def reboot(self, camera: dict) -> str:
+        """ONVIF SystemReboot (Device Management service, not PTZ) --
+        reuses _get()'s cached connection/credentials since the reboot
+        button only ever appears next to cameras that already have ONVIF
+        configured for PTZ. Returns the camera's own status message
+        (e.g. "Rebooting in 3 seconds"), if it sends one."""
+        entry = self._get(camera)
+        dm = entry.get("devicemgmt")
+        if dm is None:
+            dm = entry["onvif"].create_devicemgmt_service()
+            entry["devicemgmt"] = dm
+        result = dm.SystemReboot()
+        return str(result) if result else ""
+
     def invalidate(self, camera_id: str):
         with self._lock:
             self._cache.pop(camera_id, None)

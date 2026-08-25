@@ -190,7 +190,10 @@
             <div class="groups-manage-head"><span>Gruplar</span><button type="button" id="btn-add-group" class="btn ghost small">+ Grup</button></div>
             <div id="groups-manage-list" class="groups-manage-list"></div>
           </div>
-          <div class="cam-tab-toolbar"><span>Kameralar</span></div>
+          <div class="cam-tab-toolbar">
+            <span>Kameralar</span>
+            <button type="button" id="btn-onvif-reboot-all" class="btn ghost small" title="ONVIF yapılandırılmış tüm kameraları yeniden başlatır">Tüm ONVIF Kameraları Yeniden Başlat</button>
+          </div>
           <div id="cam-tab-list-rows"></div>
           <button type="button" id="btn-add-camera-tab" class="btn primary cam-tab-add">+ Kamera Ekle</button>
         </div>
@@ -217,6 +220,7 @@
                 <label>Kullanıcı <input name="onvif_user" /></label>
               </div>
               <label>Parola <input type="password" name="onvif_pass" /></label>
+              <button type="button" id="btn-onvif-reboot" class="btn ghost small hidden">Kamerayı Yeniden Başlat (ONVIF)</button>
             </fieldset>
             <fieldset id="motion-fieldset">
               <legend>Hareket & Nesne Algılama (Home Assistant)</legend>

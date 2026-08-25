@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-08-25
+
+### Eklendi
+- **ONVIF uyumlu kameraları RtcView'dan yeniden başlatma.** Ayarlar → Kameralar'da, PTZ/ONVIF yapılandırılmış (host/kullanıcı/parola girilmiş, "PTZ etkin" işaretli) her kamera için "Kamerayı Yeniden Başlat (ONVIF)" butonu eklendi — kameranın kendi ONVIF Device Management servisindeki `SystemReboot` komutunu çağırıp fiziksel cihazı gerçekten yeniden başlatıyor (RtcView tarafındaki RTSP oturumunu değil). Ayrıca kamera listesinin üstüne "Tüm ONVIF Kameraları Yeniden Başlat" butonu eklendi — ONVIF yapılandırılmış tüm kameraları tek seferde yeniden başlatır, hangi kameranın başarılı/başarısız olduğu sonuç özetinde gösterilir. PTZ desteği için zaten kaydedilmiş olan aynı ONVIF kimlik bilgileri (`onvif_host/port/user/pass`) kullanılıyor, ayrı bir yapılandırma gerekmiyor.
+
 ## [5.0.10] - 2026-08-22
 
 ### Eklendi
