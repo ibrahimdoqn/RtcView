@@ -1227,12 +1227,22 @@ Once a root has refused a delete, it's excluded from the SQL query
         # respects locked (a user protecting a segment wins even if it's
         # flagged broken) and stops the phase on the same "row dropped but
         # unlink failed" signal every other purge phase here uses.
+        #
+        # Logged per-segment (cam_id + path), not just folded into the
+        # generic "purged N segments" summary below -- recorder.py already
+        # logs a warning the moment a segment is FOUND broken (at close
+        # time); this is the matching log line for when it's actually
+        # REMOVED, so the two can be correlated in journalctl instead of
+        # this auto-delete silently blending in with ordinary retention/
+        # quota cleanup.
         with self._lock:
             rows = self._db.execute(
-                "SELECT id, bytes FROM segments WHERE playable = 0 AND locked = 0"
+                "SELECT id, cam_id, path, bytes FROM segments WHERE playable = 0 AND locked = 0"
             ).fetchall()
-        for sid, b in rows:
-            _, keep_going = _delete_and_keep_going(sid, b)
+        for sid, cam_id, path, b in rows:
+            deleted, keep_going = _delete_and_keep_going(sid, b)
+            if deleted:
+                log.warning("[%s] bozuk (oynatılamayan) segment otomatik silindi: %s", cam_id, path)
             if not keep_going:
                 break
 

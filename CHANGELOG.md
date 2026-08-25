@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.0.10] - 2026-08-22
+
+### Eklendi
+- **Bozuk segment otomatik silinirken artık ayrı bir log satırı yazılıyor.** Önceki sürümde (5.0.9) silme işlemi genel "purged N segments" özetine karışıyordu, hangi segmentin neden silindiği journalctl'de ayırt edilemiyordu. Artık her bozuk segment silindiğinde kamera kimliği ve dosya yoluyla birlikte ayrı bir uyarı satırı yazılıyor — `recorder.py`'nin segment kapanırken zaten yazdığı "unplayable" uyarısıyla eşleştirilebilir, böylece bir segmentin ne zaman bozuk bulunduğu ve ne zaman gerçekten silindiği loglardan takip edilebiliyor.
+
 ## [5.0.9] - 2026-08-22
 
 ### Eklendi
