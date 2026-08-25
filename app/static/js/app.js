@@ -3729,6 +3729,13 @@
       try { v.currentTime = off; } catch (e) { console.warn("seek failed:", e); }
       applyPlaybackSpeed(target.rate);
       if (!target.keepPlaying || wasPlaying) v.play().catch(()=>{});
+      // Some browsers silently drop a playbackRate set this early (before
+      // enough of the new resource has buffered) once real data starts
+      // flowing in, snapping speed back to 1x a moment later -- reassert
+      // once on the next canplay as a backstop. One-shot and reads
+      // pb.segSeek fresh (not a closure over `target`) so it can't
+      // clobber a rate the user changed in the meantime.
+      v.addEventListener("canplay", () => applyPlaybackSpeed(pb.segSeek.rate), { once: true });
       // Anchor timeline centre on the new wall-clock instant
       pb.centerTime = seg.started_at + off;
       renderTimeline();
@@ -3741,7 +3748,13 @@
       v.muted = !pb.audioOn;
       v.src = seg.url;
       v.load();
-      if (pb._resetVideoZoom) pb._resetVideoZoom();
+      // Zoom/pan is a pure CSS transform on this same <video> element
+      // (see initPlayback's applyVideoTransform) -- it isn't tied to the
+      // loaded resource at all and survives a src swap on its own, so it
+      // is deliberately NOT reset here. Segment-to-segment playback (the
+      // normal case) and switching camera/date now both keep whatever
+      // framing the user zoomed/panned into; only an explicit action
+      // (right-click, or closing the playback panel) resets it.
       // loadedmetadata normally fires before loadeddata for the same load,
       // so without this mutual cleanup both ran applyOffset (double seek,
       // double play()) every time a segment changed.

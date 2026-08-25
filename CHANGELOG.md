@@ -5,6 +5,12 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.1.2] - 2026-08-25
+
+### Düzeltildi
+- **Kayıt oynatmada bir segmentten diğerine geçerken zoom/pan sıfırlanıyordu.** `loadSegment()` her segment değişiminde `_resetVideoZoom()`'u koşulsuz çağırıyordu — ama zoom/pan aslında video elementinin üzerinde saf bir CSS transform (`applyVideoTransform`), yüklenen kaynağa bağlı değil ve bir `src` değişiminde kendiliğinden korunuyor. Bu otomatik sıfırlama kaldırıldı; artık segmentler arası geçişte (normal oynatmanın kendisi de dahil) ve kamera/tarih değiştirirken zoom/pan aynen korunuyor. Bilinçli sıfırlama noktaları (sağ tık, çift tık, oynatma panelini kapatma) olduğu gibi duruyor.
+- **Oynatma hızı da segment geçişinde bazen sıfırlanabiliyordu.** `applyPlaybackSpeed()` yeni segment yüklenirken `loadedmetadata`/`loadeddata` anında bir kez çağrılıyordu; bazı tarayıcılar bu kadar erken atanan `playbackRate`'i, gerçek veri akmaya başladığında sessizce 1x'e geri alabiliyor. Artık `canplay` olayında hız bir kez daha (o anki güncel değerle) yeniden uygulanıyor, böylece erken atamayı geçersiz kılan bu tarayıcı davranışına karşı korunuyor.
+
 ## [5.1.1] - 2026-08-25
 
 ### Düzeltildi
