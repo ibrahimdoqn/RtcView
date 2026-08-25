@@ -2657,10 +2657,26 @@
   // ========================================================================
   // PLAYBACK (İzleme) — timeline + segment auto-next
   // ========================================================================
+  // Live tiles paused while the playback panel is open -- see openPlayback/
+  // closePlayback below. The panel is a full-viewport opaque overlay
+  // (.playback, position:fixed;inset:0) sitting on top of #grid, not a
+  // page navigation -- #grid stays in the DOM and, without this, every
+  // tile's MSE/WHEP connection keeps pulling live video through the go2rtc
+  // proxy the whole time, fully invisible and fully wasted (mobile data,
+  // CPU, go2rtc consumer count). Stopped on open, restarted on close --
+  // same stop-then-queueStart pattern _resumeLiveView() already uses for
+  // the tab-visibility case, just spread across two separate calls instead
+  // of one, so the {cam, tile} pairs must be saved here since stopPlayer()
+  // deletes them from state.players.
+  let _tilesPausedForPlayback = null;
   function openPlayback(target){
     if (state.cameras.length === 0){ toast("Önce kamera ekleyin"); return; }
     if (!state.playback) initPlayback();
     const pb = state.playback;
+    if (!_tilesPausedForPlayback){
+      _tilesPausedForPlayback = Array.from(state.players.values()).map(p => ({cam: p.cam, tile: p.tile}));
+      for (const {cam} of _tilesPausedForPlayback) stopPlayer(cam.id);
+    }
     // Prefill camera + date
     const sel = $("#pb-cam");
     sel.innerHTML = state.cameras.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
@@ -2696,6 +2712,10 @@
     }
     closePbEvents();
     $("#playback").classList.add("hidden");
+    if (_tilesPausedForPlayback){
+      for (const {cam, tile} of _tilesPausedForPlayback) queueStart(cam, tile);
+      _tilesPausedForPlayback = null;
+    }
   }
 
   async function refreshDaySilent(){

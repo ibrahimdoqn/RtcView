@@ -5,6 +5,11 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.0.8] - 2026-08-22
+
+### Düzeltildi
+- **Geçmiş kayıt izleme (Oynatma) paneli açıkken anasayfadaki canlı yayınlar arkada tam hızda akmaya devam ediyordu, boşuna veri/CPU harcıyordu.** `#playback` paneli tüm ekranı kaplayan opak bir katman (`position:fixed;inset:0`) — altındaki `#grid`'i DOM'dan kaldırmıyor, sadece görsel olarak örtüyor. Görünmeyen kutucukların MSE/WHEP bağlantıları önceden hiç durdurulmuyordu. Artık panel açılırken tüm canlı kutucuklar durduruluyor, panel kapanırken (X butonu veya Esc) kaldığı yerden otomatik yeniden başlıyor — sekme görünürlüğü değiştiğinde zaten kullanılan aynı durdur/yeniden-başlat deseniyle (`_resumeLiveView`).
+
 ## [5.0.7] - 2026-08-22
 
 ### Düzeltildi
