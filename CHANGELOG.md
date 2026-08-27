@@ -5,6 +5,12 @@ Biçim [Keep a Changelog](https://keepachangelog.com/) temel alınır, sürümle
 
 ## [Unreleased]
 
+## [5.1.3] - 2026-08-27
+
+### Düzeltildi
+- **ONVIF kamera yeniden başlatması, o kameranın açık kaydını düzgün kapatmadan kamerayı resetliyordu.** `/api/ptz/<id>/reboot` ve `/api/ptz/reboot-all`, ONVIF `SystemReboot` komutunu gönderdikten sonra o kameranın kayıt sürecine hiç dokunmuyordu — kamera fiilen resetlenip RTSP bağlantısı koptuğunda ffmpeg bunu ancak 20 saniyelik soket zaman aşımıyla fark ediyor, o ana kadar açık olan segmenti kendi hata-çıkışı temizlik rutinine bırakıyordu (genelde çalışır ama garanti değil — uygulamanın moov/trailer bütünlük kontrolünün var olma sebebi tam olarak bu tür durumlar). Artık ONVIF reboot komutu başarıyla kabul edildiği anda o kameranın kaydı `RecordingManager.reload_camera()` ile hemen ve düzgünce kapatılıyor (moov/trailer yazılıp segment diske taşınıyor); kamera geri geldiğinde mevcut supervisor döngüsü kaydı otomatik olarak yeniden başlatıyor.
+- Uygulama yeniden başlatma / güncelleme (systemd `SIGTERM` → `recorder.stop()`) ve komple sistem reboot'u (`systemctl reboot` aynı servis-durdurma yolundan geçiyor) zaten her kameranın ffmpeg sürecini kademeli sinyalle (SIGTERM → SIGINT → SIGKILL) düzgünce kapatıp açık segmenti kaydediyordu; bu davranış teyit edildi, `KillMode=control-group` + `TimeoutStopSec=20` sistemd politikası ile de garanti altında — hiçbir ek değişiklik gerekmedi.
+
 ## [5.1.2] - 2026-08-25
 
 ### Düzeltildi

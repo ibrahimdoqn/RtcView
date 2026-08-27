@@ -684,10 +684,26 @@ def create_app(config_path: str) -> Flask:
             return jsonify({"error": "ONVIF not configured for this camera"}), 400
         try:
             message = ptz_controller.reboot(cam)
-            return jsonify({"ok": True, "message": message})
         except Exception as e:
             log.warning("ONVIF reboot failed for %s: %s", camera_id, e)
             return jsonify({"error": str(e)}), 500
+        # The camera's RTSP session dies the moment it actually reboots, but
+        # ffmpeg only notices via its 20s socket read timeout and finalises
+        # the currently-open segment through its own (best-effort) error-exit
+        # path -- not the same guaranteed graceful close a normal stop gets.
+        # Now that the reboot command has been accepted, close that one
+        # camera's recorder ourselves right away: the in-progress segment
+        # gets a proper moov/trailer immediately instead of gambling on
+        # ffmpeg's cleanup surviving an abrupt disconnect, and there's no
+        # point keeping a doomed connection open for up to 20 more seconds.
+        # reload_camera() only stops it -- the supervisor's own tick picks
+        # the camera back up and starts a fresh recorder once it's reachable
+        # again after rebooting, exactly like any other reconnect.
+        try:
+            recorder.reload_camera(camera_id)
+        except Exception as e:
+            log.warning("Recorder stop after ONVIF reboot failed for %s: %s", camera_id, e)
+        return jsonify({"ok": True, "message": message})
 
     @app.post("/api/ptz/reboot-all")
     def api_ptz_reboot_all():
@@ -701,6 +717,15 @@ def create_app(config_path: str) -> Flask:
             except Exception as e:
                 log.warning("ONVIF reboot failed for %s: %s", cam["id"], e)
                 results[cam["id"]] = {"ok": False, "error": str(e)}
+                continue
+            # Same reasoning as the single-camera route above: close this
+            # camera's currently-open segment immediately now that its
+            # reboot was actually accepted, instead of leaving it to
+            # ffmpeg's own timeout-triggered exit.
+            try:
+                recorder.reload_camera(cam["id"])
+            except Exception as e:
+                log.warning("Recorder stop after ONVIF reboot failed for %s: %s", cam["id"], e)
         return jsonify({"ok": True, "results": results})
 
     # ---------- Recording: settings, status ----------
